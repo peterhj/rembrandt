@@ -20,4 +20,5 @@ pub mod util;
 pub mod caffe_proto;
 pub mod data;
 pub mod layer;
+pub mod net;
 pub mod opt;

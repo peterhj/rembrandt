@@ -33,6 +33,12 @@ pub enum ActivationFunction {
   Tanh,
 }
 
+#[derive(Clone, Copy)]
+pub enum PoolKind {
+  Max,
+  Average,
+}
+
 pub trait Layer {
   fn output_activation(&self) -> Option<Rc<RefCell<DeviceBuf<f32>>>>;
   fn output_delta(&self) -> Option<Rc<RefCell<DeviceBuf<f32>>>>;
@@ -46,25 +52,33 @@ pub trait Layer {
 
 /*pub enum LayerWrapper {
   Data(DataLayer),
-  InnerProd(InnerProdLayer),
+  FullyConn(FullyConnLayer),
   SoftmaxLoss(SoftmaxLossLayer),
 }
 
 impl Layer for LayerWrapper {
 }*/
 
+#[derive(Clone, Copy)]
+pub struct DataLayerConfig {
+  pub width:    usize,
+  pub height:   usize,
+  pub channels: usize,
+}
+
 pub struct DataLayer {
   pub in_bytes:   DeviceBuf<u8>,
   pub out_act:    Rc<RefCell<DeviceBuf<f32>>>,
-  pub out_delta:  Rc<RefCell<DeviceBuf<f32>>>, // XXX: unused.
+  pub config:     DataLayerConfig,
 }
 
 impl DataLayer {
-  pub fn new(length: usize) -> DataLayer {
+  pub fn new(config: DataLayerConfig) -> DataLayer {
+    let length = config.width * config.height * config.channels;
     DataLayer{
       in_bytes:   DeviceBuf::with_zeros(length),
       out_act:    Rc::new(RefCell::new(DeviceBuf::with_zeros(length))),
-      out_delta:  Rc::new(RefCell::new(DeviceBuf::with_zeros(length))),
+      config:     config,
     }
   }
 
@@ -101,39 +115,46 @@ impl Layer for DataLayer {
   }
 
   fn output_delta(&self) -> Option<Rc<RefCell<DeviceBuf<f32>>>> {
-    Some(self.out_delta.clone())
+    None
   }
 }
 
-pub struct InnerProdLayer {
+#[derive(Clone, Copy)]
+pub struct FullyConnLayerConfig {
+  pub in_channels:  usize,
+  pub out_channels: usize,
+  pub act_fun:      ActivationFunction,
+}
+
+pub struct FullyConnLayer {
   pub in_act:       Rc<RefCell<DeviceBuf<f32>>>,
-  pub in_delta:     Rc<RefCell<DeviceBuf<f32>>>,
+  pub in_delta:     Option<Rc<RefCell<DeviceBuf<f32>>>>,
   pub out_act:      Rc<RefCell<DeviceBuf<f32>>>,
   pub out_delta:    Rc<RefCell<DeviceBuf<f32>>>,
   pub weights:      DeviceArray2d<f32>,
   pub bias:         DeviceArray2d<f32>,
   pub grad_weights: DeviceArray2d<f32>,
   pub grad_bias:    DeviceArray2d<f32>,
-  pub act_fun:      ActivationFunction,
+  pub config:       FullyConnLayerConfig,
 }
 
-impl InnerProdLayer {
-  pub fn new(prev_layer: Option<&Layer>, in_channels: usize, out_channels: usize, act_fun: ActivationFunction) -> InnerProdLayer {
-    InnerProdLayer{
+impl FullyConnLayer {
+  pub fn new(prev_layer: Option<&Layer>, config: FullyConnLayerConfig) -> FullyConnLayer {
+    FullyConnLayer{
       in_act:       prev_layer.unwrap().output_activation().unwrap(),
-      in_delta:     prev_layer.unwrap().output_delta().unwrap(),
-      out_act:      Rc::new(RefCell::new(DeviceBuf::with_zeros(out_channels))),
-      out_delta:    Rc::new(RefCell::new(DeviceBuf::with_zeros(out_channels))),
-      weights:      DeviceArray2d::with_zeros((in_channels, out_channels)),
-      bias:         DeviceArray2d::with_zeros((1, out_channels)),
-      grad_weights: DeviceArray2d::with_zeros((in_channels, out_channels)),
-      grad_bias:    DeviceArray2d::with_zeros((1, out_channels)),
-      act_fun:      act_fun,
+      in_delta:     prev_layer.unwrap().output_delta(),
+      out_act:      Rc::new(RefCell::new(DeviceBuf::with_zeros(config.out_channels))),
+      out_delta:    Rc::new(RefCell::new(DeviceBuf::with_zeros(config.out_channels))),
+      weights:      DeviceArray2d::with_zeros((config.in_channels, config.out_channels)),
+      bias:         DeviceArray2d::with_zeros((1, config.out_channels)),
+      grad_weights: DeviceArray2d::with_zeros((config.in_channels, config.out_channels)),
+      grad_bias:    DeviceArray2d::with_zeros((1, config.out_channels)),
+      config:       config,
     }
   }
 
   pub fn load_params(&mut self, prefix: &str, ctx: &DeviceContext) {
-    let (in_channels, out_channels) = self.weights.as_view().get_bound();
+    let FullyConnLayerConfig{in_channels, out_channels, ..} = self.config;
     let weights_path = PathBuf::from(&format!("{}_weights.ndarray", prefix));
     let bias_path = PathBuf::from(&format!("{}_bias.ndarray", prefix));
     let mut weights_file = File::open(&weights_path)
@@ -151,7 +172,7 @@ impl InnerProdLayer {
   }
 }
 
-impl Layer for InnerProdLayer {
+impl Layer for FullyConnLayer {
   fn output_activation(&self) -> Option<Rc<RefCell<DeviceBuf<f32>>>> {
     Some(self.out_act.clone())
   }
@@ -176,96 +197,89 @@ impl Layer for InnerProdLayer {
   }
 
   fn reset_gradients(&mut self, ctx: &DeviceContext) {
-    //self.grad_weights.as_mut_view().set_scalar(0.0, ctx);
-    //self.grad_bias.as_mut_view().set_scalar(0.0, ctx);
     self.grad_weights.as_mut_view().matrix_scale(0.0, ctx);
     self.grad_bias.as_mut_view().row_vector_scale(0.0, ctx);
   }
 
   fn forward(&mut self, ctx: &DeviceContext) {
     let (in_channels, out_channels) = self.weights.as_view().get_bound();
-    {
-      self.out_act.borrow_mut().as_mut_view_2d((1, out_channels)).matrix_prod(
-          1.0,
-          &self.in_act.borrow().as_view_2d((in_channels, 1)), Transpose::T,
-          &self.weights.as_view(), Transpose::N,
-          0.0,
-          ctx);
-      self.out_act.borrow_mut().as_mut_view_2d((1, out_channels)).row_vector_sum(
-          1.0,
-          &self.bias.as_view(),
-          ctx);
-      // TODO(20150918): update output activation w/ activation function.
-      match self.act_fun {
-        ActivationFunction::Identity => {}
-        ActivationFunction::Relu => {
-          unsafe { rembrandt_kernel_map_relu_activation(
-              out_channels as i32,
-              self.out_act.borrow_mut().as_mut_view().as_mut_ptr(),
-              ctx.stream.ptr,
-          ) };
-        }
-        ActivationFunction::Sigmoid => {
-          unsafe { rembrandt_kernel_map_sigmoid_activation(
-              out_channels as i32,
-              self.out_act.borrow_mut().as_mut_view().as_mut_ptr(),
-              ctx.stream.ptr,
-          ) };
-        }
-        ActivationFunction::Tanh => {
-          unsafe { rembrandt_kernel_map_tanh_activation(
-              out_channels as i32,
-              self.out_act.borrow_mut().as_mut_view().as_mut_ptr(),
-              ctx.stream.ptr,
-          ) };
-        }
+    self.out_act.borrow_mut().as_mut_view_2d((1, out_channels)).matrix_prod(
+        1.0,
+        &self.in_act.borrow().as_view_2d((in_channels, 1)), Transpose::T,
+        &self.weights.as_view(), Transpose::N,
+        0.0,
+        ctx);
+    self.out_act.borrow_mut().as_mut_view_2d((1, out_channels)).row_vector_sum(
+        1.0,
+        &self.bias.as_view(),
+        ctx);
+    match self.config.act_fun {
+      ActivationFunction::Identity => {}
+      ActivationFunction::Relu => {
+        unsafe { rembrandt_kernel_map_relu_activation(
+            out_channels as i32,
+            self.out_act.borrow_mut().as_mut_view().as_mut_ptr(),
+            ctx.stream.ptr,
+        ) };
+      }
+      ActivationFunction::Sigmoid => {
+        unsafe { rembrandt_kernel_map_sigmoid_activation(
+            out_channels as i32,
+            self.out_act.borrow_mut().as_mut_view().as_mut_ptr(),
+            ctx.stream.ptr,
+        ) };
+      }
+      ActivationFunction::Tanh => {
+        unsafe { rembrandt_kernel_map_tanh_activation(
+            out_channels as i32,
+            self.out_act.borrow_mut().as_mut_view().as_mut_ptr(),
+            ctx.stream.ptr,
+        ) };
       }
     }
   }
 
   fn backward(&mut self, descent: &DescentConfig, ctx: &DeviceContext) {
     let (in_channels, out_channels) = self.weights.as_view().get_bound();
-    {
-      // TODO(20150918): update output delta w/ activation derivative.
-      match self.act_fun {
-        ActivationFunction::Identity => {}
-        ActivationFunction::Relu => {
-          unsafe { rembrandt_kernel_map_relu_activation_backprop(
-              out_channels as i32,
-              self.out_act.borrow().as_view().as_ptr(),
-              self.out_delta.borrow_mut().as_mut_view().as_mut_ptr(),
-              ctx.stream.ptr,
-          ) };
-        }
-        ActivationFunction::Sigmoid => {
-          unsafe { rembrandt_kernel_map_sigmoid_activation_backprop(
-              out_channels as i32,
-              self.out_act.borrow().as_view().as_ptr(),
-              self.out_delta.borrow_mut().as_mut_view().as_mut_ptr(),
-              ctx.stream.ptr,
-          ) };
-        }
-        ActivationFunction::Tanh => {
-          unsafe { rembrandt_kernel_map_tanh_activation_backprop(
-              out_channels as i32,
-              self.out_act.borrow().as_view().as_ptr(),
-              self.out_delta.borrow_mut().as_mut_view().as_mut_ptr(),
-              ctx.stream.ptr,
-          ) };
-        }
+    match self.config.act_fun {
+      ActivationFunction::Identity => {}
+      ActivationFunction::Relu => {
+        unsafe { rembrandt_kernel_map_relu_activation_backprop(
+            out_channels as i32,
+            self.out_act.borrow().as_view().as_ptr(),
+            self.out_delta.borrow_mut().as_mut_view().as_mut_ptr(),
+            ctx.stream.ptr,
+        ) };
       }
-      self.grad_weights.as_mut_view().matrix_prod(
-          1.0,
-          &self.in_act.borrow().as_view_2d((in_channels, 1)), Transpose::N,
-          &self.out_delta.borrow().as_view_2d((1, out_channels)), Transpose::N,
-          1.0,
-          ctx);
-      self.grad_bias.as_mut_view().row_vector_sum(
-          1.0,
-          &self.out_delta.borrow().as_view_2d((1, out_channels)),
-          ctx);
-      // TODO: update input delta, if prev layer is not a backprop sink.
-      self.in_delta.borrow_mut().as_mut_view_2d((in_channels, 1)).matrix_prod(
+      ActivationFunction::Sigmoid => {
+        unsafe { rembrandt_kernel_map_sigmoid_activation_backprop(
+            out_channels as i32,
+            self.out_act.borrow().as_view().as_ptr(),
+            self.out_delta.borrow_mut().as_mut_view().as_mut_ptr(),
+            ctx.stream.ptr,
+        ) };
+      }
+      ActivationFunction::Tanh => {
+        unsafe { rembrandt_kernel_map_tanh_activation_backprop(
+            out_channels as i32,
+            self.out_act.borrow().as_view().as_ptr(),
+            self.out_delta.borrow_mut().as_mut_view().as_mut_ptr(),
+            ctx.stream.ptr,
+        ) };
+      }
+    }
+    self.grad_weights.as_mut_view().matrix_prod(
+        1.0,
+        &self.in_act.borrow().as_view_2d((in_channels, 1)), Transpose::N,
+        &self.out_delta.borrow().as_view_2d((1, out_channels)), Transpose::N,
+        1.0,
+        ctx);
+    self.grad_bias.as_mut_view().row_vector_sum(
+        1.0,
+        &self.out_delta.borrow().as_view_2d((1, out_channels)),
+        ctx);
+    if let Some(ref mut in_delta) = self.in_delta {
+      in_delta.borrow_mut().as_mut_view_2d((in_channels, 1)).matrix_prod(
           1.0,
           &self.weights.as_view(), Transpose::N,
           &self.out_delta.borrow().as_view_2d((out_channels, 1)), Transpose::N,
@@ -280,15 +294,299 @@ impl Layer for InnerProdLayer {
   }
 }
 
-pub struct ConvLayer;
-
-impl ConvLayer {
+#[derive(Clone, Copy)]
+pub struct Conv2dLayerConfig {
+  pub in_width:     usize,
+  pub in_height:    usize,
+  pub in_channels:  usize,
+  pub conv_size:    usize,
+  pub conv_stride:  usize,
+  pub conv_pad:     usize,
+  pub out_channels: usize,
+  pub act_fun:      ActivationFunction,
 }
 
-impl Layer for ConvLayer {
-  // FIXME(20150920)
+impl Conv2dLayerConfig {
+  pub fn get_out_dims(&self) -> (usize, usize) {
+    let out_width = (self.in_width + 2 * self.conv_pad - self.conv_size) / self.conv_stride + 1;
+    let out_height = (self.in_height + 2 * self.conv_pad - self.conv_size) / self.conv_stride + 1;
+    (out_width, out_height)
+  }
+}
+
+pub struct Conv2dLayer {
+  pub in_act:       Rc<RefCell<DeviceBuf<f32>>>,
+  pub in_delta:     Option<Rc<RefCell<DeviceBuf<f32>>>>,
+  pub in_col:       DeviceArray2d<f32>,
+  pub grad_col:     DeviceArray2d<f32>,
+  pub unit:         DeviceArray2d<f32>,
+  pub out_act:      Rc<RefCell<DeviceBuf<f32>>>,
+  pub out_delta:    Rc<RefCell<DeviceBuf<f32>>>,
+  pub weights:      DeviceArray2d<f32>,
+  pub bias:         DeviceArray2d<f32>,
+  pub grad_weights: DeviceArray2d<f32>,
+  pub grad_bias:    DeviceArray2d<f32>,
+  pub config:       Conv2dLayerConfig,
+}
+
+impl Conv2dLayer {
+  pub fn new(prev_layer: Option<&Layer>, config: Conv2dLayerConfig, ctx: &DeviceContext) -> Conv2dLayer {
+    let Conv2dLayerConfig{
+      in_width, in_height, in_channels,
+      conv_size, conv_stride, conv_pad,
+      out_channels, ..} = config;
+    let (out_width, out_height) = config.get_out_dims();
+    let out_length = out_width * out_height * out_channels;
+    let mut unit = DeviceArray2d::with_zeros((out_width * out_height, 1));
+    // FIXME: or .col_vector_scale().
+    unit.as_mut_view().set_constant(1.0, ctx);
+    Conv2dLayer{
+      in_act:       prev_layer.unwrap().output_activation().unwrap(),
+      in_delta:     prev_layer.unwrap().output_delta(),
+      in_col:       DeviceArray2d::with_zeros((out_width * out_height, conv_size * conv_size * in_channels)),
+      grad_col:     DeviceArray2d::with_zeros((out_width * out_height, conv_size * conv_size * in_channels)),
+      unit:         unit,
+      out_act:      Rc::new(RefCell::new(DeviceBuf::with_zeros(out_length))),
+      out_delta:    Rc::new(RefCell::new(DeviceBuf::with_zeros(out_length))),
+      weights:      DeviceArray2d::with_zeros((conv_size * conv_size * in_channels, out_channels)),
+      bias:         DeviceArray2d::with_zeros((1, out_channels)),
+      grad_weights: DeviceArray2d::with_zeros((conv_size * conv_size * in_channels, out_channels)),
+      grad_bias:    DeviceArray2d::with_zeros((1, out_channels)),
+      config:       config,
+    }
+  }
+}
+
+impl Layer for Conv2dLayer {
+  fn output_activation(&self) -> Option<Rc<RefCell<DeviceBuf<f32>>>> {
+    Some(self.out_act.clone())
+  }
+
+  fn output_delta(&self) -> Option<Rc<RefCell<DeviceBuf<f32>>>> {
+    Some(self.out_delta.clone())
+  }
+
+  fn initialize_params(&mut self, ctx: &DeviceContext) {
+    let Conv2dLayerConfig{in_channels, conv_size, out_channels, ..} = self.config;
+    let mut rng = thread_rng();
+    let dist = Normal::new(0.0, 0.01);
+    let mut init_weights = Array2d::with_zeros((conv_size * conv_size * in_channels, out_channels));
+    for w in init_weights.as_mut_view().as_mut_slice().iter_mut() {
+      *w = dist.ind_sample(&mut rng) as f32;
+    }
+    let init_bias = Array2d::with_zeros((1, out_channels));
+    self.weights.as_mut_view().sync_load(&init_weights.as_view(), ctx);
+    self.bias.as_mut_view().sync_load(&init_bias.as_view(), ctx);
+  }
+
+  fn reset_gradients(&mut self, ctx: &DeviceContext) {
+    self.grad_weights.as_mut_view().matrix_scale(0.0, ctx);
+    self.grad_bias.as_mut_view().row_vector_scale(0.0, ctx);
+  }
+
+  fn forward(&mut self, ctx: &DeviceContext) {
+    let Conv2dLayerConfig{
+      in_width, in_height, in_channels,
+      conv_size, conv_stride, conv_pad,
+      out_channels, ..} = self.config;
+    let (out_width, out_height) = self.config.get_out_dims();
+    let out_length = out_width * out_height * out_channels;
+    unsafe { rembrandt_kernel_image_im2col(
+        self.in_act.borrow().as_view().as_ptr(),
+        in_width as i32, in_height as i32, in_channels as i32,
+        conv_size as i32, conv_stride as i32, conv_pad as i32,
+        self.in_col.as_mut_view().as_mut_ptr(),
+        ctx.stream.ptr,
+    ) };
+    self.out_act.borrow_mut().as_mut_view_2d((out_width * out_height, out_channels)).matrix_prod(
+        1.0,
+        &self.in_col.as_view(), Transpose::N,
+        &self.weights.as_view(), Transpose::N,
+        0.0,
+        ctx,
+    );
+    self.out_act.borrow_mut().as_mut_view_2d((out_width * out_height, out_channels)).matrix_prod(
+        1.0,
+        &self.unit.as_view(), Transpose::N,
+        &self.bias.as_view(), Transpose::N,
+        1.0,
+        ctx,
+    );
+    match self.config.act_fun {
+      ActivationFunction::Identity => {}
+      ActivationFunction::Relu => {
+        unsafe { rembrandt_kernel_map_relu_activation(
+            out_length as i32,
+            self.out_act.borrow_mut().as_mut_view().as_mut_ptr(),
+            ctx.stream.ptr,
+        ) };
+      }
+      ActivationFunction::Sigmoid => {
+        unsafe { rembrandt_kernel_map_sigmoid_activation(
+            out_length as i32,
+            self.out_act.borrow_mut().as_mut_view().as_mut_ptr(),
+            ctx.stream.ptr,
+        ) };
+      }
+      ActivationFunction::Tanh => {
+        unsafe { rembrandt_kernel_map_tanh_activation(
+            out_length as i32,
+            self.out_act.borrow_mut().as_mut_view().as_mut_ptr(),
+            ctx.stream.ptr,
+        ) };
+      }
+    }
+  }
+
+  fn backward(&mut self, descent: &DescentConfig, ctx: &DeviceContext) {
+    let Conv2dLayerConfig{
+      in_width, in_height, in_channels,
+      conv_size, conv_stride, conv_pad,
+      out_channels, ..} = self.config;
+    let (out_width, out_height) = self.config.get_out_dims();
+    let out_length = out_width * out_height * out_channels;
+    match self.config.act_fun {
+      ActivationFunction::Identity => {}
+      ActivationFunction::Relu => {
+        unsafe { rembrandt_kernel_map_relu_activation_backprop(
+            out_length as i32,
+            self.out_act.borrow().as_view().as_ptr(),
+            self.out_delta.borrow_mut().as_mut_view().as_mut_ptr(),
+            ctx.stream.ptr,
+        ) };
+      }
+      ActivationFunction::Sigmoid => {
+        unsafe { rembrandt_kernel_map_sigmoid_activation_backprop(
+            out_length as i32,
+            self.out_act.borrow().as_view().as_ptr(),
+            self.out_delta.borrow_mut().as_mut_view().as_mut_ptr(),
+            ctx.stream.ptr,
+        ) };
+      }
+      ActivationFunction::Tanh => {
+        unsafe { rembrandt_kernel_map_tanh_activation_backprop(
+            out_length as i32,
+            self.out_act.borrow().as_view().as_ptr(),
+            self.out_delta.borrow_mut().as_mut_view().as_mut_ptr(),
+            ctx.stream.ptr,
+        ) };
+      }
+    }
+    self.grad_weights.as_mut_view().matrix_prod(
+        1.0,
+        &self.in_col.as_view(), Transpose::T,
+        &self.out_delta.borrow().as_view_2d((out_width * out_height, out_channels)), Transpose::N,
+        1.0,
+        ctx,
+    );
+    self.grad_bias.as_mut_view().matrix_prod(
+        1.0,
+        &self.unit.as_view(), Transpose::T,
+        &self.out_delta.borrow().as_view_2d((out_width * out_height, out_channels)), Transpose::N,
+        1.0,
+        ctx,
+    );
+    self.grad_col.as_mut_view().matrix_prod(
+        1.0,
+        &self.out_delta.borrow().as_view_2d((out_width * out_height, out_channels)), Transpose::N,
+        &self.weights.as_view(), Transpose::T,
+        0.0,
+        ctx,
+    );
+    if let Some(ref mut in_delta) = self.in_delta {
+      unsafe { rembrandt_kernel_image_col2im(
+          self.grad_col.as_view().as_ptr(),
+          in_width as i32, in_height as i32, in_channels as i32,
+          conv_size as i32, conv_stride as i32, conv_pad as i32,
+          in_delta.borrow_mut().as_mut_view().as_mut_ptr(),
+          ctx.stream.ptr,
+      ) };
+    }
+  }
+
+  fn descend(&mut self, descent: &DescentConfig, ctx: &DeviceContext) {
+    self.weights.as_mut_view().matrix_sum(-descent.step_size, &self.grad_weights.as_view(), ctx);
+    self.bias.as_mut_view().matrix_sum(-descent.step_size, &self.grad_bias.as_view(), ctx);
+  }
+}
+
+#[derive(Clone, Copy)]
+pub struct PoolLayerConfig {
+  pub pool_kind:    PoolKind,
+  pub pool_size:    usize,
+  pub pool_stride:  usize,
+  pub pool_pad:     usize,
+}
+
+pub struct PoolLayer {
+  pub config: PoolLayerConfig,
+}
+
+impl PoolLayer {
+  pub fn new(prev_layer: Option<&Layer>, config: PoolLayerConfig) -> PoolLayer {
+    PoolLayer{
+      config: config,
+    }
+  }
+}
+
+impl Layer for PoolLayer {
+  // FIXME(20150923)
   fn output_activation(&self) -> Option<Rc<RefCell<DeviceBuf<f32>>>> { None }
   fn output_delta(&self) -> Option<Rc<RefCell<DeviceBuf<f32>>>> { None }
+
+  fn forward(&mut self, ctx: &DeviceContext) {
+    // TODO
+  }
+
+  fn backward(&mut self, descent: &DescentConfig, ctx: &DeviceContext) {
+    // TODO
+  }
+}
+
+#[derive(Clone, Copy)]
+pub struct DropoutLayerConfig {
+  pub drop_ratio: f32,
+}
+
+pub struct DropoutLayer {
+  pub in_act:   Rc<RefCell<DeviceBuf<f32>>>,
+  pub in_delta: Rc<RefCell<DeviceBuf<f32>>>,
+  pub in_mask:  DeviceBuf<i32>,
+  pub config:   DropoutLayerConfig,
+}
+
+impl DropoutLayer {
+  pub fn new(prev_layer: Option<&Layer>, config: DropoutLayerConfig) -> DropoutLayer {
+    let in_act = prev_layer.unwrap().output_activation().unwrap();
+    let in_delta = prev_layer.unwrap().output_delta().unwrap();
+    let act_length = in_act.borrow().as_view().len();
+    DropoutLayer{
+      in_act:   in_act,
+      in_delta: in_delta,
+      in_mask:  DeviceBuf::with_zeros(act_length),
+      config:   config,
+    }
+  }
+}
+
+impl Layer for DropoutLayer {
+  // FIXME(20150923)
+  fn output_activation(&self) -> Option<Rc<RefCell<DeviceBuf<f32>>>> { None }
+  fn output_delta(&self) -> Option<Rc<RefCell<DeviceBuf<f32>>>> { None }
+
+  fn forward(&mut self, ctx: &DeviceContext) {
+    // TODO
+  }
+
+  fn backward(&mut self, descent: &DescentConfig, ctx: &DeviceContext) {
+    // TODO
+  }
+}
+
+#[derive(Clone, Copy)]
+pub struct SoftmaxLossLayerConfig {
+  pub num_categories: usize,
 }
 
 pub struct SoftmaxLossLayer {
@@ -338,9 +636,9 @@ impl Layer for SoftmaxLossLayer {
   fn output_delta(&self) -> Option<Rc<RefCell<DeviceBuf<f32>>>> { None }
 
   fn forward(&mut self, ctx: &DeviceContext) {
-    ctx.synchronize();
+    //ctx.synchronize();
     self.in_act.borrow().as_view_2d((self.num_categories, 1)).send(&mut self.probabilities.as_mut_view(), ctx);
-    ctx.synchronize();
+    //ctx.synchronize();
     unsafe { rembrandt_kernel_blockreduce_argmax(
         self.num_categories as i32,
         self.probabilities.as_view().as_ptr(),
@@ -374,8 +672,6 @@ impl Layer for SoftmaxLossLayer {
   }
 
   fn backward(&mut self, descent: &DescentConfig, ctx: &DeviceContext) {
-    //self.probabilities.as_view().send(&mut self.in_delta.borrow_mut().as_mut_view_2d((self.num_categories, 1)), ctx);
-    //ctx.synchronize();
     unsafe { rembrandt_kernel_map_softmax_cross_entropy_loss_backprop(
         self.probabilities.as_view().as_ptr(),
         self.num_categories as i32,

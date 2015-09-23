@@ -4,7 +4,6 @@ extern crate rand;
 
 use rembrandt::data::{DatasetConfiguration, DataSourceBuilder};
 use rembrandt::layer::*;
-use rembrandt::net::{NetArch, LinearNetArch};
 use rembrandt::opt::{DescentConfig};
 
 use async_cuda::context::{DeviceContext};
@@ -16,7 +15,7 @@ fn main() {
   let mut rng = thread_rng();
   let ctx = DeviceContext::new(0);
 
-  let dataset_cfg = DatasetConfiguration::open(&PathBuf::from("examples/mnist.data"));
+  let dataset_cfg = DatasetConfiguration::open(&PathBuf::from("../data/mnist.data"));
   let train_data_source = if let Some(&(ref name, ref cfg)) = dataset_cfg.datasets.get("train") {
     DataSourceBuilder::build(name, cfg.clone())
   } else {
@@ -28,37 +27,22 @@ fn main() {
 
   let descent = DescentConfig{
     minibatch_size: 50,
-    step_size: 0.01,
+    step_size: 0.001,
   };
 
   let num_minibatches = train_data.len() / descent.minibatch_size;
   let num_epoch_samples = descent.minibatch_size * num_minibatches;
   let interval_size = 1000;
 
-  let data_layer_cfg = DataLayerConfig{
-    width: 28, height: 28, channels: 1,
-  };
-  let conv1_layer_cfg = Conv2dLayerConfig{
-    in_width: 28, in_height: 28, in_channels: 1,
-    conv_size: 3, conv_stride: 1, conv_pad: 1,
-    out_channels: 16, act_fun: ActivationFunction::Relu,
-  };
-  let fc1_layer_cfg = FullyConnLayerConfig{in_channels: 28 * 28 * 16, out_channels: 100, act_fun: ActivationFunction::Relu};
-  let fc2_layer_cfg = FullyConnLayerConfig{in_channels: 100, out_channels: 10, act_fun: ActivationFunction::Identity};
+  let (width, height) = (28, 28);
 
-  let data_layer = DataLayer::new(data_layer_cfg);
-  let conv1_layer = Conv2dLayer::new(Some(&data_layer), conv1_layer_cfg, &ctx);
-  let fc1_layer = FullyConnLayer::new(Some(&conv1_layer), fc1_layer_cfg);
-  let fc2_layer = FullyConnLayer::new(Some(&fc1_layer), fc2_layer_cfg);
-  let softmax_layer = SoftmaxLossLayer::new(Some(&fc2_layer), 10);
+  let ip1_layer_cfg = FullyConnLayerConfig{in_channels: width * height, out_channels: 10, act_fun: ActivationFunction::Identity};
 
-  let mut arch = LinearNetArch::new(data_layer, softmax_layer, vec![
-      Box::new(conv1_layer),
-      Box::new(fc1_layer),
-      Box::new(fc2_layer),
-  ]);
+  let mut data_layer = DataLayer::new(width * height);
+  let mut ip1_layer = FullyConnLayer::new(Some(&data_layer), ip1_layer_cfg);
+  let mut softmax_layer = SoftmaxLossLayer::new(Some(&ip1_layer), 10);
 
-  arch.initialize_params(&ctx);
+  ip1_layer.initialize_params(&ctx);
 
   let mut epoch: usize = 0;
   let mut t: usize = 0;
@@ -66,20 +50,23 @@ fn main() {
     let mut epoch_correct = 0;
     let mut interval_correct = 0;
 
-    arch.reset_gradients(&ctx);
+    ip1_layer.reset_gradients(&ctx);
 
     rng.shuffle(&mut train_data);
     for (idx, &(ref datum, maybe_label)) in train_data.iter().enumerate() {
-      arch.load_sample(datum, maybe_label, &ctx);
+      data_layer.load_sample(datum, &ctx);
+      softmax_layer.load_sample(maybe_label, &ctx);
 
-      arch.forward(&ctx);
+      ip1_layer.forward(&ctx);
+      softmax_layer.forward(&ctx);
 
-      if arch.loss_layer.correct_guess(&ctx) {
+      if softmax_layer.correct_guess(&ctx) {
         epoch_correct += 1;
         interval_correct += 1;
       }
 
-      arch.backward(&descent, &ctx);
+      softmax_layer.backward(&descent, &ctx);
+      ip1_layer.backward(&descent, &ctx);
 
       t += 1;
 
@@ -93,8 +80,8 @@ fn main() {
       if next_idx >= num_epoch_samples {
         break;
       } else if next_idx % descent.minibatch_size == 0 {
-        arch.descend(&descent, &ctx);
-        arch.reset_gradients(&ctx);
+        ip1_layer.descend(&descent, &ctx);
+        ip1_layer.reset_gradients(&ctx);
       }
     }
 

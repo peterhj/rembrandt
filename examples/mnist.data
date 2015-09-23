@@ -1,0 +1,11 @@
+# MNIST.
+
+[dataset.train]
+source      = "mnist"
+data_path   = "examples/mnist/train-images-idx3-ubyte"
+labels_path = "examples/mnist/train-labels-idx1-ubyte"
+
+[dataset.test]
+source      = "mnist"
+data_path   = "examples/mnist/t10k-images-idx3-ubyte"
+labels_path = "examples/mnist/t10k-labels-idx1-ubyte"
