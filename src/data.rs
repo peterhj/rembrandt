@@ -271,6 +271,7 @@ impl MnistDataSource {
       n
     };
     assert_eq!(data_n, labels_n);
+    //println!("DEBUG: mnist dims: {} {}", width, height);
     MnistDataSource{
       data_path:      input_data.data_path.clone(),
       labels_path:    input_data.maybe_labels_path.clone(),
