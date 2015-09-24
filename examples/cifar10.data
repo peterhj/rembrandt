@@ -1,0 +1,9 @@
+# CIFAR-10.
+
+[dataset.train]
+source      = "cifar"
+data_path   = "examples/cifar10/train.bin"
+
+[dataset.test]
+source      = "cifar"
+data_path   = "examples/cifar10/test.bin"

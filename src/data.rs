@@ -93,6 +93,7 @@ pub trait DataSource: Send {
   fn request_sample(&mut self) -> Option<(SampleDatum, Option<SampleLabel>)>;
 
   fn reset(&mut self) { unimplemented!(); }
+  fn len(&self) -> usize;
 }
 
 impl Iterator for DataSource {
@@ -223,6 +224,11 @@ impl<'a> DataSource for LmdbCaffeDataSource<'a> {
       None => None,
     }
   }
+
+  fn len(&self) -> usize {
+    // TODO
+    unimplemented!();
+  }
 }
 
 pub struct MnistDataSource {
@@ -283,6 +289,43 @@ impl MnistDataSource {
       i: 0,
     }
   }
+
+  fn open(&self, data_path: &PathBuf, maybe_labels_path: Option<&PathBuf>) -> (BufReader<File>, BufReader<File>) {
+    let data_file = File::open(data_path)
+      .ok().expect("failed to open mnist data file!");
+    let labels_file = File::open(unwrap!(maybe_labels_path))
+      .ok().expect("failed to open mnist labels file!");
+    let mut data_reader = BufReader::new(data_file);
+    let mut labels_reader = BufReader::new(labels_file);
+    let (data_n, width, height) = {
+      let magic0 = unwrap!(data_reader.read_u8().ok());
+      let magic1 = unwrap!(data_reader.read_u8().ok());
+      let magic2_dty = unwrap!(data_reader.read_u8().ok());
+      let magic3_ndim = unwrap!(data_reader.read_u8().ok());
+      assert_eq!(magic0, 0);
+      assert_eq!(magic1, 0);
+      assert_eq!(magic2_dty, 0x08);
+      assert_eq!(magic3_ndim, 3);
+      let n = unwrap!(data_reader.read_u32::<BigEndian>().ok()) as usize;
+      let height = unwrap!(data_reader.read_u32::<BigEndian>().ok()) as usize;
+      let width = unwrap!(data_reader.read_u32::<BigEndian>().ok()) as usize;
+      (n, width, height)
+    };
+    let labels_n = {
+      let magic0 = unwrap!(labels_reader.read_u8().ok());
+      let magic1 = unwrap!(labels_reader.read_u8().ok());
+      let magic2_dty = unwrap!(labels_reader.read_u8().ok());
+      let magic3_ndim = unwrap!(labels_reader.read_u8().ok());
+      assert_eq!(magic0, 0);
+      assert_eq!(magic1, 0);
+      assert_eq!(magic2_dty, 0x08);
+      assert_eq!(magic3_ndim, 1);
+      let n = unwrap!(labels_reader.read_u32::<BigEndian>().ok()) as usize;
+      n
+    };
+    assert_eq!(data_n, labels_n);
+    (data_reader, labels_reader)
+  }
 }
 
 impl DataSource for MnistDataSource {
@@ -314,6 +357,71 @@ impl DataSource for MnistDataSource {
   }
 
   fn reset(&mut self) {
+    let (data_reader, labels_reader) = self.open(&self.data_path, self.labels_path.as_ref());
+    self.data_reader = data_reader;
+    self.labels_reader = labels_reader;
+    self.i = 0;
+  }
+
+  fn len(&self) -> usize {
+    self.n
+  }
+}
+
+pub struct CifarDataSource {
+  data_path:      PathBuf,
+  data_reader:    BufReader<File>,
+  n:              usize,
+  i:              usize,
+}
+
+impl CifarDataSource {
+  pub fn new(input_data: DataSourceConfig) -> CifarDataSource {
+    let data_file = File::open(&input_data.data_path)
+      .ok().expect("failed to open cifar data file!");
+    let mut data_reader = BufReader::new(data_file);
+    CifarDataSource{
+      data_path:    input_data.data_path.clone(),
+      data_reader:  data_reader,
+      n:            50000, // FIXME
+      i:            0,
+    }
+  }
+}
+
+impl DataSource for CifarDataSource {
+  fn request_sample(&mut self) -> Option<(SampleDatum, Option<SampleLabel>)> {
+    if self.i >= self.n {
+      return None;
+    }
+    let label = unwrap!(self.data_reader.read_u8().ok()) as i32;
+    let image_len: usize = 32 * 32 * 3;
+    let mut image_bytes: Vec<u8> = Vec::with_capacity(image_len);
+    unsafe { image_bytes.set_len(image_len) };
+    let mut head: usize = 0;
+    loop {
+      match self.data_reader.read(&mut image_bytes[head .. image_len]) {
+        Ok(amnt_read) => {
+          if amnt_read == 0 {
+            assert_eq!(head, image_len);
+            break;
+          } else {
+            head += amnt_read;
+          }
+        }
+        Err(e) => panic!("i/o error while reading cifar: {}", e),
+      }
+    }
+    let image = Array3d::with_data(image_bytes, (32, 32, 3));
+    self.i += 1;
+    Some((SampleDatum::RgbPerChannelBytes(image), Some(SampleLabel(label))))
+  }
+
+  fn reset(&mut self) {
     // TODO(20150917)
+  }
+
+  fn len(&self) -> usize {
+    self.n
   }
 }
