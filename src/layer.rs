@@ -15,6 +15,7 @@ use rand::distributions::{IndependentSample};
 use rand::distributions::normal::{Normal};
 use rand::distributions::range::{Range};
 use std::cell::{RefCell};
+use std::cmp::{max};
 use std::fs::{File};
 use std::path::{PathBuf};
 use std::rc::{Rc};
@@ -22,8 +23,8 @@ use std::rc::{Rc};
 #[derive(Clone, Copy)]
 pub enum LayerInitialization {
   Zeros,
-  Identity,
   Normal{std: f32},
+  Glorot,
 }
 
 #[derive(Clone, Copy)]
@@ -42,12 +43,17 @@ pub enum PoolKind {
 
 pub type SharedDeviceBuf<T> = Rc<RefCell<DeviceBuf<T>>>;
 
+pub trait LayerConfig {
+  fn get_in_dims(&self) -> (usize, usize, usize);
+  fn get_out_dims(&self) -> (usize, usize, usize);
+}
+
 pub trait Layer {
   fn output_activation(&self) -> Option<SharedDeviceBuf<f32>>;
   fn output_delta(&self) -> Option<SharedDeviceBuf<f32>>;
 
   fn initialize_params(&mut self, ctx: &DeviceContext) {}
-  fn reset_gradients(&mut self, ctx: &DeviceContext) {}
+  fn reset_gradients(&mut self, descent: &DescentSchedule, ctx: &DeviceContext) {}
   fn forward(&mut self, ctx: &DeviceContext) {}
   fn backward(&mut self, descent: &DescentSchedule, ctx: &DeviceContext) {}
   fn descend(&mut self, descent: &DescentSchedule, t: usize, ctx: &DeviceContext) {}
@@ -57,39 +63,49 @@ pub trait LossLayer {
   // TODO
 }
 
-/*pub enum LayerWrapper {
-  Data(DataLayer),
-  FullyConn(FullyConnLayer),
-  SoftmaxLoss(SoftmaxLossLayer),
-}
-
-impl Layer for LayerWrapper {
-}*/
-
 #[derive(Clone, Copy)]
 pub struct DataLayerConfig {
-  pub width:    usize,
-  pub height:   usize,
-  pub channels: usize,
+  pub raw_width:    usize,
+  pub raw_height:   usize,
+  pub crop_width:   usize,
+  pub crop_height:  usize,
+  pub channels:     usize,
+}
+
+impl LayerConfig for DataLayerConfig {
+  fn get_in_dims(&self) -> (usize, usize, usize) {
+    (self.raw_width, self.raw_height, self.channels)
+  }
+
+  fn get_out_dims(&self) -> (usize, usize, usize) {
+    (self.crop_width, self.crop_height, self.channels)
+  }
 }
 
 pub struct DataLayer {
   pub in_bytes:   DeviceBuf<u8>,
-  pub out_act:    SharedDeviceBuf<f32>,
+  pub raw_image:  DeviceBuf<f32>,
+  pub crop_image: SharedDeviceBuf<f32>,
   pub config:     DataLayerConfig,
 }
 
 impl DataLayer {
   pub fn new(config: DataLayerConfig) -> DataLayer {
-    let length = config.width * config.height * config.channels;
+    let raw_length = config.raw_width * config.raw_height * config.channels;
+    let crop_length = config.crop_width * config.crop_height * config.channels;
     DataLayer{
-      in_bytes:   DeviceBuf::with_zeros(length),
-      out_act:    Rc::new(RefCell::new(DeviceBuf::with_zeros(length))),
+      in_bytes:   DeviceBuf::with_zeros(raw_length),
+      raw_image:  DeviceBuf::with_zeros(raw_length),
+      crop_image: Rc::new(RefCell::new(DeviceBuf::with_zeros(crop_length))),
       config:     config,
     }
   }
 
   pub fn load_sample(&mut self, datum: &SampleDatum, ctx: &DeviceContext) {
+    let DataLayerConfig{
+      raw_width, raw_height,
+      crop_width, crop_height,
+      channels} = self.config;
     match datum {
       &SampleDatum::RgbPerChannelBytes(ref bytes) => {
         let bytes_view = bytes.as_view();
@@ -99,7 +115,8 @@ impl DataLayer {
         unsafe { rembrandt_kernel_image_cast_to_float(
             dims.0 as i32, dims.1 as i32, dims.2 as i32,
             self.in_bytes.as_view().as_ptr(),
-            self.out_act.borrow_mut().as_mut_view().as_mut_ptr(),
+            //self.out_act.borrow_mut().as_mut_view().as_mut_ptr(),
+            self.raw_image.as_mut_view().as_mut_ptr(),
             ctx.stream.ptr,
         ) };
         // FIXME(20150921): subtract out data-specific average.
@@ -109,6 +126,18 @@ impl DataLayer {
             -33.318,
             ctx.stream.ptr,
         ) };*/
+        let off_w = (raw_width - crop_width) / 2;
+        let off_h = (raw_height - crop_height) / 2;
+        for c in (0 .. channels) {
+          let (_, back_raw_view) = self.raw_image.as_view().split_at(c * raw_width * raw_height);
+          let back_raw_view_2d = back_raw_view.as_view_2d((raw_width, raw_height));
+          let cropped_raw_view = back_raw_view_2d.view((off_w, off_h), (off_w + crop_width, off_h + crop_height));
+          let mut crop_image = self.crop_image.borrow_mut();
+          let mut crop_view = crop_image.as_mut_view();
+          let (_, mut back_crop_view) = crop_view.split_at(c * crop_width * crop_height);
+          let mut shaped_crop_view = back_crop_view.as_mut_view_2d((crop_width, crop_height));
+          cropped_raw_view.send(&mut shaped_crop_view, ctx);
+        }
       }
       _ => unimplemented!(),
     }
@@ -117,7 +146,7 @@ impl DataLayer {
 
 impl Layer for DataLayer {
   fn output_activation(&self) -> Option<SharedDeviceBuf<f32>> {
-    Some(self.out_act.clone())
+    Some(self.crop_image.clone())
   }
 
   fn output_delta(&self) -> Option<SharedDeviceBuf<f32>> {
@@ -130,6 +159,16 @@ pub struct FullyConnLayerConfig {
   pub in_channels:  usize,
   pub out_channels: usize,
   pub act_fun:      ActivationFunction,
+}
+
+impl LayerConfig for FullyConnLayerConfig {
+  fn get_in_dims(&self) -> (usize, usize, usize) {
+    (1, 1, self.in_channels)
+  }
+
+  fn get_out_dims(&self) -> (usize, usize, usize) {
+    (1, 1, self.out_channels)
+  }
 }
 
 pub struct FullyConnLayer {
@@ -202,9 +241,9 @@ impl Layer for FullyConnLayer {
     self.bias.as_mut_view().sync_load(&init_bias.as_view(), ctx);
   }
 
-  fn reset_gradients(&mut self, ctx: &DeviceContext) {
-    self.grad_weights.as_mut_view().matrix_scale(0.0, ctx);
-    self.grad_bias.as_mut_view().row_vector_scale(0.0, ctx);
+  fn reset_gradients(&mut self, descent: &DescentSchedule, ctx: &DeviceContext) {
+    self.grad_weights.as_mut_view().matrix_scale(descent.momentum(), ctx);
+    self.grad_bias.as_mut_view().row_vector_scale(descent.momentum(), ctx);
   }
 
   fn forward(&mut self, ctx: &DeviceContext) {
@@ -288,7 +327,7 @@ impl Layer for FullyConnLayer {
       in_delta.borrow_mut().as_mut_view_2d((in_channels, 1)).matrix_prod(
           1.0,
           &self.weights.as_view(), Transpose::N,
-          &self.out_delta.borrow().as_view_2d((out_channels, 1)), Transpose::N,
+          &self.out_delta.borrow().as_view_2d((1, out_channels)), Transpose::T,
           0.0,
           ctx);
     }
@@ -312,11 +351,17 @@ pub struct Conv2dLayerConfig {
   pub act_fun:      ActivationFunction,
 }
 
-impl Conv2dLayerConfig {
-  pub fn get_out_dims(&self) -> (usize, usize) {
-    let out_width = (self.in_width + 2 * self.conv_pad - self.conv_size) / self.conv_stride + 1;
-    let out_height = (self.in_height + 2 * self.conv_pad - self.conv_size) / self.conv_stride + 1;
-    (out_width, out_height)
+impl LayerConfig for Conv2dLayerConfig {
+  fn get_in_dims(&self) -> (usize, usize, usize) {
+    (self.in_width, self.in_height, self.in_channels)
+  }
+
+  fn get_out_dims(&self) -> (usize, usize, usize) {
+    // XXX(20150926): Note that pool layer uses ceil((L+2*pad-size)/stride)
+    // whereas conv layer uses floor((L+2*pad-size)/stride).
+    let out_width = max(0, (self.in_width + 2 * self.conv_pad - self.conv_size) as isize) as usize / self.conv_stride + 1;
+    let out_height = max(0, (self.in_height + 2 * self.conv_pad - self.conv_size) as isize) as usize / self.conv_stride + 1;
+    (out_width, out_height, self.out_channels)
   }
 }
 
@@ -341,7 +386,7 @@ impl Conv2dLayer {
       in_width, in_height, in_channels,
       conv_size, conv_stride, conv_pad,
       out_channels, ..} = config;
-    let (out_width, out_height) = config.get_out_dims();
+    let (out_width, out_height, _) = config.get_out_dims();
     let out_length = out_width * out_height * out_channels;
     let mut unit = DeviceArray2d::with_zeros((out_width * out_height, 1));
     // FIXME: or .col_vector_scale().
@@ -385,9 +430,9 @@ impl Layer for Conv2dLayer {
     self.bias.as_mut_view().sync_load(&init_bias.as_view(), ctx);
   }
 
-  fn reset_gradients(&mut self, ctx: &DeviceContext) {
-    self.grad_weights.as_mut_view().matrix_scale(0.0, ctx);
-    self.grad_bias.as_mut_view().row_vector_scale(0.0, ctx);
+  fn reset_gradients(&mut self, descent: &DescentSchedule, ctx: &DeviceContext) {
+    self.grad_weights.as_mut_view().matrix_scale(descent.momentum(), ctx);
+    self.grad_bias.as_mut_view().row_vector_scale(descent.momentum(), ctx);
   }
 
   fn forward(&mut self, ctx: &DeviceContext) {
@@ -395,7 +440,7 @@ impl Layer for Conv2dLayer {
       in_width, in_height, in_channels,
       conv_size, conv_stride, conv_pad,
       out_channels, ..} = self.config;
-    let (out_width, out_height) = self.config.get_out_dims();
+    let (out_width, out_height, _) = self.config.get_out_dims();
     let out_length = out_width * out_height * out_channels;
     unsafe { rembrandt_kernel_image_im2col(
         self.in_act.borrow().as_view().as_ptr(),
@@ -449,7 +494,7 @@ impl Layer for Conv2dLayer {
       in_width, in_height, in_channels,
       conv_size, conv_stride, conv_pad,
       out_channels, ..} = self.config;
-    let (out_width, out_height) = self.config.get_out_dims();
+    let (out_width, out_height, _) = self.config.get_out_dims();
     let out_length = out_width * out_height * out_channels;
     match self.config.act_fun {
       ActivationFunction::Identity => {}
@@ -492,14 +537,14 @@ impl Layer for Conv2dLayer {
         1.0,
         ctx,
     );
-    self.grad_col.as_mut_view().matrix_prod(
-        1.0,
-        &self.out_delta.borrow().as_view_2d((out_width * out_height, out_channels)), Transpose::N,
-        &self.weights.as_view(), Transpose::T,
-        0.0,
-        ctx,
-    );
     if let Some(ref mut in_delta) = self.in_delta {
+      self.grad_col.as_mut_view().matrix_prod(
+          1.0,
+          &self.out_delta.borrow().as_view_2d((out_width * out_height, out_channels)), Transpose::N,
+          &self.weights.as_view(), Transpose::T,
+          0.0,
+          ctx,
+      );
       unsafe { rembrandt_kernel_image_col2im(
           self.grad_col.as_view().as_ptr(),
           in_width as i32, in_height as i32, in_channels as i32,
@@ -527,11 +572,17 @@ pub struct PoolLayerConfig {
   pub pool_kind:    PoolKind,
 }
 
-impl PoolLayerConfig {
-  pub fn get_out_dims(&self) -> (usize, usize) {
-    let out_width = (self.in_width + 2 * self.pool_pad - self.pool_size) / self.pool_stride + 1;
-    let out_height = (self.in_height + 2 * self.pool_pad - self.pool_size) / self.pool_stride + 1;
-    (out_width, out_height)
+impl LayerConfig for PoolLayerConfig {
+  fn get_in_dims(&self) -> (usize, usize, usize) {
+    (self.in_width, self.in_height, self.channels)
+  }
+
+  fn get_out_dims(&self) -> (usize, usize, usize) {
+    // XXX(20150926): Note that pool layer uses ceil((L+2*pad-size)/stride)
+    // whereas conv layer uses floor((L+2*pad-size)/stride).
+    let out_width = max(0, (self.in_width + 2 * self.pool_pad - self.pool_size + self.pool_stride - 1) as isize) as usize / self.pool_stride + 1;
+    let out_height = max(0, (self.in_height + 2 * self.pool_pad - self.pool_size + self.pool_stride - 1) as isize) as usize / self.pool_stride + 1;
+    (out_width, out_height, self.channels)
   }
 }
 
@@ -547,7 +598,7 @@ pub struct PoolLayer {
 impl PoolLayer {
   pub fn new(prev_layer: Option<&Layer>, config: PoolLayerConfig) -> PoolLayer {
     let PoolLayerConfig{in_width, in_height, channels, ..} = config;
-    let (out_width, out_height) = config.get_out_dims();
+    let (out_width, out_height, _) = config.get_out_dims();
     let in_length = in_width * in_height * channels;
     let out_length = out_width * out_height * channels;
     PoolLayer{
@@ -617,7 +668,18 @@ impl Layer for PoolLayer {
 
 #[derive(Clone, Copy)]
 pub struct DropoutLayerConfig {
+  pub channels:   usize,
   pub drop_ratio: f32,
+}
+
+impl LayerConfig for DropoutLayerConfig {
+  fn get_in_dims(&self) -> (usize, usize, usize) {
+    (1, 1, self.channels)
+  }
+
+  fn get_out_dims(&self) -> (usize, usize, usize) {
+    (1, 1, self.channels)
+  }
 }
 
 pub struct DropoutLayer {
@@ -686,6 +748,16 @@ impl Layer for DropoutLayer {
 #[derive(Clone, Copy)]
 pub struct SoftmaxLossLayerConfig {
   pub num_categories: usize,
+}
+
+impl LayerConfig for SoftmaxLossLayerConfig {
+  fn get_in_dims(&self) -> (usize, usize, usize) {
+    (1, 1, self.num_categories)
+  }
+
+  fn get_out_dims(&self) -> (usize, usize, usize) {
+    (1, 1, self.num_categories)
+  }
 }
 
 pub struct SoftmaxLossLayer {

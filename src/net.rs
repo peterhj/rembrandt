@@ -1,8 +1,11 @@
 use data::{SampleDatum, SampleLabel};
+use graph::{Graph};
 use layer::*;
 use opt::{DescentConfig, DescentSchedule};
 
 use async_cuda::context::{DeviceContext};
+
+use std::collections::{BTreeMap};
 
 pub trait NetArch {
   fn data_layer(&mut self) -> &mut DataLayer {
@@ -48,7 +51,10 @@ impl NetArch for LinearNetArch {
   }
 }
 
-pub struct DagNetArch;
+pub struct DagNetArch {
+  layer_graph:  Graph<Box<LayerConfig>>,
+  layers:       BTreeMap<usize, Box<Layer>>,
+}
 
 impl DagNetArch {
 }

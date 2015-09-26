@@ -30,8 +30,10 @@ impl AnnealingPolicy {
 #[derive(Clone, Copy)]
 pub struct OptConfig {
   pub minibatch_size: usize,
+  pub max_iters:      usize,
   pub init_step_size: f32,
   pub momentum:       f32,
+  pub l2_reg_coef:    f32,
   pub anneal:         AnnealingPolicy
 }
 
@@ -55,7 +57,7 @@ impl DescentSchedule {
     self.config.anneal.scale_step_size(self.config.init_step_size, t)
   }
 
-  pub fn momentum(&self, t: usize) -> f32 {
+  pub fn momentum(&self/*, t: usize*/) -> f32 {
     self.config.momentum
   }
 }
@@ -76,13 +78,13 @@ impl Optimizer for SgdOptimizer {
   fn train(&self, opt_cfg: &OptConfig, state: &mut OptState, arch: &mut NetArch, train_data: &mut DataSource, test_data: &mut DataSource, ctx: &DeviceContext) {
     let num_epoch_samples = train_data.len();
     let interval_size = 1000;
-    let schedule = DescentSchedule::new(*opt_cfg);
+    let descent = DescentSchedule::new(*opt_cfg);
     loop {
       let mut epoch_correct = 0;
       let mut interval_correct = 0;
-      for layer in arch.hidden_layers() {
+      /*for layer in arch.hidden_layers() {
         layer.reset_gradients(ctx);
-      }
+      }*/
       let mut idx: usize = 0;
       loop {
         let (datum, maybe_label) = match train_data.request_sample() {
@@ -100,9 +102,9 @@ impl Optimizer for SgdOptimizer {
           epoch_correct += 1;
           interval_correct += 1;
         }
-        arch.loss_layer().backward(&schedule, ctx);
+        arch.loss_layer().backward(&descent, ctx);
         for layer in arch.hidden_layers().iter_mut().rev() {
-          layer.backward(&schedule, ctx);
+          layer.backward(&descent, ctx);
         }
         let next_idx = idx + 1;
         if next_idx % interval_size == 0 {
@@ -114,8 +116,8 @@ impl Optimizer for SgdOptimizer {
         }
         if next_idx % opt_cfg.minibatch_size == 0 {
           for layer in arch.hidden_layers() {
-            layer.descend(&schedule, state.t, ctx);
-            layer.reset_gradients(ctx);
+            layer.descend(&descent, state.t, ctx);
+            layer.reset_gradients(&descent, ctx);
           }
           state.t += 1;
         }

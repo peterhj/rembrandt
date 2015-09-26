@@ -1,0 +1,47 @@
+[[layer]]
+name = "data"
+type = "data"
+raw_width = 28
+raw_height = 28
+crop_width = 28
+crop_height = 28
+channels = 1
+
+[[layer]]
+name = "conv1"
+type = "conv2d"
+conv_size = 5
+conv_stride = 1
+conv_pad = 2
+out_channels = 16
+act_func = "rect"
+
+[[layer]]
+name = "pool1"
+type = "pool"
+pool_size = 2
+pool_stride = 2
+pool_pad = 0
+pool_kind = "max"
+
+[[layer]]
+name = "fc1"
+type = "fully_conn"
+out_channels = 100
+act_func = "rect"
+
+[[layer]]
+name = "drop1"
+type = "dropout"
+drop_ratio = 0.1
+
+[[layer]]
+name = "fc2"
+type = "fully_conn"
+out_channels = 10
+act_func = "identity"
+
+[[layer]]
+name = "loss"
+type = "softmax_loss"
+num_categories = 10

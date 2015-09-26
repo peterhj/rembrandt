@@ -25,12 +25,6 @@ path = "../libasync"
 [dependencies.async_cuda]
 path = "../libasync_cuda"
 
-[dependencies.cuda]
-path = "../libcuda"
-
-[dependencies.cuda_blas]
-path = "../libcuda_blas"
-
 [dependencies.linalg]
 path = "../liblinalg"
 

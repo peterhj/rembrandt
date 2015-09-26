@@ -2,6 +2,7 @@ extern crate async_cuda;
 extern crate rembrandt;
 extern crate rand;
 
+use rembrandt::config::{ModelConfigFile};
 use rembrandt::data::{DatasetConfiguration, DataSourceBuilder};
 use rembrandt::layer::*;
 use rembrandt::net::{NetArch, LinearNetArch};
@@ -21,14 +22,20 @@ fn main() {
 
   let descent_cfg = DescentConfig{
     minibatch_size: 50,
+    max_iters:      1200,
     init_step_size: 0.01,
     momentum:       0.0,
+    l2_reg_coef:    0.0,
     anneal:         AnnealingPolicy::None,
   };
   let descent = DescentSchedule::new(descent_cfg);
 
+  let model_conf = ModelConfigFile::open(&PathBuf::from("examples/mnist_lenet.model"));
+
   let data_layer_cfg = DataLayerConfig{
-    width: 28, height: 28, channels: 1,
+    raw_width: 28, raw_height: 28,
+    crop_width: 28, crop_height: 28,
+    channels: 1,
   };
   let conv1_layer_cfg = Conv2dLayerConfig{
     in_width: 28, in_height: 28, in_channels: 1,
@@ -46,6 +53,7 @@ fn main() {
     act_fun: ActivationFunction::Rect,
   };
   let drop1_layer_cfg = DropoutLayerConfig{
+    channels:   100,
     drop_ratio: 0.1,
   };
   let fc2_layer_cfg = FullyConnLayerConfig{
