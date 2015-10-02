@@ -15,6 +15,7 @@ conv_stride = 1
 conv_pad = 2
 out_channels = 16
 act_func = "rect"
+init_weights = { kind = "normal", mean = 0.0, std = 0.01 }
 
 [[layer]]
 name = "pool1"
@@ -29,6 +30,7 @@ name = "fc1"
 type = "fully_conn"
 out_channels = 100
 act_func = "rect"
+init_weights = { kind = "normal", mean = 0.0, std = 0.01 }
 
 [[layer]]
 name = "drop1"
@@ -40,6 +42,7 @@ name = "fc2"
 type = "fully_conn"
 out_channels = 10
 act_func = "identity"
+init_weights = { kind = "normal", mean = 0.0, std = 0.01 }
 
 [[layer]]
 name = "loss"

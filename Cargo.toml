@@ -8,6 +8,10 @@ name = "rembrandt"
 path = "src/lib.rs"
 
 [[bin]]
+name = "bench-cudnn"
+path = "tools/bench-cudnn.rs"
+
+[[bin]]
 name = "run-rembrandt"
 path = "tools/run-rembrandt.rs"
 
@@ -24,6 +28,9 @@ path = "../libasync"
 
 [dependencies.async_cuda]
 path = "../libasync_cuda"
+
+[dependencies.cuda_dnn]
+path = "../libcuda_dnn"
 
 [dependencies.linalg]
 path = "../liblinalg"

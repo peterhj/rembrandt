@@ -4,6 +4,8 @@ use net::{NetArch};
 
 use async_cuda::context::{DeviceContext};
 
+use time::{Duration, get_time};
+
 #[derive(Clone, Copy)]
 pub enum AnnealingPolicy {
   None,
@@ -34,7 +36,8 @@ pub struct OptConfig {
   pub init_step_size: f32,
   pub momentum:       f32,
   pub l2_reg_coef:    f32,
-  pub anneal:         AnnealingPolicy
+  pub anneal:         AnnealingPolicy,
+  pub interval_size:  usize,
 }
 
 pub type DescentConfig = OptConfig;
@@ -60,6 +63,16 @@ impl DescentSchedule {
   pub fn momentum(&self/*, t: usize*/) -> f32 {
     self.config.momentum
   }
+
+  pub fn l2_reg_coef(&self/*, t: usize*/) -> f32 {
+    self.config.l2_reg_coef
+  }
+}
+
+#[derive(Clone, Copy)]
+pub enum OptPhase {
+  Training,
+  Evaluation,
 }
 
 pub struct OptState {
@@ -69,88 +82,80 @@ pub struct OptState {
 
 pub trait Optimizer {
   fn train(&self, opt_cfg: &OptConfig, state: &mut OptState, arch: &mut NetArch, train_data: &mut DataSource, test_data: &mut DataSource, ctx: &DeviceContext);
-  fn eval(&self, opt_cfg: &OptConfig, arch: &mut NetArch, eval_data: &mut DataSource, ctx: &DeviceContext);
+  fn eval(&self, arch: &mut NetArch, eval_data: &mut DataSource, ctx: &DeviceContext);
 }
 
 pub struct SgdOptimizer;
 
 impl Optimizer for SgdOptimizer {
   fn train(&self, opt_cfg: &OptConfig, state: &mut OptState, arch: &mut NetArch, train_data: &mut DataSource, test_data: &mut DataSource, ctx: &DeviceContext) {
-    let num_epoch_samples = train_data.len();
-    let interval_size = 1000;
+    let epoch_size = (train_data.len() / opt_cfg.minibatch_size) * opt_cfg.minibatch_size;
     let descent = DescentSchedule::new(*opt_cfg);
+    let mut start_time = get_time();
+    let mut interval_correct = 0;
+    let mut idx = 0;
     loop {
-      let mut epoch_correct = 0;
-      let mut interval_correct = 0;
-      /*for layer in arch.hidden_layers() {
-        layer.reset_gradients(ctx);
-      }*/
-      let mut idx: usize = 0;
-      loop {
-        let (datum, maybe_label) = match train_data.request_sample() {
-          Some(x) => x,
-          None => break,
-        };
-        arch.data_layer().load_sample(&datum, ctx);
-        arch.loss_layer().load_sample(maybe_label, ctx);
-        arch.data_layer().forward(ctx);
-        for layer in arch.hidden_layers() {
-          layer.forward(ctx);
+      // XXX(20151002): gradients are initialized to zero.
+      train_data.each_sample(&mut |epoch_idx, datum, maybe_label| {
+        if epoch_idx >= epoch_size {
+          return;
         }
-        arch.loss_layer().forward(ctx);
+        arch.data_layer().load_sample(datum, ctx);
+        arch.loss_layer().load_sample(maybe_label, ctx);
+        arch.data_layer().forward(OptPhase::Training, ctx);
+        for layer in arch.hidden_layers() {
+          layer.forward(OptPhase::Training, ctx);
+        }
+        arch.loss_layer().forward(OptPhase::Training, ctx);
         if arch.loss_layer().correct_guess(&ctx) {
-          epoch_correct += 1;
           interval_correct += 1;
         }
         arch.loss_layer().backward(&descent, ctx);
         for layer in arch.hidden_layers().iter_mut().rev() {
           layer.backward(&descent, ctx);
         }
-        let next_idx = idx + 1;
-        if next_idx % interval_size == 0 {
-          println!("DEBUG: interval: {}/{} train accuracy: {:.3}",
-              next_idx, num_epoch_samples,
-              interval_correct as f32 / interval_size as f32);
+        idx += 1;
+        if idx % opt_cfg.interval_size == 0 {
+          let elapsed_time = get_time();
+          let elapsed_ms = (elapsed_time - start_time).num_milliseconds();
+          start_time = elapsed_time;
+          println!("DEBUG: interval: {}/{} train accuracy: {:.3} elapsed: {:.3} s",
+              epoch_idx + 1, epoch_size,
+              interval_correct as f32 / opt_cfg.interval_size as f32,
+              elapsed_ms as f32 * 0.001,
+          );
           interval_correct = 0;
-          self.eval(opt_cfg, arch, test_data, ctx);
         }
-        if next_idx % opt_cfg.minibatch_size == 0 {
+        if idx % (100 * opt_cfg.interval_size) == 0 {
+          self.eval(arch, test_data, ctx);
+        }
+        if idx % opt_cfg.minibatch_size == 0 {
           for layer in arch.hidden_layers() {
             layer.descend(&descent, state.t, ctx);
             layer.reset_gradients(&descent, ctx);
           }
           state.t += 1;
         }
-        idx += 1;
-      }
-      println!("DEBUG: epoch: {} train accuracy: {:.3}", state.epoch, epoch_correct as f32 / num_epoch_samples as f32);
+      });
       state.epoch += 1;
-      train_data.reset();
     }
   }
 
-  fn eval(&self, opt_cfg: &OptConfig, arch: &mut NetArch, eval_data: &mut DataSource, ctx: &DeviceContext) {
-    let num_epoch_samples = eval_data.len();
+  fn eval(&self, arch: &mut NetArch, eval_data: &mut DataSource, ctx: &DeviceContext) {
+    let epoch_size = eval_data.len();
     let mut epoch_correct = 0;
-    let mut idx: usize = 0;
-    loop {
-      let (datum, maybe_label) = match eval_data.request_sample() {
-        Some(x) => x,
-        None => break,
-      };
-      arch.data_layer().load_sample(&datum, ctx);
+    eval_data.each_sample(&mut |_, datum, maybe_label| {
+      arch.data_layer().load_sample(datum, ctx);
       arch.loss_layer().load_sample(maybe_label, ctx);
-      arch.data_layer().forward(ctx);
+      arch.data_layer().forward(OptPhase::Evaluation, ctx);
       for layer in arch.hidden_layers() {
-        layer.forward(ctx);
+        layer.forward(OptPhase::Evaluation, ctx);
       }
-      arch.loss_layer().forward(ctx);
+      arch.loss_layer().forward(OptPhase::Evaluation, ctx);
       if arch.loss_layer().correct_guess(&ctx) {
         epoch_correct += 1;
       }
-      idx += 1;
-    }
-    println!("DEBUG: test accuracy: {:.3}", epoch_correct as f32 / num_epoch_samples as f32);
-    eval_data.reset();
+    });
+    println!("DEBUG: test accuracy: {:.3}", epoch_correct as f32 / epoch_size as f32);
   }
 }

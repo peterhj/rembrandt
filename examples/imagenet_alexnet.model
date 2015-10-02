@@ -1,0 +1,152 @@
+[opt]
+minibatch_size    = 64
+max_iters         = 450000
+init_step_size    = 0.01
+momentum          = 0.9
+l2_reg_coef       = 0.0005
+annealing_policy  = { kind = "step", step_iters = 200000, decay = 0.1 }
+
+[[layer]]
+name = "data"
+type = "data"
+raw_width = 256
+raw_height = 256
+crop_width = 224
+crop_height = 224
+channels = 3
+
+[[layer]]
+names = ["conv1a", "conv1b"]
+input = "data"
+type = "conv2d"
+conv_size = 11
+conv_stride = 4
+conv_pad = 0
+out_channels = 48
+act_func = "identity"
+init_weights = { kind = "normal", mean = 0.0, std = 0.01 }
+init_bias = { kind = "zeros" }
+
+[[layer]]
+names = ["rnorm1a", "rnorm1b"]
+type = "local_res_norm"
+cross_size = 5
+scale = 0.0001
+power = 0.75
+min_div = 2
+
+[[layer]]
+names = ["pool1a", "pool1b"]
+type = "pool"
+pool_size = 3
+pool_stride = 2
+pool_pad = 0
+act_func = "rect"
+
+[[layer]]
+names = ["conv2a", "conv2b"]
+type = "conv2d"
+conv_size = 5
+conv_stride = 1
+conv_pad = 2
+out_channels = 128
+act_func = "identity"
+init_weights = { kind = "normal", mean = 0.0, std = 0.01 }
+init_bias = { kind = "zeros" }
+
+[[layer]]
+names = ["rnorm2a", "rnorm2b"]
+type = "local_res_norm"
+cross_size = 5
+scale = 0.0001
+power = 0.75
+min_div = 2
+
+[[layer]]
+names = ["pool2a", "pool2b"]
+pool_size = 3
+pool_stride = 2
+pool_pad = 0
+act_func = "identity"
+
+[[layer]]
+names = ["conv3a", "conv3b"]
+inputs = ["pool2a", "pool2b"]
+type = "conv2d"
+conv_size = 3
+conv_stride = 1
+conv_pad = 1
+out_channels = 192
+act_func = "relu"
+init_weights = { kind = "normal", mean = 0.0, std = 0.03 }
+init_bias = { kind = "zeros" }
+
+[[layer]]
+names = ["conv4a", "conv4b"]
+type = "conv2d"
+conv_size = 3
+conv_stride = 1
+conv_pad = 1
+out_channels = 192
+act_func = "relu"
+init_weights = { kind = "normal", mean = 0.0, std = 0.03 }
+init_bias = { kind = "zeros" }
+
+[[layer]]
+names = ["conv5a", "conv5b"]
+type = "conv2d"
+conv_size = 3
+conv_stride = 1
+conv_pad = 1
+out_channels = 128
+act_func = "identity"
+init_weights = { kind = "normal", mean = 0.0, std = 0.03 }
+init_bias = { kind = "zeros" }
+
+[[layer]]
+names = ["pool3a", "pool3b"]
+pool_size = 3
+pool_stride = 2
+pool_pad = 0
+act_func = "relu"
+
+[[layer]]
+names = ["fc2048a", "fc2048b"]
+inputs = ["pool3a", "pool3b"]
+type = "fully_conn"
+out_channels = 2048
+act_func = "relu"
+init_weights = { kind = "normal", mean = 0.0, std = 0.01 }
+init_bias = { kind = "zeros" }
+
+[[layer]]
+names = ["dropout1a", "dropout1b"]
+type = "dropout"
+drop_ratio = 0.5
+
+[[layer]]
+names = ["fc2048ba", "fc2048bb"]
+inputs = ["dropout1a", "dropout1b"]
+type = "fully_conn"
+out_channels = 2048
+act_func = "relu"
+init_weights = { kind = "normal", mean = 0.0, std = 0.01 }
+init_bias = { kind = "zeros" }
+
+[[layer]]
+names = ["dropout2a", "dropout2b"]
+type = "dropout"
+drop_ratio = 0.5
+
+[[layer]]
+name = "fc1000"
+inputs = ["dropout2a", "dropout2b"]
+out_channels = 1000
+act_func = "identity"
+init_weights = { kind = "normal", mean = 0.0, std = 0.01 }
+init_bias = { kind = "zeros" }
+
+[[layer]]
+name = "loss"
+type = "softmax_loss"
+num_categories = 1000

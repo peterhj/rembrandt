@@ -26,17 +26,23 @@ impl<T> Graph<T> {
   pub fn insert_vertex(&mut self, vertex: T) -> usize {
     let id = self.alloc_id();
     self.vertexes.insert(id, vertex);
+    if !self.in_edges.contains_key(&id) {
+      self.in_edges.insert(id, BTreeSet::new());
+    }
+    if !self.out_edges.contains_key(&id) {
+      self.out_edges.insert(id, BTreeSet::new());
+    }
     id
   }
 
   pub fn insert_edge(&mut self, src: usize, dst: usize) {
-    if !self.in_edges.contains_key(&dst) {
+    /*if !self.in_edges.contains_key(&dst) {
       self.in_edges.insert(dst, BTreeSet::new());
-    }
+    }*/
     self.in_edges.get_mut(&dst).unwrap().insert(src);
-    if !self.out_edges.contains_key(&src) {
+    /*if !self.out_edges.contains_key(&src) {
       self.out_edges.insert(src, BTreeSet::new());
-    }
+    }*/
     self.out_edges.get_mut(&src).unwrap().insert(dst);
   }
 

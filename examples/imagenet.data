@@ -1,0 +1,11 @@
+# ILSVRC2012.
+
+[dataset.train]
+source    = "lmdb_caffe"
+data_path = "/data1/ilsvrc2012/ilsvrc2012_train_256x256.lmdb"
+mean_path = "/data1/ilsvrc2012/imagenet_mean_256x256.ndarray"
+
+[dataset.valid]
+source    = "lmdb_caffe"
+data_path = "/data1/ilsvrc2012/ilsvrc2012_valid_256x256.lmdb"
+mean_path = "/data1/ilsvrc2012/imagenet_mean_256x256.ndarray"

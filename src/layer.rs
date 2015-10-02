@@ -1,5 +1,5 @@
 use data::{SampleDatum, SampleLabel};
-use opt::{DescentConfig, DescentSchedule};
+use opt::{DescentConfig, DescentSchedule, OptPhase};
 
 use array::{View, MutView, WithZeros, ArrayDeserialize, Array2d};
 use async::{AsyncContext, AsyncLoad, AsyncStore, AsyncSend};
@@ -16,18 +16,20 @@ use rand::distributions::normal::{Normal};
 use rand::distributions::range::{Range};
 use std::cell::{RefCell};
 use std::cmp::{max};
+use std::collections::{BTreeMap};
+use std::fmt::{Debug};
 use std::fs::{File};
 use std::path::{PathBuf};
 use std::rc::{Rc};
 
-#[derive(Clone, Copy)]
-pub enum LayerInitialization {
+#[derive(Clone, Copy, Debug)]
+pub enum ParamsInitialization {
   Zeros,
-  Normal{std: f32},
+  Normal{mean: f32, std: f32},
   Glorot,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum ActivationFunction {
   Identity,
   Rect,
@@ -35,7 +37,7 @@ pub enum ActivationFunction {
   Tanh,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum PoolKind {
   Max,
   Average,
@@ -43,27 +45,25 @@ pub enum PoolKind {
 
 pub type SharedDeviceBuf<T> = Rc<RefCell<DeviceBuf<T>>>;
 
-pub trait LayerConfig {
+pub trait LayerConfig: Debug {
   fn get_in_dims(&self) -> (usize, usize, usize);
   fn get_out_dims(&self) -> (usize, usize, usize);
 }
 
 pub trait Layer {
-  fn output_activation(&self) -> Option<SharedDeviceBuf<f32>>;
-  fn output_delta(&self) -> Option<SharedDeviceBuf<f32>>;
+  fn get_id(&self) -> usize;
+  fn output_activation(&self, out_layer_id: usize) -> Option<SharedDeviceBuf<f32>>;
+  fn output_delta(&self, out_layer_id: usize) -> Option<SharedDeviceBuf<f32>>;
 
   fn initialize_params(&mut self, ctx: &DeviceContext) {}
-  fn reset_gradients(&mut self, descent: &DescentSchedule, ctx: &DeviceContext) {}
-  fn forward(&mut self, ctx: &DeviceContext) {}
+  fn load(&mut self, datum: &SampleDatum, maybe_label: Option<SampleLabel>, ctx: &DeviceContext) {}
+  fn forward(&mut self, phase: OptPhase, ctx: &DeviceContext) {}
   fn backward(&mut self, descent: &DescentSchedule, ctx: &DeviceContext) {}
   fn descend(&mut self, descent: &DescentSchedule, t: usize, ctx: &DeviceContext) {}
+  fn reset_gradients(&mut self, descent: &DescentSchedule, ctx: &DeviceContext) {}
 }
 
-pub trait LossLayer {
-  // TODO
-}
-
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct DataLayerConfig {
   pub raw_width:    usize,
   pub raw_height:   usize,
@@ -86,17 +86,19 @@ pub struct DataLayer {
   pub in_bytes:   DeviceBuf<u8>,
   pub raw_image:  DeviceBuf<f32>,
   pub crop_image: SharedDeviceBuf<f32>,
+  pub layer_id:   usize,
   pub config:     DataLayerConfig,
 }
 
 impl DataLayer {
-  pub fn new(config: DataLayerConfig) -> DataLayer {
+  pub fn new(layer_id: usize, config: DataLayerConfig) -> DataLayer {
     let raw_length = config.raw_width * config.raw_height * config.channels;
     let crop_length = config.crop_width * config.crop_height * config.channels;
     DataLayer{
       in_bytes:   DeviceBuf::with_zeros(raw_length),
       raw_image:  DeviceBuf::with_zeros(raw_length),
       crop_image: Rc::new(RefCell::new(DeviceBuf::with_zeros(crop_length))),
+      layer_id:   layer_id,
       config:     config,
     }
   }
@@ -145,16 +147,125 @@ impl DataLayer {
 }
 
 impl Layer for DataLayer {
-  fn output_activation(&self) -> Option<SharedDeviceBuf<f32>> {
+  fn get_id(&self) -> usize {
+    self.layer_id
+  }
+
+  fn output_activation(&self, out_layer_id: usize) -> Option<SharedDeviceBuf<f32>> {
     Some(self.crop_image.clone())
   }
 
-  fn output_delta(&self) -> Option<SharedDeviceBuf<f32>> {
+  fn output_delta(&self, out_layer_id: usize) -> Option<SharedDeviceBuf<f32>> {
     None
   }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
+pub struct SplitLayerConfig {
+  pub width:    usize,
+  pub height:   usize,
+  pub channels: usize,
+  pub fan_out:  usize,
+}
+
+impl LayerConfig for SplitLayerConfig {
+  fn get_in_dims(&self) -> (usize, usize, usize) {
+    (self.width, self.height, self.channels)
+  }
+
+  fn get_out_dims(&self) -> (usize, usize, usize) {
+    (self.width, self.height, self.channels)
+  }
+}
+
+pub struct SplitLayer {
+  pub in_act:     SharedDeviceBuf<f32>,
+  pub in_delta:   SharedDeviceBuf<f32>,
+  pub out_acts:   BTreeMap<usize, SharedDeviceBuf<f32>>,
+  pub out_deltas: BTreeMap<usize, SharedDeviceBuf<f32>>,
+  pub layer_id:   usize,
+  pub config:     SplitLayerConfig,
+}
+
+impl SplitLayer {
+  // TODO
+}
+
+impl Layer for SplitLayer {
+  fn get_id(&self) -> usize {
+    self.layer_id
+  }
+
+  fn output_activation(&self, out_layer_id: usize) -> Option<SharedDeviceBuf<f32>> {
+    Some(self.out_acts[&out_layer_id].clone())
+  }
+
+  fn output_delta(&self, out_layer_id: usize) -> Option<SharedDeviceBuf<f32>> {
+    Some(self.out_deltas[&out_layer_id].clone())
+  }
+
+  fn forward(&mut self, phase: OptPhase, ctx: &DeviceContext) {
+    let in_act = self.in_act.borrow();
+    let in_act_view = in_act.as_view();
+    for (_, out_act) in self.out_acts.iter_mut() {
+      let mut out_act = out_act.borrow_mut();
+      let mut out_act_view = out_act.as_mut_view();
+      in_act_view.send(&mut out_act_view, ctx);
+    }
+  }
+
+  fn backward(&mut self, descent: &DescentSchedule, ctx: &DeviceContext) {
+    let dims = self.config.get_in_dims();
+    let length = dims.0 * dims.1 * dims.2;
+    for (idx, (_, out_delta)) in self.out_deltas.iter().enumerate() {
+      let out_delta = out_delta.borrow();
+      let out_delta_view = out_delta.as_view_2d((1, length));
+      let mut in_delta = self.in_delta.borrow_mut();
+      let mut in_delta_view = in_delta.as_mut_view_2d((1, length));
+      if idx == 0 {
+        out_delta_view.send(&mut in_delta_view, ctx);
+      } else {
+        in_delta_view.row_vector_sum(
+            1.0,
+            &out_delta_view,
+            ctx,
+        );
+      }
+    }
+  }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct JoinLayerConfig {
+  pub width:        usize,
+  pub height:       usize,
+  pub in_channels:  usize,
+  pub out_channels: usize,
+  pub fan_in:       usize,
+}
+
+impl LayerConfig for JoinLayerConfig {
+  fn get_in_dims(&self) -> (usize, usize, usize) {
+    (self.width, self.height, self.in_channels)
+  }
+
+  fn get_out_dims(&self) -> (usize, usize, usize) {
+    (self.width, self.height, self.out_channels)
+  }
+}
+
+pub struct JoinLayer {
+  pub in_acts:    BTreeMap<usize, SharedDeviceBuf<f32>>,
+  pub in_deltas:  BTreeMap<usize, SharedDeviceBuf<f32>>,
+  pub out_act:    SharedDeviceBuf<f32>,
+  pub out_delta:  SharedDeviceBuf<f32>,
+  pub layer_id:   usize,
+  pub config:     JoinLayerConfig,
+}
+
+// TODO
+
+#[derive(Clone, Copy, Debug)]
 pub struct FullyConnLayerConfig {
   pub in_channels:  usize,
   pub out_channels: usize,
@@ -180,20 +291,22 @@ pub struct FullyConnLayer {
   pub bias:         DeviceArray2d<f32>,
   pub grad_weights: DeviceArray2d<f32>,
   pub grad_bias:    DeviceArray2d<f32>,
+  pub layer_id:     usize,
   pub config:       FullyConnLayerConfig,
 }
 
 impl FullyConnLayer {
-  pub fn new(prev_layer: Option<&Layer>, config: FullyConnLayerConfig) -> FullyConnLayer {
+  pub fn new(layer_id: usize, config: FullyConnLayerConfig, prev_layer: Option<&Layer>) -> FullyConnLayer {
     FullyConnLayer{
-      in_act:       prev_layer.unwrap().output_activation().unwrap(),
-      in_delta:     prev_layer.unwrap().output_delta(),
+      in_act:       prev_layer.unwrap().output_activation(-1).unwrap(),
+      in_delta:     prev_layer.unwrap().output_delta(-1),
       out_act:      Rc::new(RefCell::new(DeviceBuf::with_zeros(config.out_channels))),
       out_delta:    Rc::new(RefCell::new(DeviceBuf::with_zeros(config.out_channels))),
       weights:      DeviceArray2d::with_zeros((config.in_channels, config.out_channels)),
       bias:         DeviceArray2d::with_zeros((1, config.out_channels)),
       grad_weights: DeviceArray2d::with_zeros((config.in_channels, config.out_channels)),
       grad_bias:    DeviceArray2d::with_zeros((1, config.out_channels)),
+      layer_id:     layer_id,
       config:       config,
     }
   }
@@ -218,11 +331,15 @@ impl FullyConnLayer {
 }
 
 impl Layer for FullyConnLayer {
-  fn output_activation(&self) -> Option<SharedDeviceBuf<f32>> {
+  fn get_id(&self) -> usize {
+    self.layer_id
+  }
+
+  fn output_activation(&self, out_layer_id: usize) -> Option<SharedDeviceBuf<f32>> {
     Some(self.out_act.clone())
   }
 
-  fn output_delta(&self) -> Option<SharedDeviceBuf<f32>> {
+  fn output_delta(&self, out_layer_id: usize) -> Option<SharedDeviceBuf<f32>> {
     Some(self.out_delta.clone())
   }
 
@@ -246,7 +363,7 @@ impl Layer for FullyConnLayer {
     self.grad_bias.as_mut_view().row_vector_scale(descent.momentum(), ctx);
   }
 
-  fn forward(&mut self, ctx: &DeviceContext) {
+  fn forward(&mut self, phase: OptPhase, ctx: &DeviceContext) {
     let (in_channels, out_channels) = self.weights.as_view().get_bound();
     self.out_act.borrow_mut().as_mut_view_2d((1, out_channels)).matrix_prod(
         1.0,
@@ -334,12 +451,14 @@ impl Layer for FullyConnLayer {
   }
 
   fn descend(&mut self, descent: &DescentSchedule, t: usize, ctx: &DeviceContext) {
+    self.grad_weights.as_mut_view().matrix_sum(descent.l2_reg_coef(), &self.weights.as_view(), ctx);
+    self.grad_bias.as_mut_view().matrix_sum(descent.l2_reg_coef(), &self.bias.as_view(), ctx);
     self.weights.as_mut_view().matrix_sum(-descent.step_size(t), &self.grad_weights.as_view(), ctx);
     self.bias.as_mut_view().matrix_sum(-descent.step_size(t), &self.grad_bias.as_view(), ctx);
   }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct Conv2dLayerConfig {
   pub in_width:     usize,
   pub in_height:    usize,
@@ -349,6 +468,7 @@ pub struct Conv2dLayerConfig {
   pub conv_pad:     usize,
   pub out_channels: usize,
   pub act_fun:      ActivationFunction,
+  pub init_weights: ParamsInitialization,
 }
 
 impl LayerConfig for Conv2dLayerConfig {
@@ -377,11 +497,12 @@ pub struct Conv2dLayer {
   pub bias:         DeviceArray2d<f32>,
   pub grad_weights: DeviceArray2d<f32>,
   pub grad_bias:    DeviceArray2d<f32>,
+  pub layer_id:     usize,
   pub config:       Conv2dLayerConfig,
 }
 
 impl Conv2dLayer {
-  pub fn new(prev_layer: Option<&Layer>, config: Conv2dLayerConfig, ctx: &DeviceContext) -> Conv2dLayer {
+  pub fn new(layer_id: usize, config: Conv2dLayerConfig, prev_layer: Option<&Layer>, ctx: &DeviceContext) -> Conv2dLayer {
     let Conv2dLayerConfig{
       in_width, in_height, in_channels,
       conv_size, conv_stride, conv_pad,
@@ -392,8 +513,8 @@ impl Conv2dLayer {
     // FIXME: or .col_vector_scale().
     unit.as_mut_view().set_constant(1.0, ctx);
     Conv2dLayer{
-      in_act:       prev_layer.unwrap().output_activation().unwrap(),
-      in_delta:     prev_layer.unwrap().output_delta(),
+      in_act:       prev_layer.unwrap().output_activation(-1).unwrap(),
+      in_delta:     prev_layer.unwrap().output_delta(-1),
       in_col:       DeviceArray2d::with_zeros((out_width * out_height, conv_size * conv_size * in_channels)),
       grad_col:     DeviceArray2d::with_zeros((out_width * out_height, conv_size * conv_size * in_channels)),
       unit:         unit,
@@ -403,27 +524,37 @@ impl Conv2dLayer {
       bias:         DeviceArray2d::with_zeros((1, out_channels)),
       grad_weights: DeviceArray2d::with_zeros((conv_size * conv_size * in_channels, out_channels)),
       grad_bias:    DeviceArray2d::with_zeros((1, out_channels)),
+      layer_id:     layer_id,
       config:       config,
     }
   }
 }
 
 impl Layer for Conv2dLayer {
-  fn output_activation(&self) -> Option<SharedDeviceBuf<f32>> {
+  fn get_id(&self) -> usize {
+    self.layer_id
+  }
+
+  fn output_activation(&self, out_layer_id: usize) -> Option<SharedDeviceBuf<f32>> {
     Some(self.out_act.clone())
   }
 
-  fn output_delta(&self) -> Option<SharedDeviceBuf<f32>> {
+  fn output_delta(&self, out_layer_id: usize) -> Option<SharedDeviceBuf<f32>> {
     Some(self.out_delta.clone())
   }
 
   fn initialize_params(&mut self, ctx: &DeviceContext) {
     let Conv2dLayerConfig{in_channels, conv_size, out_channels, ..} = self.config;
     let mut rng = thread_rng();
-    let dist = Normal::new(0.0, 0.01);
     let mut init_weights = Array2d::with_zeros((conv_size * conv_size * in_channels, out_channels));
-    for w in init_weights.as_mut_view().as_mut_slice().iter_mut() {
-      *w = dist.ind_sample(&mut rng) as f32;
+    match self.config.init_weights {
+      ParamsInitialization::Normal{mean, std} => {
+        let dist = Normal::new(mean as f64, std as f64);
+        for w in init_weights.as_mut_view().as_mut_slice().iter_mut() {
+          *w = dist.ind_sample(&mut rng) as f32;
+        }
+      }
+      _ => unimplemented!(),
     }
     let init_bias = Array2d::with_zeros((1, out_channels));
     self.weights.as_mut_view().sync_load(&init_weights.as_view(), ctx);
@@ -435,20 +566,24 @@ impl Layer for Conv2dLayer {
     self.grad_bias.as_mut_view().row_vector_scale(descent.momentum(), ctx);
   }
 
-  fn forward(&mut self, ctx: &DeviceContext) {
+  fn forward(&mut self, phase: OptPhase, ctx: &DeviceContext) {
     let Conv2dLayerConfig{
       in_width, in_height, in_channels,
       conv_size, conv_stride, conv_pad,
       out_channels, ..} = self.config;
     let (out_width, out_height, _) = self.config.get_out_dims();
     let out_length = out_width * out_height * out_channels;
-    unsafe { rembrandt_kernel_image_im2col(
-        self.in_act.borrow().as_view().as_ptr(),
-        in_width as i32, in_height as i32, in_channels as i32,
-        conv_size as i32, conv_stride as i32, conv_pad as i32,
-        self.in_col.as_mut_view().as_mut_ptr(),
-        ctx.stream.ptr,
-    ) };
+    /*if conv_size == 1 && conv_stride == 1 && conv_pad == 0 {
+      self.in_act.borrow().as_view_2d((out_width * out_height, in_channels)).send(&mut self.in_col.as_mut_view(), ctx);
+    } else {*/
+      unsafe { rembrandt_kernel_image_im2col(
+          self.in_act.borrow().as_view().as_ptr(),
+          in_width as i32, in_height as i32, in_channels as i32,
+          conv_size as i32, conv_stride as i32, conv_pad as i32,
+          self.in_col.as_mut_view().as_mut_ptr(),
+          ctx.stream.ptr,
+      ) };
+    //}
     self.out_act.borrow_mut().as_mut_view_2d((out_width * out_height, out_channels)).matrix_prod(
         1.0,
         &self.in_col.as_view(), Transpose::N,
@@ -545,23 +680,29 @@ impl Layer for Conv2dLayer {
           0.0,
           ctx,
       );
-      unsafe { rembrandt_kernel_image_col2im(
-          self.grad_col.as_view().as_ptr(),
-          in_width as i32, in_height as i32, in_channels as i32,
-          conv_size as i32, conv_stride as i32, conv_pad as i32,
-          in_delta.borrow_mut().as_mut_view().as_mut_ptr(),
-          ctx.stream.ptr,
-      ) };
+      /*if conv_size == 1 && conv_stride == 1 && conv_pad == 0 {
+        self.grad_col.as_view().send(&mut in_delta.borrow_mut().as_mut_view_2d((out_width * out_height, in_channels)), ctx);
+      } else {*/
+        unsafe { rembrandt_kernel_image_col2im(
+            self.grad_col.as_view().as_ptr(),
+            in_width as i32, in_height as i32, in_channels as i32,
+            conv_size as i32, conv_stride as i32, conv_pad as i32,
+            in_delta.borrow_mut().as_mut_view().as_mut_ptr(),
+            ctx.stream.ptr,
+        ) };
+      //}
     }
   }
 
   fn descend(&mut self, descent: &DescentSchedule, t: usize, ctx: &DeviceContext) {
+    self.grad_weights.as_mut_view().matrix_sum(descent.l2_reg_coef(), &self.weights.as_view(), ctx);
+    self.grad_bias.as_mut_view().matrix_sum(descent.l2_reg_coef(), &self.bias.as_view(), ctx);
     self.weights.as_mut_view().matrix_sum(-descent.step_size(t), &self.grad_weights.as_view(), ctx);
     self.bias.as_mut_view().matrix_sum(-descent.step_size(t), &self.grad_bias.as_view(), ctx);
   }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct PoolLayerConfig {
   pub in_width:     usize,
   pub in_height:    usize,
@@ -592,36 +733,42 @@ pub struct PoolLayer {
   pub in_mask:    DeviceBuf<i32>,
   pub out_act:    SharedDeviceBuf<f32>,
   pub out_delta:  SharedDeviceBuf<f32>,
+  pub layer_id:   usize,
   pub config:     PoolLayerConfig,
 }
 
 impl PoolLayer {
-  pub fn new(prev_layer: Option<&Layer>, config: PoolLayerConfig) -> PoolLayer {
+  pub fn new(layer_id: usize, config: PoolLayerConfig, prev_layer: Option<&Layer>) -> PoolLayer {
     let PoolLayerConfig{in_width, in_height, channels, ..} = config;
     let (out_width, out_height, _) = config.get_out_dims();
     let in_length = in_width * in_height * channels;
     let out_length = out_width * out_height * channels;
     PoolLayer{
-      in_act:     prev_layer.unwrap().output_activation().unwrap(),
-      in_delta:   prev_layer.unwrap().output_delta().unwrap(),
+      in_act:     prev_layer.unwrap().output_activation(-1).unwrap(),
+      in_delta:   prev_layer.unwrap().output_delta(-1).unwrap(),
       in_mask:    DeviceBuf::with_zeros(in_length),
       out_act:    Rc::new(RefCell::new(DeviceBuf::with_zeros(out_length))),
       out_delta:  Rc::new(RefCell::new(DeviceBuf::with_zeros(out_length))),
+      layer_id:   layer_id,
       config:     config,
     }
   }
 }
 
 impl Layer for PoolLayer {
-  fn output_activation(&self) -> Option<SharedDeviceBuf<f32>> {
+  fn get_id(&self) -> usize {
+    self.layer_id
+  }
+
+  fn output_activation(&self, out_layer_id: usize) -> Option<SharedDeviceBuf<f32>> {
     Some(self.out_act.clone())
   }
 
-  fn output_delta(&self) -> Option<SharedDeviceBuf<f32>> {
+  fn output_delta(&self, out_layer_id: usize) -> Option<SharedDeviceBuf<f32>> {
     Some(self.out_delta.clone())
   }
 
-  fn forward(&mut self, ctx: &DeviceContext) {
+  fn forward(&mut self, phase: OptPhase, ctx: &DeviceContext) {
     let PoolLayerConfig{
       in_width, in_height, channels,
       pool_size, pool_stride, pool_pad, ..} = self.config;
@@ -637,8 +784,13 @@ impl Layer for PoolLayer {
         ) };
       }
       PoolKind::Average => {
-        // TODO(20150924)
-        unimplemented!();
+        unsafe { rembrandt_kernel_image_average_pool(
+            self.in_act.borrow().as_view().as_ptr(),
+            in_width as i32, in_height as i32, channels as i32,
+            pool_size as i32, pool_stride as i32, pool_pad as i32,
+            self.out_act.borrow_mut().as_mut_view().as_mut_ptr(),
+            ctx.stream.ptr,
+        ) };
       }
     }
   }
@@ -659,14 +811,74 @@ impl Layer for PoolLayer {
         ) };
       }
       PoolKind::Average => {
-        // TODO(20150924)
-        unimplemented!();
+        unsafe { rembrandt_kernel_image_average_pool_backward(
+            self.out_delta.borrow().as_view().as_ptr(),
+            in_width as i32, in_height as i32, channels as i32,
+            pool_size as i32, pool_stride as i32, pool_pad as i32,
+            self.in_delta.borrow_mut().as_mut_view().as_mut_ptr(),
+            ctx.stream.ptr,
+        ) };
       }
     }
   }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
+pub struct LocalResNormLayerConfig {
+  pub channels:   usize,
+  pub cross_size: usize,
+}
+
+impl LayerConfig for LocalResNormLayerConfig {
+  fn get_in_dims(&self) -> (usize, usize, usize) {
+    (0, 0, 0) // FIXME
+  }
+
+  fn get_out_dims(&self) -> (usize, usize, usize) {
+    (0, 0, 0) // FIXME
+  }
+}
+
+pub struct LocalResNormLayer {
+  pub layer_id:   usize,
+  pub config:     LocalResNormLayerConfig,
+}
+
+impl LocalResNormLayer {
+  pub fn new(layer_id: usize, config: LocalResNormLayerConfig, prev_layer: Option<&Layer>) -> LocalResNormLayer {
+    // TODO
+    LocalResNormLayer{
+      layer_id: layer_id,
+      config:   config,
+    }
+  }
+}
+
+impl Layer for LocalResNormLayer {
+  fn get_id(&self) -> usize {
+    self.layer_id
+  }
+
+  fn output_activation(&self, out_layer_id: usize) -> Option<SharedDeviceBuf<f32>> {
+    None // FIXME
+    //Some(self.out_act.clone())
+  }
+
+  fn output_delta(&self, out_layer_id: usize) -> Option<SharedDeviceBuf<f32>> {
+    None // FIXME
+    //Some(self.out_delta.clone())
+  }
+
+  fn forward(&mut self, phase: OptPhase, ctx: &DeviceContext) {
+    // TODO
+  }
+
+  fn backward(&mut self, descent: &DescentSchedule, ctx: &DeviceContext) {
+    // TODO
+  }
+}
+
+#[derive(Clone, Copy, Debug)]
 pub struct DropoutLayerConfig {
   pub channels:   usize,
   pub drop_ratio: f32,
@@ -689,13 +901,14 @@ pub struct DropoutLayer {
   pub in_mask:    DeviceBuf<i32>,
   pub out_act:    SharedDeviceBuf<f32>,
   pub out_delta:  SharedDeviceBuf<f32>,
+  pub layer_id:   usize,
   pub config:     DropoutLayerConfig,
 }
 
 impl DropoutLayer {
-  pub fn new(prev_layer: Option<&Layer>, config: DropoutLayerConfig) -> DropoutLayer {
-    let in_act = prev_layer.unwrap().output_activation().unwrap();
-    let in_delta = prev_layer.unwrap().output_delta().unwrap();
+  pub fn new(layer_id: usize, config: DropoutLayerConfig, prev_layer: Option<&Layer>) -> DropoutLayer {
+    let in_act = prev_layer.unwrap().output_activation(-1).unwrap();
+    let in_delta = prev_layer.unwrap().output_delta(-1).unwrap();
     let act_length = in_act.borrow().as_view().len();
     DropoutLayer{
       in_act:     in_act,
@@ -704,32 +917,44 @@ impl DropoutLayer {
       in_mask:    DeviceBuf::with_zeros(act_length),
       out_act:    Rc::new(RefCell::new(DeviceBuf::with_zeros(act_length))),
       out_delta:  Rc::new(RefCell::new(DeviceBuf::with_zeros(act_length))),
+      layer_id:   layer_id,
       config:     config,
     }
   }
 }
 
 impl Layer for DropoutLayer {
-  fn output_activation(&self) -> Option<SharedDeviceBuf<f32>> {
+  fn get_id(&self) -> usize {
+    self.layer_id
+  }
+
+  fn output_activation(&self, out_layer_id: usize) -> Option<SharedDeviceBuf<f32>> {
     Some(self.out_act.clone())
   }
 
-  fn output_delta(&self) -> Option<SharedDeviceBuf<f32>> {
+  fn output_delta(&self, out_layer_id: usize) -> Option<SharedDeviceBuf<f32>> {
     Some(self.out_delta.clone())
   }
 
-  fn forward(&mut self, ctx: &DeviceContext) {
-    let act_length = self.in_act.borrow().as_view().len();
-    self.in_rand.as_mut_view().sample_uniform(ctx);
-    unsafe { rembrandt_kernel_map_dropout(
-        self.in_act.borrow().as_view().as_ptr(),
-        act_length as i32,
-        self.config.drop_ratio, 1.0,
-        self.in_rand.as_view().as_ptr(),
-        self.out_act.borrow_mut().as_mut_view().as_mut_ptr(),
-        self.in_mask.as_mut_view().as_mut_ptr(),
-        ctx.stream.ptr,
-    ) };
+  fn forward(&mut self, phase: OptPhase, ctx: &DeviceContext) {
+    match phase {
+      OptPhase::Training => {
+        let act_length = self.in_act.borrow().as_view().len();
+        self.in_rand.as_mut_view().sample_uniform(ctx);
+        unsafe { rembrandt_kernel_map_dropout(
+            self.in_act.borrow().as_view().as_ptr(),
+            act_length as i32,
+            self.config.drop_ratio, 1.0,
+            self.in_rand.as_view().as_ptr(),
+            self.out_act.borrow_mut().as_mut_view().as_mut_ptr(),
+            self.in_mask.as_mut_view().as_mut_ptr(),
+            ctx.stream.ptr,
+        ) };
+      }
+      OptPhase::Evaluation => {
+        self.in_act.borrow().as_view().send(&mut self.out_act.borrow_mut().as_mut_view(), ctx);
+      }
+    }
   }
 
   fn backward(&mut self, descent: &DescentSchedule, ctx: &DeviceContext) {
@@ -745,7 +970,7 @@ impl Layer for DropoutLayer {
   }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct SoftmaxLossLayerConfig {
   pub num_categories: usize,
 }
@@ -768,19 +993,21 @@ pub struct SoftmaxLossLayer {
   pub tmp_max:        DeviceArray2d<f32>,
   pub category_guess: DeviceArray2d<i32>,
   pub category_truth: Option<i32>,
+  pub layer_id:       usize,
   pub num_categories: usize,
 }
 
 impl SoftmaxLossLayer {
-  pub fn new(prev_layer: Option<&Layer>, num_categories: usize) -> SoftmaxLossLayer {
+  pub fn new(layer_id: usize, num_categories: usize, prev_layer: Option<&Layer>) -> SoftmaxLossLayer {
     SoftmaxLossLayer{
-      in_act:         prev_layer.unwrap().output_activation().unwrap(),
-      in_delta:       prev_layer.unwrap().output_delta().unwrap(),
+      in_act:         prev_layer.unwrap().output_activation(-1).unwrap(),
+      in_delta:       prev_layer.unwrap().output_delta(-1).unwrap(),
       probabilities:  DeviceArray2d::with_zeros((num_categories, 1)),
       normalization:  DeviceArray2d::with_zeros((1, 1)),
       tmp_max:        DeviceArray2d::with_zeros((1, 1)),
       category_guess: DeviceArray2d::with_zeros((1, 1)),
       category_truth: None,
+      layer_id:       layer_id,
       num_categories: num_categories,
     }
   }
@@ -803,13 +1030,15 @@ impl SoftmaxLossLayer {
 }
 
 impl Layer for SoftmaxLossLayer {
-  fn output_activation(&self) -> Option<SharedDeviceBuf<f32>> { None }
-  fn output_delta(&self) -> Option<SharedDeviceBuf<f32>> { None }
+  fn get_id(&self) -> usize {
+    self.layer_id
+  }
 
-  fn forward(&mut self, ctx: &DeviceContext) {
-    //ctx.synchronize();
+  fn output_activation(&self, out_layer_id: usize) -> Option<SharedDeviceBuf<f32>> { None }
+  fn output_delta(&self, out_layer_id: usize) -> Option<SharedDeviceBuf<f32>> { None }
+
+  fn forward(&mut self, phase: OptPhase, ctx: &DeviceContext) {
     self.in_act.borrow().as_view_2d((self.num_categories, 1)).send(&mut self.probabilities.as_mut_view(), ctx);
-    //ctx.synchronize();
     unsafe { rembrandt_kernel_blockreduce_argmax(
         self.num_categories as i32,
         self.probabilities.as_view().as_ptr(),
@@ -855,8 +1084,4 @@ impl Layer for SoftmaxLossLayer {
         ctx,
     );
   }
-}
-
-impl LossLayer for SoftmaxLossLayer {
-  // TODO
 }

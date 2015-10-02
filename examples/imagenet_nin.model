@@ -5,6 +5,7 @@ init_step_size    = 0.01
 momentum          = 0.9
 l2_reg_coef       = 0.0005
 annealing_policy  = { kind = "step", step_iters = 200000, decay = 0.1 }
+interval_size     = 64000
 
 [[layer]]
 name = "data"

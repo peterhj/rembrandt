@@ -91,18 +91,21 @@ impl DatasetConfiguration {
 
 pub trait DataSource: Send {
   fn request_sample(&mut self) -> Option<(SampleDatum, Option<SampleLabel>)>;
-
-  fn reset(&mut self) { unimplemented!(); }
+  fn reset(&mut self);
   fn len(&self) -> usize;
+
+  fn each_sample(&mut self, f: &mut FnMut(usize, &SampleDatum, Option<SampleLabel>)) {
+    unimplemented!();
+  }
 }
 
-impl Iterator for DataSource {
+/*impl Iterator for DataSource {
   type Item = (SampleDatum, Option<SampleLabel>);
 
   fn next(&mut self) -> Option<Self::Item> {
     self.request_sample()
   }
-}
+}*/
 
 pub struct DataSourceBuilder;
 
@@ -116,9 +119,16 @@ impl DataSourceBuilder {
   }
 }
 
+pub struct LmdbCaffeDataIterator<'env> {
+  cursor: LmdbCursor<'env>,
+}
+
 pub struct LmdbCaffeDataSource<'a> {
   loader_guard: Option<thread::JoinHandle<()>>,
   rx: Option<Receiver<Option<(i32, Array3d<u8>)>>>,
+  env: LmdbEnv,
+  length: usize,
+  //cursor: Option<LmdbCursor<'a>>,
   _marker: PhantomData<&'a ()>,
 }
 
@@ -135,52 +145,54 @@ fn lmdb_caffe_loader_process(input_data: DataSourceConfig, tx: SyncSender<Option
   let labels_count: usize = 1000;
   let limit_per_category: Option<usize> = None;
 
-  let mut label_sample_counts: HashMap<i32, usize> = HashMap::new();
-  let mut samples_count: usize = 0;
+  loop {
+    let mut label_sample_counts: HashMap<i32, usize> = HashMap::new();
+    let mut samples_count: usize = 0;
 
-  //for (i, kv) in cursor.iter().enumerate() {
-  for kv in cursor.iter() {
-    // Stop loading if we reached the total sample limit.
-    if limit_per_category.is_some() {
-      if samples_count >= limit_per_category.unwrap() * labels_count {
-        break;
+    //for (i, kv) in cursor.iter().enumerate() {
+    for kv in cursor.iter() {
+      // Stop loading if we reached the total sample limit.
+      if limit_per_category.is_some() {
+        if samples_count >= limit_per_category.unwrap() * labels_count {
+          break;
+        }
       }
-    }
 
-    // Parse a Caffe-style value. The image data (should) be stored as raw bytes.
-    //let key_bytes: &[u8] = kv.key;
-    //let key = from_utf8(key_bytes)
-    //  .ok().expect("key is not valid UTF-8!");
-    let value_bytes: &[u8] = kv.value;
-    let mut datum: Datum = match parse_from_bytes(value_bytes) {
-      Ok(m) => m,
-      Err(e) => panic!("failed to parse Datum: {}", e),
-    };
-    //println!("DEBUG: key: {:?}, value len: {}, label: {}, encoded: {}",
-    //  key, value_bytes.len(), datum.get_label(), datum.get_encoded());
-    let channels = datum.get_channels() as usize;
-    let height = datum.get_height() as usize;
-    let width = datum.get_width() as usize;
-    let label = datum.get_label();
+      // Parse a Caffe-style value. The image data (should) be stored as raw bytes.
+      //let key_bytes: &[u8] = kv.key;
+      //let key = from_utf8(key_bytes)
+      //  .ok().expect("key is not valid UTF-8!");
+      let value_bytes: &[u8] = kv.value;
+      let mut datum: Datum = match parse_from_bytes(value_bytes) {
+        Ok(m) => m,
+        Err(e) => panic!("failed to parse Datum: {}", e),
+      };
+      //println!("DEBUG: key: {:?}, value len: {}, label: {}, encoded: {}",
+      //  key, value_bytes.len(), datum.get_label(), datum.get_encoded());
+      let channels = datum.get_channels() as usize;
+      let height = datum.get_height() as usize;
+      let width = datum.get_width() as usize;
+      let label = datum.get_label();
 
-    // Skip this key-value pair if there is a limit specified.
-    if !label_sample_counts.contains_key(&label) {
-      label_sample_counts.insert(label, 0);
-    }
-    let label_count = *label_sample_counts.get(&label).unwrap();
-    if limit_per_category.is_some() {
-      if label_count >= limit_per_category.unwrap() {
-        continue;
+      // Skip this key-value pair if there is a limit specified.
+      if !label_sample_counts.contains_key(&label) {
+        label_sample_counts.insert(label, 0);
       }
+      let label_count = *label_sample_counts.get(&label).unwrap();
+      if limit_per_category.is_some() {
+        if label_count >= limit_per_category.unwrap() {
+          continue;
+        }
+      }
+
+      let image_flat_bytes = datum.take_data();
+      assert_eq!(image_flat_bytes.len(), width * height * channels);
+      let image_bytes = Array3d::with_data(image_flat_bytes, (width, height, channels));
+      tx.send(Some((label, image_bytes))).unwrap();
+
+      label_sample_counts.insert(label, label_count + 1);
+      samples_count += 1;
     }
-
-    let image_flat_bytes = datum.take_data();
-    assert_eq!(image_flat_bytes.len(), width * height * channels);
-    let image_bytes = Array3d::with_data(image_flat_bytes, (width, height, channels));
-    tx.send(Some((label, image_bytes))).unwrap();
-
-    label_sample_counts.insert(label, label_count + 1);
-    samples_count += 1;
   }
 
   tx.send(None).unwrap();
@@ -188,6 +200,15 @@ fn lmdb_caffe_loader_process(input_data: DataSourceConfig, tx: SyncSender<Option
 
 impl<'a> LmdbCaffeDataSource<'a> {
   fn new(input_data: DataSourceConfig) -> LmdbCaffeDataSource<'a> {
+    let mut env = LmdbEnv::open_read_only(&input_data.data_path)
+      .ok().expect("failed to open lmdb env!");
+    let length = env.stat().ok().expect("failed to get lmdb env stat!")
+      .entries();
+    //println!("DEBUG: lmdb length: {}", length);
+    env.set_map_size(1099511627776)
+      .ok().expect("failed to set lmdb env map size!");
+    //let cursor = LmdbCursor::new_read_only(&env)
+    //  .ok().expect("failed to open lmdb cursor!");
     let (tx, rx) = sync_channel::<Option<(i32, Array3d<u8>)>>(64);
     let loader_guard = thread::spawn(move || {
       lmdb_caffe_loader_process(input_data, tx);
@@ -195,6 +216,9 @@ impl<'a> LmdbCaffeDataSource<'a> {
     LmdbCaffeDataSource{
       loader_guard: Some(loader_guard),
       rx: Some(rx),
+      env: env,
+      length: length,
+      //cursor: None,
       _marker: PhantomData,
     }
   }
@@ -217,6 +241,11 @@ impl<'a> Drop for LmdbCaffeDataSource<'a> {
 
 impl<'a> DataSource for LmdbCaffeDataSource<'a> {
   fn request_sample(&mut self) -> Option<(SampleDatum, Option<SampleLabel>)> {
+    /*if self.cursor.is_none() {
+      let cursor = LmdbCursor::new_read_only(&self.env)
+        .ok().expect("failed to open lmdb cursor!");
+      self.cursor = Some(cursor);
+    }*/
     match self.rx.as_ref().unwrap().recv().unwrap() {
       Some((image_label, image_bytes)) => {
         Some((SampleDatum::RgbPerChannelBytes(image_bytes), Some(SampleLabel(image_label))))
@@ -226,8 +255,35 @@ impl<'a> DataSource for LmdbCaffeDataSource<'a> {
   }
 
   fn len(&self) -> usize {
-    // TODO
-    unimplemented!();
+    self.length
+  }
+
+  fn reset(&mut self) {
+    // TODO(20150917)
+  }
+
+  fn each_sample(&mut self, f: &mut FnMut(usize, &SampleDatum, Option<SampleLabel>)) {
+    let cursor = LmdbCursor::new_read_only(&self.env)
+      .ok().expect("failed to open lmdb cursor!");
+    for (epoch_idx, (ref datum, label)) in cursor.iter().map(|kv| {
+      // Parse a Caffe-style value. The image data (should) be stored as raw bytes.
+      let value_bytes: &[u8] = kv.value;
+      let mut datum: Datum = match parse_from_bytes(value_bytes) {
+        Ok(m) => m,
+        Err(e) => panic!("failed to parse Datum: {}", e),
+      };
+      let channels = datum.get_channels() as usize;
+      let height = datum.get_height() as usize;
+      let width = datum.get_width() as usize;
+      let label = datum.get_label();
+
+      let image_flat_bytes = datum.take_data();
+      assert_eq!(image_flat_bytes.len(), width * height * channels);
+      let image_bytes = Array3d::with_data(image_flat_bytes, (width, height, channels));
+      (SampleDatum::RgbPerChannelBytes(image_bytes), Some(SampleLabel(label)))
+    }).enumerate() {
+      f(epoch_idx, datum, label);
+    }
   }
 }
 
@@ -365,6 +421,32 @@ impl DataSource for MnistDataSource {
 
   fn len(&self) -> usize {
     self.n
+  }
+
+  fn each_sample(&mut self, f: &mut FnMut(usize, &SampleDatum, Option<SampleLabel>)) {
+    self.reset();
+    for i in (0 .. self.n) {
+      let image_len = self.image_width * self.image_height;
+      let mut image_bytes: Vec<u8> = Vec::with_capacity(image_len);
+      unsafe { image_bytes.set_len(image_len) };
+      let mut head: usize = 0;
+      loop {
+        match self.data_reader.read(&mut image_bytes[head .. image_len]) {
+          Ok(amnt_read) => {
+            if amnt_read == 0 {
+              assert_eq!(head, image_len);
+              break;
+            } else {
+              head += amnt_read;
+            }
+          }
+          Err(e) => panic!("i/o error while reading mnist: {}", e),
+        }
+      }
+      let image = Array3d::with_data(image_bytes, (self.image_width, self.image_height, 1));
+      let label = unwrap!(self.labels_reader.read_u8().ok()) as i32;
+      f(i, &SampleDatum::RgbPerChannelBytes(image), Some(SampleLabel(label)));
+    }
   }
 }
 
