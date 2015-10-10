@@ -56,7 +56,7 @@ pub trait Layer {
   fn output_delta(&self, out_layer_id: usize) -> Option<SharedDeviceBuf<f32>>;
 
   fn initialize_params(&mut self, ctx: &DeviceContext) {}
-  fn load(&mut self, datum: &SampleDatum, maybe_label: Option<SampleLabel>, ctx: &DeviceContext) {}
+  fn load(&mut self, phase: OptPhase, datum: &SampleDatum, maybe_label: Option<SampleLabel>, ctx: &DeviceContext) {}
   fn forward(&mut self, phase: OptPhase, ctx: &DeviceContext) {}
   fn backward(&mut self, descent: &DescentSchedule, ctx: &DeviceContext) {}
   fn descend(&mut self, descent: &DescentSchedule, t: usize, ctx: &DeviceContext) {}
@@ -102,8 +102,23 @@ impl DataLayer {
       config:     config,
     }
   }
+}
 
-  pub fn load_sample(&mut self, datum: &SampleDatum, ctx: &DeviceContext) {
+impl Layer for DataLayer {
+  fn get_id(&self) -> usize {
+    self.layer_id
+  }
+
+  fn output_activation(&self, out_layer_id: usize) -> Option<SharedDeviceBuf<f32>> {
+    Some(self.crop_image.clone())
+  }
+
+  fn output_delta(&self, out_layer_id: usize) -> Option<SharedDeviceBuf<f32>> {
+    None
+  }
+
+  fn load(&mut self, phase: OptPhase, datum: &SampleDatum, maybe_label: Option<SampleLabel>, ctx: &DeviceContext) {
+    let mut rng = thread_rng();
     let DataLayerConfig{
       raw_width, raw_height,
       crop_width, crop_height,
@@ -121,42 +136,45 @@ impl DataLayer {
             self.raw_image.as_mut_view().as_mut_ptr(),
             ctx.stream.ptr,
         ) };
-        // FIXME(20150921): subtract out data-specific average.
+
+        // TODO(20150921): Mean subtract.
         /*unsafe { rembrandt_kernel_map_add_constant_float(
             self.out_act.borrow_mut().as_mut_view().as_mut_ptr(),
             length as i32,
             -33.318,
             ctx.stream.ptr,
         ) };*/
-        let off_w = (raw_width - crop_width) / 2;
-        let off_h = (raw_height - crop_height) / 2;
-        for c in (0 .. channels) {
-          let (_, back_raw_view) = self.raw_image.as_view().split_at(c * raw_width * raw_height);
-          let back_raw_view_2d = back_raw_view.as_view_2d((raw_width, raw_height));
-          let cropped_raw_view = back_raw_view_2d.view((off_w, off_h), (off_w + crop_width, off_h + crop_height));
-          let mut crop_image = self.crop_image.borrow_mut();
-          let mut crop_view = crop_image.as_mut_view();
-          let (_, mut back_crop_view) = crop_view.split_at(c * crop_width * crop_height);
-          let mut shaped_crop_view = back_crop_view.as_mut_view_2d((crop_width, crop_height));
-          cropped_raw_view.send(&mut shaped_crop_view, ctx);
+
+        // Crop.
+        if raw_width == crop_width && raw_height == crop_height {
+          self.raw_image.as_view().send(&mut self.crop_image.borrow_mut().as_mut_view(), ctx);
+        } else {
+          let (off_w, off_h) = match phase {
+            OptPhase::Training    => {
+              let range_w = Range::new(0, raw_width - crop_width);
+              let range_h = Range::new(0, raw_height - crop_height);
+              (range_w.ind_sample(&mut rng), range_h.ind_sample(&mut rng))
+            }
+            // XXX: Always center crop during evaluation.
+            OptPhase::Evaluation  => ((raw_width - crop_width) / 2, (raw_height - crop_height) / 2),
+          };
+          for c in (0 .. channels) {
+            let (_, back_raw_view) = self.raw_image.as_view().split_at(c * raw_width * raw_height);
+            let back_raw_view_2d = back_raw_view.as_view_2d((raw_width, raw_height));
+            let cropped_raw_view = back_raw_view_2d.view((off_w, off_h), (off_w + crop_width, off_h + crop_height));
+            let mut crop_image = self.crop_image.borrow_mut();
+            let mut crop_view = crop_image.as_mut_view();
+            let (_, mut back_crop_view) = crop_view.split_at(c * crop_width * crop_height);
+            let mut shaped_crop_view = back_crop_view.as_mut_view_2d((crop_width, crop_height));
+            cropped_raw_view.send(&mut shaped_crop_view, ctx);
+          }
         }
+
+        // Mirror.
+        // TODO
       }
       _ => unimplemented!(),
     }
-  }
-}
-
-impl Layer for DataLayer {
-  fn get_id(&self) -> usize {
-    self.layer_id
-  }
-
-  fn output_activation(&self, out_layer_id: usize) -> Option<SharedDeviceBuf<f32>> {
-    Some(self.crop_image.clone())
-  }
-
-  fn output_delta(&self, out_layer_id: usize) -> Option<SharedDeviceBuf<f32>> {
-    None
   }
 }
 
@@ -491,6 +509,7 @@ pub struct Conv2dLayer {
   pub in_col:       DeviceArray2d<f32>,
   pub grad_col:     DeviceArray2d<f32>,
   pub unit:         DeviceArray2d<f32>,
+  pub work:         DeviceBuf<f32>,
   pub out_act:      SharedDeviceBuf<f32>,
   pub out_delta:    SharedDeviceBuf<f32>,
   pub weights:      DeviceArray2d<f32>,
@@ -518,6 +537,7 @@ impl Conv2dLayer {
       in_col:       DeviceArray2d::with_zeros((out_width * out_height, conv_size * conv_size * in_channels)),
       grad_col:     DeviceArray2d::with_zeros((out_width * out_height, conv_size * conv_size * in_channels)),
       unit:         unit,
+      work:         DeviceBuf::with_zeros(1024), // FIXME(20151002): for cuDNN work space.
       out_act:      Rc::new(RefCell::new(DeviceBuf::with_zeros(out_length))),
       out_delta:    Rc::new(RefCell::new(DeviceBuf::with_zeros(out_length))),
       weights:      DeviceArray2d::with_zeros((conv_size * conv_size * in_channels, out_channels)),
@@ -1012,10 +1032,6 @@ impl SoftmaxLossLayer {
     }
   }
 
-  pub fn load_sample(&mut self, maybe_label: Option<SampleLabel>, ctx: &DeviceContext) {
-    self.category_truth = maybe_label.map(|label| label.0);
-  }
-
   pub fn get_guess(&self, ctx: &DeviceContext) -> i32 {
     let mut host_guess = Array2d::with_zeros((1, 1));
     self.category_guess.as_view().sync_store(&mut host_guess.as_mut_view(), &ctx);
@@ -1036,6 +1052,10 @@ impl Layer for SoftmaxLossLayer {
 
   fn output_activation(&self, out_layer_id: usize) -> Option<SharedDeviceBuf<f32>> { None }
   fn output_delta(&self, out_layer_id: usize) -> Option<SharedDeviceBuf<f32>> { None }
+
+  fn load(&mut self, phase: OptPhase, datum: &SampleDatum, maybe_label: Option<SampleLabel>, ctx: &DeviceContext) {
+    self.category_truth = maybe_label.map(|label| label.0);
+  }
 
   fn forward(&mut self, phase: OptPhase, ctx: &DeviceContext) {
     self.in_act.borrow().as_view_2d((self.num_categories, 1)).send(&mut self.probabilities.as_mut_view(), ctx);
@@ -1083,5 +1103,74 @@ impl Layer for SoftmaxLossLayer {
         1.0 / (descent.minibatch_size() as f32),
         ctx,
     );
+  }
+}
+
+pub struct SoftmaxPolicyGradientLossLayer {
+  pub in_act:         SharedDeviceBuf<f32>,
+  pub in_delta:       SharedDeviceBuf<f32>,
+  pub probabilities:  DeviceArray2d<f32>,
+  pub normalization:  DeviceArray2d<f32>,
+  pub tmp_max:        DeviceArray2d<f32>,
+  pub action:         DeviceArray2d<i32>,
+  pub layer_id:       usize,
+  pub num_categories: usize,
+}
+
+impl Layer for SoftmaxPolicyGradientLossLayer {
+  fn get_id(&self) -> usize {
+    self.layer_id
+  }
+
+  fn output_activation(&self, out_layer_id: usize) -> Option<SharedDeviceBuf<f32>> { None }
+  fn output_delta(&self, out_layer_id: usize) -> Option<SharedDeviceBuf<f32>> { None }
+
+  fn forward(&mut self, phase: OptPhase, ctx: &DeviceContext) {
+    self.in_act.borrow().as_view_2d((self.num_categories, 1)).send(&mut self.probabilities.as_mut_view(), ctx);
+    unsafe { rembrandt_kernel_blockreduce_argmax(
+        self.num_categories as i32,
+        self.probabilities.as_view().as_ptr(),
+        self.tmp_max.as_mut_view().as_mut_ptr(),
+        self.action.as_mut_view().as_mut_ptr(),
+        ctx.stream.ptr,
+    ) };
+    unsafe { rembrandt_kernel_map_subtract_scalar(
+        self.probabilities.as_mut_view().as_mut_ptr(),
+        self.num_categories as i32,
+        self.tmp_max.as_view().as_ptr(),
+        ctx.stream.ptr,
+    ) };
+    unsafe { rembrandt_kernel_map_exp(
+        self.probabilities.as_mut_view().as_mut_ptr(),
+        self.num_categories as i32,
+        ctx.stream.ptr,
+    ) };
+    unsafe { rembrandt_kernel_blockreduce_sum(
+        self.num_categories as i32,
+        self.probabilities.as_view().as_ptr(),
+        self.normalization.as_mut_view().as_mut_ptr(),
+        ctx.stream.ptr,
+    ) };
+    unsafe { rembrandt_kernel_map_divide_scalar(
+        self.probabilities.as_mut_view().as_mut_ptr(),
+        self.num_categories as i32,
+        self.normalization.as_view().as_ptr(),
+        ctx.stream.ptr,
+    ) };
+  }
+
+  fn backward(&mut self, descent: &DescentSchedule, ctx: &DeviceContext) {
+    // FIXME(20151005): read label from device side.
+    /*unsafe { rembrandt_kernel_map_softmax_cross_entropy_loss_dev_backprop(
+        self.probabilities.as_view().as_ptr(),
+        self.num_categories as i32,
+        self.action.as_view().as_ptr(),
+        self.in_delta.borrow_mut().as_mut_view().as_mut_ptr(),
+        ctx.stream.ptr,
+    ) };
+    self.in_delta.borrow_mut().as_mut_view_2d((1, self.num_categories)).row_vector_scale(
+        1.0 / (descent.minibatch_size() as f32),
+        ctx,
+    );*/
   }
 }

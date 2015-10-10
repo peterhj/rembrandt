@@ -8,6 +8,10 @@ name = "rembrandt"
 path = "src/lib.rs"
 
 [[bin]]
+name = "bench-kernels"
+path = "tools/bench-kernels.rs"
+
+[[bin]]
 name = "bench-cudnn"
 path = "tools/bench-cudnn.rs"
 

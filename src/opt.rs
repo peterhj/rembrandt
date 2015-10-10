@@ -100,8 +100,8 @@ impl Optimizer for SgdOptimizer {
         if epoch_idx >= epoch_size {
           return;
         }
-        arch.data_layer().load_sample(datum, ctx);
-        arch.loss_layer().load_sample(maybe_label, ctx);
+        arch.data_layer().load(OptPhase::Training, datum, maybe_label, ctx);
+        arch.loss_layer().load(OptPhase::Training, datum, maybe_label, ctx);
         arch.data_layer().forward(OptPhase::Training, ctx);
         for layer in arch.hidden_layers() {
           layer.forward(OptPhase::Training, ctx);
@@ -145,8 +145,8 @@ impl Optimizer for SgdOptimizer {
     let epoch_size = eval_data.len();
     let mut epoch_correct = 0;
     eval_data.each_sample(&mut |_, datum, maybe_label| {
-      arch.data_layer().load_sample(datum, ctx);
-      arch.loss_layer().load_sample(maybe_label, ctx);
+      arch.data_layer().load(OptPhase::Evaluation, datum, maybe_label, ctx);
+      arch.loss_layer().load(OptPhase::Evaluation, datum, maybe_label, ctx);
       arch.data_layer().forward(OptPhase::Evaluation, ctx);
       for layer in arch.hidden_layers() {
         layer.forward(OptPhase::Evaluation, ctx);
