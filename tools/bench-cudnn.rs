@@ -26,17 +26,19 @@ fn main() {
   println!("DEBUG: approx nodes/s:  {}", (n as f32) / (time_ms / 1000.0));
 
   let n = 256;
-  let h = 3;
+  let input = 8;
+  let hidden = 3;
+  let h = hidden;
 
-  let src_desc = CudnnTensorDesc::<f32>::create_4d(19, 19, 4, n).unwrap();
-  let filter_desc = CudnnFilterDesc::<f32>::create_4d(5, 5, 4, h).unwrap();
-  let conv_desc = CudnnConvDesc::create_2d_symmetric(1, 2).unwrap();
+  let src_desc = CudnnTensorDesc::<f32>::create_4d(19, 19, input, n).unwrap();
+  let filter_desc = CudnnFilterDesc::<f32>::create_4d(9, 9, input, h).unwrap();
+  let conv_desc = CudnnConvDesc::create_2d_symmetric(1, 4).unwrap();
   let dst_desc = CudnnTensorDesc::<f32>::create_4d(19, 19, h, n).unwrap();
   let perf1 = CudnnConvFwdPerf::create_fastest(&src_desc, &filter_desc, &conv_desc, &dst_desc, &cudnn).unwrap();
 
-  let src_desc = CudnnTensorDesc::<f32>::create_4d(19, 19, h, n).unwrap();
-  let filter_desc = CudnnFilterDesc::<f32>::create_4d(5, 5, h, 1).unwrap();
-  let conv_desc = CudnnConvDesc::create_2d_symmetric(1, 2).unwrap();
+  let src_desc = CudnnTensorDesc::<f32>::create_4d(19, 19, hidden, n).unwrap();
+  let filter_desc = CudnnFilterDesc::<f32>::create_4d(3, 3, hidden, 1).unwrap();
+  let conv_desc = CudnnConvDesc::create_2d_symmetric(1, 1).unwrap();
   let dst_desc = CudnnTensorDesc::<f32>::create_4d(19, 19, 1, n).unwrap();
   let perf2 = CudnnConvFwdPerf::create_fastest(&src_desc, &filter_desc, &conv_desc, &dst_desc, &cudnn).unwrap();
 

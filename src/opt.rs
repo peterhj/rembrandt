@@ -40,6 +40,12 @@ pub struct OptConfig {
   pub interval_size:  usize,
 }
 
+impl OptConfig {
+  pub fn step_size(&self, t: usize) -> f32 {
+    self.anneal.scale_step_size(self.init_step_size, t)
+  }
+}
+
 pub type DescentConfig = OptConfig;
 
 #[derive(Clone, Copy)]

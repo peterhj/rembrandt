@@ -1,14 +1,15 @@
 use caffe_proto::{Datum};
 
-use array::{Array3d};
-use byteorder::{ReadBytesExt, BigEndian};
+use array::{ArrayDeserialize, Array3d};
+use arraydb::{ArrayDb};
+use byteorder::{ReadBytesExt, BigEndian, LittleEndian};
 use lmdb::{LmdbEnv, LmdbCursor};
 use protobuf::{MessageStatic, parse_from_bytes};
 use toml::{Parser};
 
 use std::collections::{HashMap};
 use std::fs::{File};
-use std::io::{Read, BufReader};
+use std::io::{Read, BufReader, Cursor};
 use std::marker::{PhantomData};
 use std::path::{PathBuf};
 //use std::str::{from_utf8};
@@ -112,9 +113,51 @@ pub struct DataSourceBuilder;
 impl DataSourceBuilder {
   pub fn build(source_name: &str, data_config: DataSourceConfig) -> Box<DataSource> {
     match source_name {
+      "arraydb"     => Box::new(ArrayDbDataSource::open(data_config)),
       "lmdb_caffe"  => Box::new(LmdbCaffeDataSource::new(data_config)),
       "mnist"       => Box::new(MnistDataSource::new(data_config)),
       s => panic!("unknown data source kind: {}", s),
+    }
+  }
+}
+
+pub struct ArrayDbDataSource {
+  config:     DataSourceConfig,
+  frames_db:  ArrayDb,
+  labels_db:  ArrayDb,
+  //mean_array: Array3d<f32>,
+}
+
+impl ArrayDbDataSource {
+  pub fn open(config: DataSourceConfig) -> ArrayDbDataSource {
+    let frames_db = ArrayDb::open(config.data_path.clone(), true);
+    let labels_db = ArrayDb::open(config.maybe_labels_path.clone()
+      .expect("arraydb source requires labels!"), true);
+    assert_eq!(frames_db.len(), labels_db.len());
+    ArrayDbDataSource{
+      config:     config,
+      frames_db:  frames_db,
+      labels_db:  labels_db,
+    }
+  }
+}
+
+impl DataSource for ArrayDbDataSource {
+  fn request_sample(&mut self) -> Option<(SampleDatum, Option<SampleLabel>)> { None }
+  fn reset(&mut self) {}
+
+  fn len(&self) -> usize {
+    self.frames_db.len()
+  }
+
+  fn each_sample(&mut self, f: &mut FnMut(usize, &SampleDatum, Option<SampleLabel>)) {
+    for i in (0 .. self.frames_db.len()) {
+      let datum_value = self.frames_db.get(i).unwrap();
+      let datum = Array3d::<u8>::deserialize(&mut Cursor::new(datum_value))
+        .ok().expect("arraydb source failed to deserialize datum!");
+      let label_value = self.labels_db.get(i).unwrap();
+      let label = Cursor::new(label_value).read_i32::<LittleEndian>().unwrap();
+      f(i, &SampleDatum::RgbPerChannelBytes(datum), Some(SampleLabel(label)));
     }
   }
 }

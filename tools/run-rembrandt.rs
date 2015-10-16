@@ -18,7 +18,7 @@ use std::path::{PathBuf};
 
 fn main() {
   //train_mnist();
-  train_imagenet();
+  //train_imagenet();
 }
 
 fn train_mnist() {
@@ -88,13 +88,13 @@ fn train_mnist() {
     in_channels: 100, out_channels: 10,
     act_fun: ActivationFunction::Identity,
   };
-  let data_layer = DataLayer::new(0, data_layer_cfg);
-  let conv1_layer = Conv2dLayer::new(0, conv1_layer_cfg, Some(&data_layer), &ctx);
-  let pool1_layer = PoolLayer::new(0, pool1_layer_cfg, Some(&conv1_layer));
-  let fc1_layer = FullyConnLayer::new(0, fc1_layer_cfg, Some(&pool1_layer));
-  let drop1_layer = DropoutLayer::new(0, drop1_layer_cfg, Some(&fc1_layer));
-  let fc2_layer = FullyConnLayer::new(0, fc2_layer_cfg, Some(&drop1_layer));
-  let softmax_layer = SoftmaxLossLayer::new(0, 10, Some(&fc2_layer));
+  let data_layer = DataLayer::new(0, data_layer_cfg, 1);
+  let conv1_layer = Conv2dLayer::new(0, conv1_layer_cfg, 1, Some(&data_layer), &ctx);
+  let pool1_layer = PoolLayer::new(0, pool1_layer_cfg, 1, Some(&conv1_layer));
+  let fc1_layer = FullyConnLayer::new(0, fc1_layer_cfg, 1, Some(&pool1_layer));
+  let drop1_layer = DropoutLayer::new(0, drop1_layer_cfg, 1, Some(&fc1_layer));
+  let fc2_layer = FullyConnLayer::new(0, fc2_layer_cfg, 1, Some(&drop1_layer));
+  let softmax_layer = SoftmaxLossLayer::new(0, 10, 1, Some(&fc2_layer));
 
   let mut arch = LinearNetArch::new(data_layer, softmax_layer, vec![
       //Box::new(fc1_layer),
@@ -244,25 +244,25 @@ fn train_imagenet() {
     pool_size: 6, pool_stride: 1, pool_pad: 0,
     pool_kind: PoolKind::Average,
   };
-  let data_layer = DataLayer::new(0, data_layer_cfg);
-  let conv1_layer = Conv2dLayer::new(0, conv1_layer_cfg, Some(&data_layer), &ctx);
-  let cccp1_layer = Conv2dLayer::new(0, cccp1_layer_cfg, Some(&conv1_layer), &ctx);
-  let cccp2_layer = Conv2dLayer::new(0, cccp2_layer_cfg, Some(&cccp1_layer), &ctx);
-  let pool1_layer = PoolLayer::new(0, pool1_layer_cfg, Some(&cccp2_layer));
-  let conv2_layer = Conv2dLayer::new(0, conv2_layer_cfg, Some(&pool1_layer), &ctx);
-  let cccp3_layer = Conv2dLayer::new(0, cccp3_layer_cfg, Some(&conv2_layer), &ctx);
-  let cccp4_layer = Conv2dLayer::new(0, cccp4_layer_cfg, Some(&cccp3_layer), &ctx);
-  let pool2_layer = PoolLayer::new(0, pool2_layer_cfg, Some(&cccp4_layer));
-  let conv3_layer = Conv2dLayer::new(0, conv3_layer_cfg, Some(&pool2_layer), &ctx);
-  let cccp5_layer = Conv2dLayer::new(0, cccp5_layer_cfg, Some(&conv3_layer), &ctx);
-  let cccp6_layer = Conv2dLayer::new(0, cccp6_layer_cfg, Some(&cccp5_layer), &ctx);
-  let pool3_layer = PoolLayer::new(0, pool3_layer_cfg, Some(&cccp6_layer));
-  let drop_layer = DropoutLayer::new(0, drop_layer_cfg, Some(&pool3_layer));
-  let conv4_layer = Conv2dLayer::new(0, conv4_layer_cfg, Some(&drop_layer), &ctx);
-  let cccp7_layer = Conv2dLayer::new(0, cccp7_layer_cfg, Some(&conv4_layer), &ctx);
-  let cccp8_layer = Conv2dLayer::new(0, cccp8_layer_cfg, Some(&cccp7_layer), &ctx);
-  let pool4_layer = PoolLayer::new(0, pool4_layer_cfg, Some(&cccp8_layer));
-  let softmax_layer = SoftmaxLossLayer::new(0, 1000, Some(&pool4_layer));
+  let data_layer = DataLayer::new(0, data_layer_cfg, 1);
+  let conv1_layer = Conv2dLayer::new(0, conv1_layer_cfg, 1, Some(&data_layer), &ctx);
+  let cccp1_layer = Conv2dLayer::new(0, cccp1_layer_cfg, 1, Some(&conv1_layer), &ctx);
+  let cccp2_layer = Conv2dLayer::new(0, cccp2_layer_cfg, 1, Some(&cccp1_layer), &ctx);
+  let pool1_layer = PoolLayer::new(0, pool1_layer_cfg, 1, Some(&cccp2_layer));
+  let conv2_layer = Conv2dLayer::new(0, conv2_layer_cfg, 1, Some(&pool1_layer), &ctx);
+  let cccp3_layer = Conv2dLayer::new(0, cccp3_layer_cfg, 1, Some(&conv2_layer), &ctx);
+  let cccp4_layer = Conv2dLayer::new(0, cccp4_layer_cfg, 1, Some(&cccp3_layer), &ctx);
+  let pool2_layer = PoolLayer::new(0, pool2_layer_cfg, 1, Some(&cccp4_layer));
+  let conv3_layer = Conv2dLayer::new(0, conv3_layer_cfg, 1, Some(&pool2_layer), &ctx);
+  let cccp5_layer = Conv2dLayer::new(0, cccp5_layer_cfg, 1, Some(&conv3_layer), &ctx);
+  let cccp6_layer = Conv2dLayer::new(0, cccp6_layer_cfg, 1, Some(&cccp5_layer), &ctx);
+  let pool3_layer = PoolLayer::new(0, pool3_layer_cfg, 1, Some(&cccp6_layer));
+  let drop_layer = DropoutLayer::new(0, drop_layer_cfg, 1, Some(&pool3_layer));
+  let conv4_layer = Conv2dLayer::new(0, conv4_layer_cfg, 1, Some(&drop_layer), &ctx);
+  let cccp7_layer = Conv2dLayer::new(0, cccp7_layer_cfg, 1, Some(&conv4_layer), &ctx);
+  let cccp8_layer = Conv2dLayer::new(0, cccp8_layer_cfg, 1, Some(&cccp7_layer), &ctx);
+  let pool4_layer = PoolLayer::new(0, pool4_layer_cfg, 1, Some(&cccp8_layer));
+  let softmax_layer = SoftmaxLossLayer::new(0, 1000, 1, Some(&pool4_layer));
 
   let mut arch = LinearNetArch::new(data_layer, softmax_layer, vec![
       Box::new(conv1_layer),

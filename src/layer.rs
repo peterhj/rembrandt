@@ -88,18 +88,20 @@ pub struct DataLayer {
   pub crop_image: SharedDeviceBuf<f32>,
   pub layer_id:   usize,
   pub config:     DataLayerConfig,
+  pub batch_size: usize,
 }
 
 impl DataLayer {
-  pub fn new(layer_id: usize, config: DataLayerConfig) -> DataLayer {
-    let raw_length = config.raw_width * config.raw_height * config.channels;
-    let crop_length = config.crop_width * config.crop_height * config.channels;
+  pub fn new(layer_id: usize, config: DataLayerConfig, batch_size: usize) -> DataLayer {
+    let raw_length = config.raw_width * config.raw_height * config.channels * batch_size;
+    let crop_length = config.crop_width * config.crop_height * config.channels * batch_size;
     DataLayer{
       in_bytes:   DeviceBuf::with_zeros(raw_length),
       raw_image:  DeviceBuf::with_zeros(raw_length),
       crop_image: Rc::new(RefCell::new(DeviceBuf::with_zeros(crop_length))),
       layer_id:   layer_id,
       config:     config,
+      batch_size: batch_size,
     }
   }
 }
@@ -132,7 +134,6 @@ impl Layer for DataLayer {
         unsafe { rembrandt_kernel_image_cast_to_float(
             dims.0 as i32, dims.1 as i32, dims.2 as i32,
             self.in_bytes.as_view().as_ptr(),
-            //self.out_act.borrow_mut().as_mut_view().as_mut_ptr(),
             self.raw_image.as_mut_view().as_mut_ptr(),
             ctx.stream.ptr,
         ) };
@@ -314,7 +315,7 @@ pub struct FullyConnLayer {
 }
 
 impl FullyConnLayer {
-  pub fn new(layer_id: usize, config: FullyConnLayerConfig, prev_layer: Option<&Layer>) -> FullyConnLayer {
+  pub fn new(layer_id: usize, config: FullyConnLayerConfig, batch_size: usize, prev_layer: Option<&Layer>) -> FullyConnLayer {
     FullyConnLayer{
       in_act:       prev_layer.unwrap().output_activation(-1).unwrap(),
       in_delta:     prev_layer.unwrap().output_delta(-1),
@@ -521,7 +522,7 @@ pub struct Conv2dLayer {
 }
 
 impl Conv2dLayer {
-  pub fn new(layer_id: usize, config: Conv2dLayerConfig, prev_layer: Option<&Layer>, ctx: &DeviceContext) -> Conv2dLayer {
+  pub fn new(layer_id: usize, config: Conv2dLayerConfig, batch_size: usize, prev_layer: Option<&Layer>, ctx: &DeviceContext) -> Conv2dLayer {
     let Conv2dLayerConfig{
       in_width, in_height, in_channels,
       conv_size, conv_stride, conv_pad,
@@ -758,7 +759,7 @@ pub struct PoolLayer {
 }
 
 impl PoolLayer {
-  pub fn new(layer_id: usize, config: PoolLayerConfig, prev_layer: Option<&Layer>) -> PoolLayer {
+  pub fn new(layer_id: usize, config: PoolLayerConfig, batch_size: usize, prev_layer: Option<&Layer>) -> PoolLayer {
     let PoolLayerConfig{in_width, in_height, channels, ..} = config;
     let (out_width, out_height, _) = config.get_out_dims();
     let in_length = in_width * in_height * channels;
@@ -865,7 +866,7 @@ pub struct LocalResNormLayer {
 }
 
 impl LocalResNormLayer {
-  pub fn new(layer_id: usize, config: LocalResNormLayerConfig, prev_layer: Option<&Layer>) -> LocalResNormLayer {
+  pub fn new(layer_id: usize, config: LocalResNormLayerConfig, batch_size: usize, prev_layer: Option<&Layer>) -> LocalResNormLayer {
     // TODO
     LocalResNormLayer{
       layer_id: layer_id,
@@ -926,7 +927,7 @@ pub struct DropoutLayer {
 }
 
 impl DropoutLayer {
-  pub fn new(layer_id: usize, config: DropoutLayerConfig, prev_layer: Option<&Layer>) -> DropoutLayer {
+  pub fn new(layer_id: usize, config: DropoutLayerConfig, batch_size: usize, prev_layer: Option<&Layer>) -> DropoutLayer {
     let in_act = prev_layer.unwrap().output_activation(-1).unwrap();
     let in_delta = prev_layer.unwrap().output_delta(-1).unwrap();
     let act_length = in_act.borrow().as_view().len();
@@ -1018,7 +1019,7 @@ pub struct SoftmaxLossLayer {
 }
 
 impl SoftmaxLossLayer {
-  pub fn new(layer_id: usize, num_categories: usize, prev_layer: Option<&Layer>) -> SoftmaxLossLayer {
+  pub fn new(layer_id: usize, num_categories: usize, batch_size: usize, prev_layer: Option<&Layer>) -> SoftmaxLossLayer {
     SoftmaxLossLayer{
       in_act:         prev_layer.unwrap().output_activation(-1).unwrap(),
       in_delta:       prev_layer.unwrap().output_delta(-1).unwrap(),

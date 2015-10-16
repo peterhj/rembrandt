@@ -16,6 +16,10 @@ name = "bench-cudnn"
 path = "tools/bench-cudnn.rs"
 
 [[bin]]
+name = "bench-cublas"
+path = "tools/bench-cublas.rs"
+
+[[bin]]
 name = "run-rembrandt"
 path = "tools/run-rembrandt.rs"
 
@@ -26,6 +30,9 @@ time = "*"
 
 [dependencies.array]
 path = "../libarray"
+
+[dependencies.arraydb]
+path = "../arraydb"
 
 [dependencies.async]
 path = "../libasync"

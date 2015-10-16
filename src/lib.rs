@@ -1,6 +1,7 @@
 //#![feature(box_syntax)]
 
 extern crate array;
+extern crate arraydb;
 extern crate async;
 extern crate async_cuda;
 extern crate byteorder;
