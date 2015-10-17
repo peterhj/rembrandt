@@ -25,15 +25,14 @@ fn main() {
   println!("DEBUG: 8x8 batch size:  {}", n);
   println!("DEBUG: approx nodes/s:  {}", (n as f32) / (time_ms / 1000.0));
 
-  let n = 256;
+  let n = 64;
   let input = 8;
   let hidden = 3;
-  let h = hidden;
 
   let src_desc = CudnnTensorDesc::<f32>::create_4d(19, 19, input, n).unwrap();
-  let filter_desc = CudnnFilterDesc::<f32>::create_4d(9, 9, input, h).unwrap();
+  let filter_desc = CudnnFilterDesc::<f32>::create_4d(9, 9, input, hidden).unwrap();
   let conv_desc = CudnnConvDesc::create_2d_symmetric(1, 4).unwrap();
-  let dst_desc = CudnnTensorDesc::<f32>::create_4d(19, 19, h, n).unwrap();
+  let dst_desc = CudnnTensorDesc::<f32>::create_4d(19, 19, hidden, n).unwrap();
   let perf1 = CudnnConvFwdPerf::create_fastest(&src_desc, &filter_desc, &conv_desc, &dst_desc, &cudnn).unwrap();
 
   let src_desc = CudnnTensorDesc::<f32>::create_4d(19, 19, hidden, n).unwrap();

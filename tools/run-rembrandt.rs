@@ -104,7 +104,7 @@ fn train_mnist() {
       Box::new(drop1_layer),
       Box::new(fc2_layer),
   ]);
-  for layer in arch.hidden_layers() {
+  for layer in arch.hidden_layers_forward() {
     layer.initialize_params(&ctx);
   }
 
@@ -283,7 +283,7 @@ fn train_imagenet() {
       Box::new(cccp8_layer),
       Box::new(pool4_layer),
   ]);
-  for layer in arch.hidden_layers() {
+  for layer in arch.hidden_layers_forward() {
     layer.initialize_params(&ctx);
   }
 

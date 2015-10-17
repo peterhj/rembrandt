@@ -8,13 +8,15 @@ use async_cuda::context::{DeviceContext};
 use std::collections::{BTreeMap};
 
 pub trait NetArch {
+  fn batch_size(&self) -> usize;
+
   fn data_layer(&mut self) -> &mut DataLayer {
     unimplemented!();
   }
 
-  fn hidden_layers(&mut self) -> &mut [Box<Layer>] {
+  /*fn hidden_layers(&mut self) -> &mut [Box<Layer>] {
     unimplemented!();
-  }
+  }*/
 
   fn hidden_layers_forward(&mut self) -> Vec<&mut Box<Layer>> {
     unimplemented!();
@@ -30,14 +32,16 @@ pub trait NetArch {
 }
 
 pub struct LinearNetArch {
-  pub data_layer:     DataLayer,
-  pub loss_layer:     SoftmaxLossLayer,
-  pub hidden_layers:  Vec<Box<Layer>>,
+  batch_size:     usize,
+  data_layer:     DataLayer,
+  loss_layer:     SoftmaxLossLayer,
+  hidden_layers:  Vec<Box<Layer>>,
 }
 
 impl LinearNetArch {
-  pub fn new(data_layer: DataLayer, loss_layer: SoftmaxLossLayer, hidden_layers: Vec<Box<Layer>>) -> LinearNetArch {
+  pub fn new(batch_size: usize, data_layer: DataLayer, loss_layer: SoftmaxLossLayer, hidden_layers: Vec<Box<Layer>>) -> LinearNetArch {
     LinearNetArch{
+      batch_size:     batch_size,
       data_layer:     data_layer,
       loss_layer:     loss_layer,
       hidden_layers:  hidden_layers,
@@ -60,13 +64,17 @@ impl LinearNetArch {
 }
 
 impl NetArch for LinearNetArch {
+  fn batch_size(&self) -> usize {
+    self.batch_size
+  }
+
   fn data_layer(&mut self) -> &mut DataLayer {
     &mut self.data_layer
   }
 
-  fn hidden_layers(&mut self) -> &mut [Box<Layer>] {
+  /*fn hidden_layers(&mut self) -> &mut [Box<Layer>] {
     &mut self.hidden_layers
-  }
+  }*/
 
   fn hidden_layers_forward(&mut self) -> Vec<&mut Box<Layer>> {
     self.hidden_layers.iter_mut().collect()

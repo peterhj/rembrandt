@@ -88,17 +88,21 @@ pub struct OptState {
 
 pub trait Optimizer {
   fn train(&self, opt_cfg: &OptConfig, state: &mut OptState, arch: &mut NetArch, train_data: &mut DataSource, test_data: &mut DataSource, ctx: &DeviceContext);
-  fn eval(&self, arch: &mut NetArch, eval_data: &mut DataSource, ctx: &DeviceContext);
+  fn validate(&self, opt_cfg: &OptConfig, arch: &mut NetArch, eval_data: &mut DataSource, ctx: &DeviceContext);
 }
 
 pub struct SgdOptimizer;
 
 impl Optimizer for SgdOptimizer {
   fn train(&self, opt_cfg: &OptConfig, state: &mut OptState, arch: &mut NetArch, train_data: &mut DataSource, test_data: &mut DataSource, ctx: &DeviceContext) {
-    let epoch_size = (train_data.len() / opt_cfg.minibatch_size) * opt_cfg.minibatch_size;
     let descent = DescentSchedule::new(*opt_cfg);
+    let epoch_size = (train_data.len() / opt_cfg.minibatch_size) * opt_cfg.minibatch_size;
+    let batch_size = arch.batch_size();
+    assert!(opt_cfg.minibatch_size >= batch_size);
+    assert_eq!(0, opt_cfg.minibatch_size % batch_size);
     let mut start_time = get_time();
     let mut interval_correct = 0;
+    let mut interval_total = 0;
     let mut idx = 0;
     loop {
       // XXX(20151002): gradients are initialized to zero.
@@ -106,62 +110,69 @@ impl Optimizer for SgdOptimizer {
         if epoch_idx >= epoch_size {
           return;
         }
-        arch.data_layer().load(OptPhase::Training, datum, maybe_label, ctx);
-        arch.loss_layer().load(OptPhase::Training, datum, maybe_label, ctx);
-        arch.data_layer().forward(OptPhase::Training, ctx);
-        for layer in arch.hidden_layers() {
-          layer.forward(OptPhase::Training, ctx);
-        }
-        arch.loss_layer().forward(OptPhase::Training, ctx);
-        if arch.loss_layer().correct_guess(&ctx) {
-          interval_correct += 1;
-        }
-        arch.loss_layer().backward(&descent, ctx);
-        for layer in arch.hidden_layers().iter_mut().rev() {
-          layer.backward(&descent, ctx);
-        }
+        arch.data_layer().load(OptPhase::Training, datum, maybe_label, idx % batch_size, ctx);
+        arch.loss_layer().load(OptPhase::Training, datum, maybe_label, idx % batch_size, ctx);
         idx += 1;
-        if idx % opt_cfg.interval_size == 0 {
-          let elapsed_time = get_time();
-          let elapsed_ms = (elapsed_time - start_time).num_milliseconds();
-          start_time = elapsed_time;
+        if idx % batch_size == 0 {
+          for layer in arch.hidden_layers_forward() {
+            layer.forward(OptPhase::Training, batch_size, ctx);
+          }
+          arch.loss_layer().forward(OptPhase::Training, batch_size, ctx);
+          interval_correct += arch.loss_layer().correct_guess(batch_size, &ctx);
+          interval_total += batch_size;
+          arch.loss_layer().backward(&descent, batch_size, ctx);
+          for layer in arch.hidden_layers_backward() {
+            layer.backward(&descent, batch_size, ctx);
+          }
+        }
+        //if idx % opt_cfg.interval_size == 0 {
+        if idx % 1000 == 0 { // FIXME(20151016)
+          let lap_time = get_time();
+          let elapsed_ms = (lap_time - start_time).num_milliseconds();
+          start_time = lap_time;
           println!("DEBUG: interval: {}/{} train accuracy: {:.3} elapsed: {:.3} s",
               epoch_idx + 1, epoch_size,
-              interval_correct as f32 / opt_cfg.interval_size as f32,
+              interval_correct as f32 / interval_total as f32,
               elapsed_ms as f32 * 0.001,
           );
           interval_correct = 0;
-        }
-        if idx % (100 * opt_cfg.interval_size) == 0 {
-          self.eval(arch, test_data, ctx);
+          interval_total = 0;
         }
         if idx % opt_cfg.minibatch_size == 0 {
-          for layer in arch.hidden_layers() {
+          for layer in arch.hidden_layers_forward() {
             layer.descend(&descent, state.t, ctx);
             layer.reset_gradients(&descent, ctx);
           }
           state.t += 1;
+          // FIXME(20151016): Doing this at the end of a (mini)batch b/c the
+          // predicted labels are stored in a buffer in the net itself, and
+          // indices get clobbered if we call .validate() in the middle of a
+          // batch.
+          if (idx / opt_cfg.minibatch_size) % (opt_cfg.interval_size) == 0 {
+            self.validate(opt_cfg, arch, test_data, ctx);
+          }
         }
       });
       state.epoch += 1;
     }
   }
 
-  fn eval(&self, arch: &mut NetArch, eval_data: &mut DataSource, ctx: &DeviceContext) {
-    let epoch_size = eval_data.len();
+  fn validate(&self, opt_cfg: &OptConfig, arch: &mut NetArch, eval_data: &mut DataSource, ctx: &DeviceContext) {
+    //let epoch_size = eval_data.len();
+    let epoch_size = (eval_data.len() / opt_cfg.minibatch_size) * opt_cfg.minibatch_size;
     let mut epoch_correct = 0;
-    eval_data.each_sample(&mut |_, datum, maybe_label| {
-      arch.data_layer().load(OptPhase::Evaluation, datum, maybe_label, ctx);
-      arch.loss_layer().load(OptPhase::Evaluation, datum, maybe_label, ctx);
-      arch.data_layer().forward(OptPhase::Evaluation, ctx);
-      for layer in arch.hidden_layers() {
-        layer.forward(OptPhase::Evaluation, ctx);
+    eval_data.each_sample(&mut |epoch_idx, datum, maybe_label| {
+      if epoch_idx >= epoch_size {
+        return;
       }
-      arch.loss_layer().forward(OptPhase::Evaluation, ctx);
-      if arch.loss_layer().correct_guess(&ctx) {
-        epoch_correct += 1;
+      arch.data_layer().load(OptPhase::Evaluation, datum, maybe_label, 0, ctx);
+      arch.loss_layer().load(OptPhase::Evaluation, datum, maybe_label, 0, ctx);
+      for layer in arch.hidden_layers_forward() {
+        layer.forward(OptPhase::Evaluation, 1, ctx);
       }
+      arch.loss_layer().forward(OptPhase::Evaluation, 1, ctx);
+      epoch_correct += arch.loss_layer().correct_guess(1, &ctx);
     });
-    println!("DEBUG: test accuracy: {:.3}", epoch_correct as f32 / epoch_size as f32);
+    println!("DEBUG: validation accuracy: {:.3}", epoch_correct as f32 / epoch_size as f32);
   }
 }
