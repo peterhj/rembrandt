@@ -5,6 +5,7 @@ extern crate arraydb;
 extern crate async;
 extern crate async_cuda;
 extern crate byteorder;
+extern crate cuda_dnn;
 extern crate linalg;
 extern crate lmdb;
 extern crate protobuf;

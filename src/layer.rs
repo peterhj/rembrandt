@@ -7,6 +7,11 @@ use async_cuda::array_num::{DeviceNumExt};
 use async_cuda::array_rand::{DeviceRandExt};
 use async_cuda::array_types::{DeviceArray2d, DeviceBuf};
 use async_cuda::context::{DeviceContext};
+use cuda_dnn::{
+  CudnnConvFwdOp, CudnnConvBwdFilterOp, CudnnConvBwdDataOp,
+  CudnnAddOp, CudnnActKind, CudnnActOp, CudnnSoftmaxOp,
+  CudnnTensorDesc, CudnnFilterDesc, CudnnConvDesc,
+};
 use linalg::blas::{BVector, BMatrix, Transpose};
 use rembrandt_kernels::*;
 
@@ -578,13 +583,21 @@ pub struct Conv2dLayer {
   pub in_col:       DeviceArray2d<f32>,
   pub grad_col:     DeviceArray2d<f32>,
   pub unit:         DeviceArray2d<f32>,
-  pub work:         DeviceBuf<f32>,
+  //pub work:         DeviceBuf<f32>,
   pub out_act:      SharedDeviceBuf<f32>,
   pub out_delta:    SharedDeviceBuf<f32>,
   pub weights:      DeviceArray2d<f32>,
   pub bias:         DeviceArray2d<f32>,
   pub grad_weights: DeviceArray2d<f32>,
   pub grad_bias:    DeviceArray2d<f32>,
+
+  pub work_space:     DeviceBuf<u8>,
+  pub conv_fwd_op:    CudnnConvFwdOp,
+  pub conv_bwd_w_op:  CudnnConvBwdFilterOp,
+  pub conv_bwd_d_op:  CudnnConvBwdDataOp,
+  pub bias_op:        CudnnAddOp,
+  pub act_op:         Option<CudnnActOp>,
+
   pub layer_id:     usize,
   pub config:       Conv2dLayerConfig,
   pub batch_lim:    usize,
@@ -601,6 +614,57 @@ impl Conv2dLayer {
     let mut unit = DeviceArray2d::with_zeros((out_width * out_height, 1));
     // FIXME: or .col_vector_scale().
     unit.as_mut_view().set_constant(1.0, ctx);
+
+    let mut work_size = 0;
+    let conv_fwd_op = CudnnConvFwdOp::create_fastest(
+        CudnnTensorDesc::<f32>::create_4d(in_width, in_height, in_channels, batch_size).unwrap(),
+        CudnnFilterDesc::<f32>::create_4d(conv_size, conv_size, in_channels, out_channels).unwrap(),
+        CudnnConvDesc::create_2d_symmetric(conv_stride, conv_pad).unwrap(),
+        CudnnTensorDesc::<f32>::create_4d(out_width, out_height, out_channels, batch_size).unwrap(),
+        &ctx.dnn,
+    ).unwrap();
+    work_size = max(work_size, conv_fwd_op.work_size);
+    let conv_bwd_w_op = CudnnConvBwdFilterOp::create_fastest(
+        CudnnTensorDesc::<f32>::create_4d(in_width, in_height, in_channels, batch_size).unwrap(),
+        CudnnTensorDesc::<f32>::create_4d(out_width, out_height, out_channels, batch_size).unwrap(),
+        CudnnConvDesc::create_2d_symmetric(conv_stride, conv_pad).unwrap(),
+        CudnnFilterDesc::<f32>::create_4d(conv_size, conv_size, in_channels, out_channels).unwrap(),
+        CudnnTensorDesc::<f32>::create_4d(1, 1, out_channels, 1).unwrap(),
+        &ctx.dnn,
+    ).unwrap();
+    work_size = max(work_size, conv_bwd_w_op.work_size);
+    let conv_bwd_d_op = CudnnConvBwdDataOp::create_fastest(
+        CudnnFilterDesc::<f32>::create_4d(conv_size, conv_size, in_channels, out_channels).unwrap(),
+        CudnnTensorDesc::<f32>::create_4d(out_width, out_height, out_channels, batch_size).unwrap(),
+        CudnnConvDesc::create_2d_symmetric(conv_stride, conv_pad).unwrap(),
+        CudnnTensorDesc::<f32>::create_4d(in_width, in_height, in_channels, batch_size).unwrap(),
+        &ctx.dnn,
+    ).unwrap();
+    work_size = max(work_size, conv_bwd_d_op.work_size);
+
+    let bias_op = CudnnAddOp::new(
+        CudnnTensorDesc::<f32>::create_4d(1, 1, out_channels, 1).unwrap(),
+        CudnnTensorDesc::<f32>::create_4d(out_width, out_height, out_channels, batch_size).unwrap(),
+    );
+    let act_op = match config.act_fun {
+      ActivationFunction::Identity => None,
+      act_fun => {
+        let act_kind = match act_fun {
+          ActivationFunction::Identity  => unreachable!(),
+          ActivationFunction::Rect      => CudnnActKind::Relu,
+          ActivationFunction::Sigmoid   => CudnnActKind::Sigmoid,
+          ActivationFunction::Tanh      => CudnnActKind::Tanh,
+        };
+        Some(CudnnActOp::new(
+            act_kind,
+            CudnnTensorDesc::<f32>::create_4d(out_width, out_height, out_channels, batch_size).unwrap(),
+            CudnnTensorDesc::<f32>::create_4d(out_width, out_height, out_channels, batch_size).unwrap(),
+            CudnnTensorDesc::<f32>::create_4d(out_width, out_height, out_channels, batch_size).unwrap(),
+            CudnnTensorDesc::<f32>::create_4d(out_width, out_height, out_channels, batch_size).unwrap(),
+        ))
+      }
+    };
+
     Conv2dLayer{
       in_act:       prev_layer.unwrap().output_activation(-1).unwrap(),
       in_delta:     prev_layer.unwrap().output_delta(-1),
@@ -608,13 +672,21 @@ impl Conv2dLayer {
       in_col:       DeviceArray2d::with_zeros((out_width * out_height, conv_size * conv_size * in_channels)),
       grad_col:     DeviceArray2d::with_zeros((out_width * out_height, conv_size * conv_size * in_channels)),
       unit:         unit,
-      work:         DeviceBuf::with_zeros(1024), // FIXME(20151002): for cuDNN work space.
+      //work:         DeviceBuf::with_zeros(1024), // FIXME(20151002): for cuDNN work space.
       out_act:      Rc::new(RefCell::new(DeviceBuf::with_zeros(out_length * batch_size))),
       out_delta:    Rc::new(RefCell::new(DeviceBuf::with_zeros(out_length * batch_size))),
       weights:      DeviceArray2d::with_zeros((conv_size * conv_size * in_channels, out_channels)),
       bias:         DeviceArray2d::with_zeros((1, out_channels)),
       grad_weights: DeviceArray2d::with_zeros((conv_size * conv_size * in_channels, out_channels)),
       grad_bias:    DeviceArray2d::with_zeros((1, out_channels)),
+
+      work_space:     DeviceBuf::with_zeros(work_size),
+      conv_fwd_op:    conv_fwd_op,
+      conv_bwd_w_op:  conv_bwd_w_op,
+      conv_bwd_d_op:  conv_bwd_d_op,
+      bias_op:        bias_op,
+      act_op:         act_op,
+
       layer_id:     layer_id,
       config:       config,
       batch_lim:    batch_size,
@@ -667,7 +739,35 @@ impl Layer for Conv2dLayer {
     let (out_width, out_height, _) = self.config.get_out_dims();
     let in_length = in_width * in_height * in_channels;
     let out_length = out_width * out_height * out_channels;
-    for batch_idx in (0 .. batch_size) {
+
+    let &mut Conv2dLayer{
+      ref in_act, ref mut out_act,
+      ref mut work_space,
+      ref weights, ref bias,
+      //ref mut in_col, ref unit,
+    ..} = self;
+    // FIXME(20151019): if the batch_size is less than self.batch_cap, then need
+    // to correct the batch size within the ops as well.
+    unsafe { self.conv_fwd_op.forward(
+        in_act.borrow().as_view().as_ptr(),
+        weights.as_view().as_ptr(),
+        out_act.borrow_mut().as_mut_view().as_mut_ptr(),
+        work_space.as_mut_view().as_mut_ptr(),
+        &ctx.dnn,
+    ).unwrap() };
+    unsafe { self.bias_op.forward(
+        bias.as_view().as_ptr(),
+        out_act.borrow_mut().as_mut_view().as_mut_ptr(),
+        &ctx.dnn,
+    ).unwrap() };
+    if let Some(ref act_op) = self.act_op {
+      unsafe { act_op.forward_in_place(
+          out_act.borrow_mut().as_mut_view().as_mut_ptr(),
+          &ctx.dnn,
+      ).unwrap() };
+    }
+
+    /*for batch_idx in (0 .. batch_size) {
       let &mut Conv2dLayer{
         ref in_act, ref mut in_col, ref mut out_act,
         ref weights, ref bias, ref unit, ..} = self;
@@ -721,7 +821,7 @@ impl Layer for Conv2dLayer {
           ) };
         }
       }
-    }
+    }*/
   }
 
   fn backward(&mut self, descent: &DescentSchedule, batch_size: usize, ctx: &DeviceContext) {
@@ -732,7 +832,45 @@ impl Layer for Conv2dLayer {
     let (out_width, out_height, _) = self.config.get_out_dims();
     let in_length = in_width * in_height * in_channels;
     let out_length = out_width * out_height * out_channels;
-    for batch_idx in (0 .. batch_size) {
+
+    let &mut Conv2dLayer{
+      ref in_act, ref mut in_delta, ref out_act, ref out_delta,
+      ref mut grad_weights, ref mut grad_bias,
+      ref mut work_space,
+      ref weights, ref bias,
+      //ref mut in_col, ref mut grad_col, ref unit,
+    ..} = self;
+    if let Some(ref act_op) = self.act_op {
+      unsafe { act_op.backward_in_place(
+          in_act.borrow().as_view().as_ptr(),
+          out_act.borrow().as_view().as_ptr(),
+          out_delta.borrow_mut().as_mut_view().as_mut_ptr(),
+          &ctx.dnn,
+      ).unwrap() };
+    }
+    unsafe { self.conv_bwd_w_op.backward_filter(
+        in_act.borrow().as_view().as_ptr(),
+        out_delta.borrow().as_view().as_ptr(),
+        grad_weights.as_mut_view().as_mut_ptr(),
+        work_space.as_mut_view().as_mut_ptr(),
+        &ctx.dnn,
+    ).unwrap() };
+    unsafe { self.conv_bwd_w_op.backward_bias(
+        out_delta.borrow().as_view().as_ptr(),
+        grad_bias.as_mut_view().as_mut_ptr(),
+        &ctx.dnn,
+    ).unwrap() };
+    if let &mut Some(ref mut in_delta) = in_delta {
+      unsafe { self.conv_bwd_d_op.backward_data(
+          weights.as_view().as_ptr(),
+          out_delta.borrow().as_view().as_ptr(),
+          in_delta.borrow_mut().as_mut_view().as_mut_ptr(),
+          work_space.as_mut_view().as_mut_ptr(),
+          &ctx.dnn,
+      ).unwrap() };
+    }
+
+    /*for batch_idx in (0 .. batch_size) {
       let &mut Conv2dLayer{
         ref in_act, ref mut in_delta, ref out_act, ref out_delta,
         ref mut grad_weights, ref mut grad_bias,
@@ -819,7 +957,7 @@ impl Layer for Conv2dLayer {
             ctx.stream.ptr,
         ) };
       }
-    }
+    }*/
   }
 
   fn descend(&mut self, descent: &DescentSchedule, t: usize, ctx: &DeviceContext) {
@@ -1120,13 +1258,15 @@ pub struct SoftmaxLossLayer {
   pub normalization:  DeviceArray2d<f32>,
   pub tmp_max:        DeviceArray2d<f32>,
 
-  pub category_guess: DeviceArray2d<i32>,
-  pub category_truth: Vec<i32>,
+  //pub category_guess: DeviceArray2d<i32>,
+  //pub category_truth: Vec<i32>,
 
   pub pred_labels:      DeviceArray2d<i32>,
   pub pred_labels_host: Array2d<i32>,
   pub true_labels:      DeviceArray2d<i32>,
   pub true_labels_host: Array2d<i32>,
+
+  pub softmax_op:     CudnnSoftmaxOp,
 
   pub layer_id:       usize,
   pub num_categories: usize,
@@ -1135,6 +1275,10 @@ pub struct SoftmaxLossLayer {
 
 impl SoftmaxLossLayer {
   pub fn new(layer_id: usize, num_categories: usize, batch_size: usize, prev_layer: Option<&Layer>) -> SoftmaxLossLayer {
+    let softmax_op = CudnnSoftmaxOp::new(
+        CudnnTensorDesc::<f32>::create_4d(1, 1, num_categories, batch_size).unwrap(),
+        CudnnTensorDesc::<f32>::create_4d(1, 1, num_categories, batch_size).unwrap(),
+    );
     SoftmaxLossLayer{
       in_act:         prev_layer.unwrap().output_activation(-1).unwrap(),
       in_delta:       prev_layer.unwrap().output_delta(-1).unwrap(),
@@ -1142,13 +1286,15 @@ impl SoftmaxLossLayer {
       normalization:  DeviceArray2d::with_zeros((1, batch_size)),
       tmp_max:        DeviceArray2d::with_zeros((1, batch_size)),
 
-      category_guess: DeviceArray2d::with_zeros((1, batch_size)),
-      category_truth: Vec::new(),
+      //category_guess: DeviceArray2d::with_zeros((1, batch_size)),
+      //category_truth: Vec::new(),
 
       pred_labels:      DeviceArray2d::with_zeros((1, batch_size)),
       pred_labels_host: Array2d::with_zeros((1, batch_size)),
       true_labels:      DeviceArray2d::with_zeros((1, batch_size)),
       true_labels_host: Array2d::with_zeros((1, batch_size)),
+
+      softmax_op:     softmax_op,
 
       layer_id:       layer_id,
       num_categories: num_categories,
@@ -1210,8 +1356,43 @@ impl Layer for SoftmaxLossLayer {
   }*/
 
   fn forward(&mut self, phase: OptPhase, batch_size: usize, ctx: &DeviceContext) {
-    assert!(batch_size <= self.batch_lim);
-    self.in_act.borrow().as_view_2d((self.num_categories, batch_size))
+    assert!(batch_size == self.batch_lim);
+
+    {
+      let &mut SoftmaxLossLayer{
+        ref in_act, ref mut probabilities,
+        //ref mut normalization,
+        ref mut tmp_max, 
+        ref mut pred_labels,
+        //ref zero_mask,
+        ..} = self;
+      // TODO(20151021): reimplement mask code.
+      unsafe { self.softmax_op.forward(
+          in_act.borrow().as_view().as_ptr(),
+          probabilities.as_mut_view().as_mut_ptr(),
+          &ctx.dnn,
+      ).unwrap() };
+    }
+
+    /*let &mut SoftmaxLossLayer{
+      ref mut probabilities,
+      ref mut tmp_max,
+      ref mut pred_labels, ..} = self;
+    for batch_idx in (0 .. batch_size) {
+      unsafe { rembrandt_kernel_blockreduce_argmax(
+          self.num_categories as i32,
+          probabilities.as_view()
+            .view((0, batch_idx), (self.num_categories, batch_idx + 1)).as_ptr(),
+          tmp_max.as_mut_view()
+            .mut_view((0, batch_idx), (1, batch_idx + 1)).as_mut_ptr(),
+          //category_guess.as_mut_view()
+          pred_labels.as_mut_view()
+            .mut_view((0, batch_idx), (1, batch_idx + 1)).as_mut_ptr(),
+          ctx.stream.ptr,
+      ) };
+    }*/
+
+    /*self.in_act.borrow().as_view_2d((self.num_categories, batch_size))
       .send(&mut self.probabilities.as_mut_view().mut_view((0, 0), (self.num_categories, batch_size)), ctx);
     for batch_idx in (0 .. batch_size) {
       let &mut SoftmaxLossLayer{
@@ -1259,12 +1440,23 @@ impl Layer for SoftmaxLossLayer {
             .view((0, batch_idx), (1, batch_idx + 1)).as_ptr(),
           ctx.stream.ptr,
       ) };
-    }
+    }*/
   }
 
   fn backward(&mut self, descent: &DescentSchedule, batch_size: usize, ctx: &DeviceContext) {
-    assert!(batch_size <= self.batch_lim);
-    for batch_idx in (0 .. batch_size) {
+    assert!(batch_size == self.batch_lim);
+
+    unsafe { rembrandt_kernel_batch_map_softmax_cross_entropy_loss_backprop(
+        self.probabilities.as_view().as_ptr(),
+        self.num_categories as i32,
+        batch_size as i32,
+        self.true_labels.as_view().as_ptr(),
+        self.in_delta.borrow_mut().as_mut_view().as_mut_ptr(),
+        descent.minibatch_size() as f32,
+        ctx.stream.ptr,
+    ) };
+
+    /*for batch_idx in (0 .. batch_size) {
       let &mut SoftmaxLossLayer{
         ref mut in_delta, ref probabilities, ..} = self;
       let mut in_delta = in_delta.borrow_mut();
@@ -1282,7 +1474,7 @@ impl Layer for SoftmaxLossLayer {
           1.0 / (descent.minibatch_size() as f32),
           ctx,
       );
-    }
+    }*/
   }
 
   fn preload_label(&mut self, batch_idx: usize, label: i32, ctx: &DeviceContext) {
@@ -1295,12 +1487,27 @@ impl Layer for SoftmaxLossLayer {
     self.true_labels.as_mut_view().sync_load(&self.true_labels_host.as_view(), ctx);
   }
 
-  fn preload_mask(&mut self, batch_idx: usize, mask: &Array2d<u8>, ctx: &DeviceContext) {}
+  fn preload_mask(&mut self, batch_idx: usize, mask: &Array2d<u8>, ctx: &DeviceContext) {
+    // TODO(20151021): need to reimplement this!
+    unimplemented!();
+  }
 
-  fn load_masks(&mut self, batch_size: usize, ctx: &DeviceContext) {}
+  fn load_masks(&mut self, batch_size: usize, ctx: &DeviceContext) {
+    // TODO(20151021): need to reimplement this!
+    unimplemented!();
+  }
 
   fn predict_labels(&mut self, batch_size: usize, ctx: &DeviceContext) -> &[i32] {
     assert!(batch_size == self.batch_lim);
+    assert!(self.num_categories <= 1024);
+    unsafe { rembrandt_kernel_batch_blockreduce_argmax(
+        self.probabilities.as_view().as_ptr(),
+        self.num_categories as i32,
+        batch_size as i32,
+        self.tmp_max.as_mut_view().as_mut_ptr(),
+        self.pred_labels.as_mut_view().as_mut_ptr(),
+        ctx.stream.ptr,
+    ) };
     self.pred_labels.as_view().sync_store(&mut self.pred_labels_host.as_mut_view(), ctx);
     self.pred_labels_host.as_slice()
   }
