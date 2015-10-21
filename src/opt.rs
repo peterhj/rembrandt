@@ -110,15 +110,27 @@ impl Optimizer for SgdOptimizer {
         if epoch_idx >= epoch_size {
           return;
         }
-        arch.data_layer().load(OptPhase::Training, datum, maybe_label, idx % batch_size, ctx);
-        arch.loss_layer().load(OptPhase::Training, datum, maybe_label, idx % batch_size, ctx);
+        //arch.data_layer().load(OptPhase::Training, datum, maybe_label, idx % batch_size, ctx);
+        //arch.loss_layer().load(OptPhase::Training, datum, maybe_label, idx % batch_size, ctx);
+        let batch_idx = idx % batch_size;
+        match datum {
+          &SampleDatum::RgbPerChannelBytes(ref frame) => {
+            arch.data_layer().preload_frame(batch_idx, frame, ctx);
+          }
+          _ => unimplemented!(),
+        }
+        arch.loss_layer().preload_label(batch_idx, maybe_label.unwrap().0, ctx);
         idx += 1;
         if idx % batch_size == 0 {
+          arch.data_layer().load_frames(batch_size, ctx);
+          arch.loss_layer().load_labels(batch_size, ctx);
           for layer in arch.hidden_layers_forward() {
             layer.forward(OptPhase::Training, batch_size, ctx);
           }
           arch.loss_layer().forward(OptPhase::Training, batch_size, ctx);
-          interval_correct += arch.loss_layer().correct_guess(batch_size, &ctx);
+          //interval_correct += arch.loss_layer().correct_guess(batch_size, &ctx);
+          arch.loss_layer().predict_labels(batch_size, &ctx);
+          interval_correct += arch.loss_layer().count_accuracy(batch_size, &ctx);
           interval_total += batch_size;
           arch.loss_layer().backward(&descent, batch_size, ctx);
           for layer in arch.hidden_layers_backward() {
@@ -126,7 +138,7 @@ impl Optimizer for SgdOptimizer {
           }
         }
         //if idx % opt_cfg.interval_size == 0 {
-        if idx % 1000 == 0 { // FIXME(20151016)
+        if idx % (5 * 1024) == 0 { // FIXME(20151016)
           let lap_time = get_time();
           let elapsed_ms = (lap_time - start_time).num_milliseconds();
           start_time = lap_time;
@@ -160,19 +172,36 @@ impl Optimizer for SgdOptimizer {
   fn validate(&self, opt_cfg: &OptConfig, arch: &mut NetArch, eval_data: &mut DataSource, ctx: &DeviceContext) {
     //let epoch_size = eval_data.len();
     let epoch_size = (eval_data.len() / opt_cfg.minibatch_size) * opt_cfg.minibatch_size;
+    let batch_size = arch.batch_size();
     let mut epoch_correct = 0;
+    let mut epoch_total = 0;
     eval_data.each_sample(&mut |epoch_idx, datum, maybe_label| {
       if epoch_idx >= epoch_size {
         return;
       }
-      arch.data_layer().load(OptPhase::Evaluation, datum, maybe_label, 0, ctx);
-      arch.loss_layer().load(OptPhase::Evaluation, datum, maybe_label, 0, ctx);
-      for layer in arch.hidden_layers_forward() {
-        layer.forward(OptPhase::Evaluation, 1, ctx);
+      //arch.data_layer().load(OptPhase::Evaluation, datum, maybe_label, 0, ctx);
+      //arch.loss_layer().load(OptPhase::Evaluation, datum, maybe_label, epoch_idx % batch_size, ctx);
+      let batch_idx = epoch_idx % batch_size;
+      match datum {
+        &SampleDatum::RgbPerChannelBytes(ref frame) => {
+          arch.data_layer().preload_frame(batch_idx, frame, ctx);
+        }
+        _ => unimplemented!(),
       }
-      arch.loss_layer().forward(OptPhase::Evaluation, 1, ctx);
-      epoch_correct += arch.loss_layer().correct_guess(1, &ctx);
+      arch.loss_layer().preload_label(batch_idx, maybe_label.unwrap().0, ctx);
+      if (epoch_idx + 1) % batch_size == 0 {
+        arch.data_layer().load_frames(batch_size, ctx);
+        arch.loss_layer().load_labels(batch_size, ctx);
+        for layer in arch.hidden_layers_forward() {
+          layer.forward(OptPhase::Evaluation, batch_size, ctx);
+        }
+        arch.loss_layer().forward(OptPhase::Evaluation, batch_size, ctx);
+        //epoch_correct += arch.loss_layer().correct_guess(batch_size, &ctx);
+        arch.loss_layer().predict_labels(batch_size, &ctx);
+        epoch_correct += arch.loss_layer().count_accuracy(batch_size, &ctx);
+        epoch_total += batch_size;
+      }
     });
-    println!("DEBUG: validation accuracy: {:.3}", epoch_correct as f32 / epoch_size as f32);
+    println!("DEBUG: validation accuracy: {:.3}", epoch_correct as f32 / epoch_total as f32);
   }
 }

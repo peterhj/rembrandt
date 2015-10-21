@@ -1,7 +1,7 @@
 use data::{SampleDatum, SampleLabel};
 use opt::{DescentConfig, DescentSchedule, OptPhase};
 
-use array::{View, MutView, WithZeros, ArrayDeserialize, Array2d};
+use array::{View, MutView, WithZeros, ArrayDeserialize, Array2d, Array3d};
 use async::{AsyncContext, AsyncLoad, AsyncStore, AsyncSend};
 use async_cuda::array_num::{DeviceNumExt};
 use async_cuda::array_rand::{DeviceRandExt};
@@ -19,8 +19,10 @@ use std::cmp::{max};
 use std::collections::{BTreeMap};
 use std::fmt::{Debug};
 use std::fs::{File};
+use std::iter::{repeat};
 use std::path::{PathBuf};
 use std::rc::{Rc};
+use std::slice::bytes::{copy_memory};
 
 #[derive(Clone, Copy, Debug)]
 pub enum ParamsInitialization {
@@ -56,11 +58,26 @@ pub trait Layer {
   fn output_delta(&self, out_layer_id: usize) -> Option<SharedDeviceBuf<f32>>;
 
   fn initialize_params(&mut self, ctx: &DeviceContext) {}
-  fn load(&mut self, phase: OptPhase, datum: &SampleDatum, maybe_label: Option<SampleLabel>, batch_idx: usize, ctx: &DeviceContext) {}
+  //fn load(&mut self, phase: OptPhase, datum: &SampleDatum, maybe_label: Option<SampleLabel>, batch_idx: usize, ctx: &DeviceContext) {}
   fn forward(&mut self, phase: OptPhase, batch_size: usize, ctx: &DeviceContext) {}
   fn backward(&mut self, descent: &DescentSchedule, batch_size: usize, ctx: &DeviceContext) {}
   fn descend(&mut self, descent: &DescentSchedule, t: usize, ctx: &DeviceContext) {}
   fn reset_gradients(&mut self, descent: &DescentSchedule, ctx: &DeviceContext) {}
+
+  fn preload_frame(&mut self, batch_idx: usize, frame: &Array3d<u8>, ctx: &DeviceContext) {}
+  fn load_frames(&mut self, batch_size: usize, ctx: &DeviceContext) {}
+  fn preload_label(&mut self, batch_idx: usize, label: i32, ctx: &DeviceContext) {}
+  fn load_labels(&mut self, batch_size: usize, ctx: &DeviceContext) {}
+  fn preload_mask(&mut self, batch_idx: usize, mask: &Array2d<u8>, ctx: &DeviceContext) {}
+  fn load_masks(&mut self, batch_size: usize, ctx: &DeviceContext) {}
+  fn predict_labels(&mut self, batch_size: usize, ctx: &DeviceContext) -> &[i32]
+  { unimplemented!(); }
+  fn count_accuracy(&mut self, batch_size: usize, ctx: &DeviceContext) -> usize
+  { unimplemented!(); }
+  fn predict_probs(&mut self, batch_size: usize, ctx: &DeviceContext) -> &Array2d<f32>
+  { unimplemented!(); }
+  fn predict_cdfs(&mut self, batch_size: usize, ctx: &DeviceContext) -> &Array2d<f32>
+  { unimplemented!(); }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -86,6 +103,9 @@ pub struct DataLayer {
   pub in_bytes:   DeviceBuf<u8>,
   pub raw_image:  DeviceBuf<f32>,
   pub crop_image: SharedDeviceBuf<f32>,
+  pub in_buf_host:  Vec<u8>,
+  pub in_buf:       DeviceBuf<u8>,
+  pub out_buf:      SharedDeviceBuf<f32>,
   pub layer_id:   usize,
   pub config:     DataLayerConfig,
   pub batch_lim:  usize,
@@ -99,6 +119,9 @@ impl DataLayer {
       in_bytes:   DeviceBuf::with_zeros(raw_length),
       raw_image:  DeviceBuf::with_zeros(raw_length),
       crop_image: Rc::new(RefCell::new(DeviceBuf::with_zeros(crop_length))),
+      in_buf_host:  repeat(0).take(raw_length).collect(),
+      in_buf:       DeviceBuf::with_zeros(raw_length),
+      out_buf:      Rc::new(RefCell::new(DeviceBuf::with_zeros(crop_length))),
       layer_id:   layer_id,
       config:     config,
       batch_lim:  batch_size,
@@ -112,14 +135,15 @@ impl Layer for DataLayer {
   }
 
   fn output_activation(&self, out_layer_id: usize) -> Option<SharedDeviceBuf<f32>> {
-    Some(self.crop_image.clone())
+    //Some(self.crop_image.clone())
+    Some(self.out_buf.clone())
   }
 
   fn output_delta(&self, out_layer_id: usize) -> Option<SharedDeviceBuf<f32>> {
     None
   }
 
-  fn load(&mut self, phase: OptPhase, datum: &SampleDatum, maybe_label: Option<SampleLabel>, batch_idx: usize, ctx: &DeviceContext) {
+  /*fn load(&mut self, phase: OptPhase, datum: &SampleDatum, maybe_label: Option<SampleLabel>, batch_idx: usize, ctx: &DeviceContext) {
     assert!(batch_idx + 1 <= self.batch_lim);
     let mut rng = thread_rng();
     let DataLayerConfig{
@@ -192,6 +216,34 @@ impl Layer for DataLayer {
       }
       _ => unimplemented!(),
     }
+  }*/
+
+  fn preload_frame(&mut self, batch_idx: usize, frame: &Array3d<u8>, ctx: &DeviceContext) {
+    assert!(batch_idx < self.batch_lim);
+    let DataLayerConfig{
+      raw_width, raw_height, channels, ..} = self.config;
+    let raw_length = raw_width * raw_height * channels;
+    let frame = frame.as_slice();
+    assert_eq!(raw_length, frame.len());
+    copy_memory(frame, &mut self.in_buf_host[batch_idx * raw_length .. (batch_idx + 1) * raw_length]);
+  }
+
+  fn load_frames(&mut self, batch_size: usize, ctx: &DeviceContext) {
+    assert!(batch_size == self.batch_lim);
+    let DataLayerConfig{
+      raw_width, raw_height, channels, ..} = self.config;
+    let raw_length = raw_width * raw_height * channels;
+    {
+      let in_buf_host = &self.in_buf_host;
+      let mut in_view = self.in_buf.as_mut_view();
+      in_view.sync_load(in_buf_host, ctx);
+    }
+    unsafe { rembrandt_kernel_image_cast_to_float(
+        (raw_length * batch_size) as i32, 1, 1,
+        self.in_buf.as_view().as_ptr(),
+        self.out_buf.borrow_mut().as_mut_view().as_mut_ptr(),
+        ctx.stream.ptr,
+    ) };
   }
 }
 
@@ -1067,8 +1119,15 @@ pub struct SoftmaxLossLayer {
   pub probabilities:  DeviceArray2d<f32>,
   pub normalization:  DeviceArray2d<f32>,
   pub tmp_max:        DeviceArray2d<f32>,
+
   pub category_guess: DeviceArray2d<i32>,
   pub category_truth: Vec<i32>,
+
+  pub pred_labels:      DeviceArray2d<i32>,
+  pub pred_labels_host: Array2d<i32>,
+  pub true_labels:      DeviceArray2d<i32>,
+  pub true_labels_host: Array2d<i32>,
+
   pub layer_id:       usize,
   pub num_categories: usize,
   pub batch_lim:      usize,
@@ -1082,8 +1141,15 @@ impl SoftmaxLossLayer {
       probabilities:  DeviceArray2d::with_zeros((num_categories, batch_size)),
       normalization:  DeviceArray2d::with_zeros((1, batch_size)),
       tmp_max:        DeviceArray2d::with_zeros((1, batch_size)),
+
       category_guess: DeviceArray2d::with_zeros((1, batch_size)),
       category_truth: Vec::new(),
+
+      pred_labels:      DeviceArray2d::with_zeros((1, batch_size)),
+      pred_labels_host: Array2d::with_zeros((1, batch_size)),
+      true_labels:      DeviceArray2d::with_zeros((1, batch_size)),
+      true_labels_host: Array2d::with_zeros((1, batch_size)),
+
       layer_id:       layer_id,
       num_categories: num_categories,
       batch_lim:      batch_size,
@@ -1102,7 +1168,7 @@ impl SoftmaxLossLayer {
     unwrap!(self.category_truth) == guess
   }*/
 
-  pub fn get_guess(&self, batch_size: usize, ctx: &DeviceContext) -> Vec<i32> {
+  /*pub fn get_guess(&self, batch_size: usize, ctx: &DeviceContext) -> Vec<i32> {
     assert!(batch_size <= self.batch_lim);
     let mut host_guess = Array2d::with_zeros((1, batch_size));
     self.category_guess.as_view().view((0, 0), (1, batch_size))
@@ -1121,7 +1187,7 @@ impl SoftmaxLossLayer {
       }
     }
     num_correct
-  }
+  }*/
 }
 
 impl Layer for SoftmaxLossLayer {
@@ -1132,7 +1198,7 @@ impl Layer for SoftmaxLossLayer {
   fn output_activation(&self, out_layer_id: usize) -> Option<SharedDeviceBuf<f32>> { None }
   fn output_delta(&self, out_layer_id: usize) -> Option<SharedDeviceBuf<f32>> { None }
 
-  fn load(&mut self, phase: OptPhase, datum: &SampleDatum, maybe_label: Option<SampleLabel>, batch_idx: usize, ctx: &DeviceContext) {
+  /*fn load(&mut self, phase: OptPhase, datum: &SampleDatum, maybe_label: Option<SampleLabel>, batch_idx: usize, ctx: &DeviceContext) {
     //self.category_truth = maybe_label.map(|label| label.0);
     if batch_idx == 0 {
       self.category_truth.clear();
@@ -1141,7 +1207,7 @@ impl Layer for SoftmaxLossLayer {
       assert_eq!(batch_idx, self.category_truth.len());
       self.category_truth.push(label);
     }
-  }
+  }*/
 
   fn forward(&mut self, phase: OptPhase, batch_size: usize, ctx: &DeviceContext) {
     assert!(batch_size <= self.batch_lim);
@@ -1150,14 +1216,16 @@ impl Layer for SoftmaxLossLayer {
     for batch_idx in (0 .. batch_size) {
       let &mut SoftmaxLossLayer{
         ref mut probabilities, ref mut normalization,
-        ref mut tmp_max, ref mut category_guess, ..} = self;
+        ref mut tmp_max, ref mut category_guess,
+        ref mut pred_labels, ..} = self;
       unsafe { rembrandt_kernel_blockreduce_argmax(
           self.num_categories as i32,
           probabilities.as_view()
             .view((0, batch_idx), (self.num_categories, batch_idx + 1)).as_ptr(),
           tmp_max.as_mut_view()
             .mut_view((0, batch_idx), (1, batch_idx + 1)).as_mut_ptr(),
-          category_guess.as_mut_view()
+          //category_guess.as_mut_view()
+          pred_labels.as_mut_view()
             .mut_view((0, batch_idx), (1, batch_idx + 1)).as_mut_ptr(),
           ctx.stream.ptr,
       ) };
@@ -1205,7 +1273,8 @@ impl Layer for SoftmaxLossLayer {
           probabilities.as_view()
             .view((0, batch_idx), (self.num_categories, batch_idx + 1)).as_ptr(),
           self.num_categories as i32,
-          self.category_truth[batch_idx],
+          //self.category_truth[batch_idx],
+          self.true_labels_host.as_slice()[batch_idx],
           in_delta_view.as_mut_ptr(),
           ctx.stream.ptr,
       ) };
@@ -1215,9 +1284,46 @@ impl Layer for SoftmaxLossLayer {
       );
     }
   }
+
+  fn preload_label(&mut self, batch_idx: usize, label: i32, ctx: &DeviceContext) {
+    assert!(batch_idx < self.batch_lim);
+    self.true_labels_host.as_mut_slice()[batch_idx] = label;
+  }
+
+  fn load_labels(&mut self, batch_size: usize, ctx: &DeviceContext) {
+    assert!(batch_size == self.batch_lim);
+    self.true_labels.as_mut_view().sync_load(&self.true_labels_host.as_view(), ctx);
+  }
+
+  fn preload_mask(&mut self, batch_idx: usize, mask: &Array2d<u8>, ctx: &DeviceContext) {}
+
+  fn load_masks(&mut self, batch_size: usize, ctx: &DeviceContext) {}
+
+  fn predict_labels(&mut self, batch_size: usize, ctx: &DeviceContext) -> &[i32] {
+    assert!(batch_size == self.batch_lim);
+    self.pred_labels.as_view().sync_store(&mut self.pred_labels_host.as_mut_view(), ctx);
+    self.pred_labels_host.as_slice()
+  }
+
+  fn count_accuracy(&mut self, batch_size: usize, ctx: &DeviceContext) -> usize {
+    assert!(batch_size == self.batch_lim);
+    let mut num_correct = 0;
+    for (&y_truth, &y_hat) in self.true_labels_host.as_slice().iter().zip(self.pred_labels_host.as_slice().iter()) {
+      if y_truth == y_hat {
+        num_correct += 1;
+      }
+    }
+    num_correct
+  }
+
+  fn predict_probs(&mut self, batch_size: usize, ctx: &DeviceContext) -> &Array2d<f32>
+  { unimplemented!(); }
+
+  fn predict_cdfs(&mut self, batch_size: usize, ctx: &DeviceContext) -> &Array2d<f32>
+  { unimplemented!(); }
 }
 
-pub struct SoftmaxPolicyGradientLossLayer {
+/*pub struct SoftmaxPolicyGradientLossLayer {
   pub in_act:         SharedDeviceBuf<f32>,
   pub in_delta:       SharedDeviceBuf<f32>,
   pub probabilities:  DeviceArray2d<f32>,
@@ -1285,4 +1391,4 @@ impl Layer for SoftmaxPolicyGradientLossLayer {
         ctx,
     );*/
   }
-}
+}*/

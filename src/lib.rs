@@ -1,4 +1,4 @@
-//#![feature(box_syntax)]
+#![feature(slice_bytes)]
 
 extern crate array;
 extern crate arraydb;
