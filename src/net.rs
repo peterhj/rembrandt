@@ -1,7 +1,7 @@
 use data::{SampleDatum, SampleLabel};
 use graph::{Graph};
 use layer::*;
-use opt::{DescentConfig, DescentSchedule};
+use opt::{DescentConfig, DescentSchedule, OptPhase};
 
 use async_cuda::context::{DeviceContext};
 
@@ -27,6 +27,10 @@ pub trait NetArch {
   }
 
   fn loss_layer(&mut self) -> &mut SoftmaxLossLayer {
+    unimplemented!();
+  }
+
+  fn evaluate(&mut self, ctx: &DeviceContext) {
     unimplemented!();
   }
 }
@@ -86,6 +90,15 @@ impl NetArch for LinearNetArch {
 
   fn loss_layer(&mut self) -> &mut SoftmaxLossLayer {
     &mut self.loss_layer
+  }
+
+  fn evaluate(&mut self, ctx: &DeviceContext) {
+    let batch_size = self.batch_size();
+    self.data_layer().forward(OptPhase::Evaluation, batch_size, ctx);
+    for layer in self.hidden_layers_forward() {
+      layer.forward(OptPhase::Training, batch_size, ctx);
+    }
+    self.loss_layer().forward(OptPhase::Training, batch_size, ctx);
   }
 }
 

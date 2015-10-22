@@ -1,3 +1,4 @@
+#![feature(clone_from_slice)]
 #![feature(slice_bytes)]
 
 extern crate array;

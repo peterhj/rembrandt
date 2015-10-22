@@ -216,6 +216,7 @@ impl ModelConfigFile {
           assert_eq!(in_length, num_categories);
           let layer = SoftmaxLossLayerConfig{
             num_categories: num_categories,
+            do_mask: false, // FIXME(20151022)
           };
           (0 .. layer_names.len()).map(|_| Box::new(layer) as Box<LayerConfig>).collect()
         }

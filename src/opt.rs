@@ -11,6 +11,8 @@ pub enum AnnealingPolicy {
   None,
   Inv{time_scale: f32},
   Step{step_iters: usize, decay: f32},
+  StepOnce{step_iters: usize, new_rate: f32},
+  StepTwice{first_step: usize, second_step: usize, first_rate: f32, second_rate: f32},
 }
 
 impl AnnealingPolicy {
@@ -24,6 +26,22 @@ impl AnnealingPolicy {
       }
       AnnealingPolicy::Step{step_iters, decay} => {
         bare_step_size * decay.powi((t / step_iters) as i32)
+      }
+      AnnealingPolicy::StepOnce{step_iters, new_rate} => {
+        if t < step_iters {
+          bare_step_size
+        } else {
+          new_rate
+        }
+      }
+      AnnealingPolicy::StepTwice{first_step, second_step, first_rate, second_rate} => {
+        if t < first_step {
+          bare_step_size
+        } else if t < second_step {
+          first_rate
+        } else {
+          second_rate
+        }
       }
     }
   }
@@ -142,8 +160,8 @@ impl Optimizer for SgdOptimizer {
           let lap_time = get_time();
           let elapsed_ms = (lap_time - start_time).num_milliseconds();
           start_time = lap_time;
-          println!("DEBUG: interval: {}/{} train accuracy: {:.3} elapsed: {:.3} s",
-              epoch_idx + 1, epoch_size,
+          println!("DEBUG: epoch: {} interval: {}/{} train accuracy: {:.3} elapsed: {:.3} s",
+              state.epoch, epoch_idx + 1, epoch_size,
               interval_correct as f32 / interval_total as f32,
               elapsed_ms as f32 * 0.001,
           );
