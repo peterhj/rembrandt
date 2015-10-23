@@ -56,6 +56,7 @@ pub struct OptConfig {
   pub l2_reg_coef:    f32,
   pub anneal:         AnnealingPolicy,
   pub interval_size:  usize,
+  pub save_iters:     Option<usize>,
 }
 
 impl OptConfig {
@@ -119,17 +120,18 @@ impl Optimizer for SgdOptimizer {
     assert!(opt_cfg.minibatch_size >= batch_size);
     assert_eq!(0, opt_cfg.minibatch_size % batch_size);
     let mut start_time = get_time();
+    // FIXME(20151022): gradients are initialized to zero; should do it explicitly.
+    //arch.initialize_gradients();
     let mut interval_correct = 0;
     let mut interval_total = 0;
     let mut idx = 0;
     loop {
-      // XXX(20151002): gradients are initialized to zero.
+      interval_correct = 0;
+      interval_total = 0;
       train_data.each_sample(&mut |epoch_idx, datum, maybe_label| {
         if epoch_idx >= epoch_size {
           return;
         }
-        //arch.data_layer().load(OptPhase::Training, datum, maybe_label, idx % batch_size, ctx);
-        //arch.loss_layer().load(OptPhase::Training, datum, maybe_label, idx % batch_size, ctx);
         let batch_idx = idx % batch_size;
         match datum {
           &SampleDatum::RgbPerChannelBytes(ref frame) => {
@@ -146,8 +148,7 @@ impl Optimizer for SgdOptimizer {
             layer.forward(OptPhase::Training, batch_size, ctx);
           }
           arch.loss_layer().forward(OptPhase::Training, batch_size, ctx);
-          //interval_correct += arch.loss_layer().correct_guess(batch_size, &ctx);
-          arch.loss_layer().predict_labels(batch_size, &ctx);
+          arch.loss_layer().store_labels(batch_size, &ctx);
           interval_correct += arch.loss_layer().count_accuracy(batch_size, &ctx);
           interval_total += batch_size;
           arch.loss_layer().backward(&descent, batch_size, ctx);
@@ -160,8 +161,8 @@ impl Optimizer for SgdOptimizer {
           let lap_time = get_time();
           let elapsed_ms = (lap_time - start_time).num_milliseconds();
           start_time = lap_time;
-          println!("DEBUG: epoch: {} interval: {}/{} train accuracy: {:.3} elapsed: {:.3} s",
-              state.epoch, epoch_idx + 1, epoch_size,
+          println!("DEBUG: epoch: {} iter: {} interval: {}/{} train accuracy: {:.3} elapsed: {:.3} s",
+              state.epoch, state.t + 1, epoch_idx + 1, epoch_size,
               interval_correct as f32 / interval_total as f32,
               elapsed_ms as f32 * 0.001,
           );
@@ -174,6 +175,11 @@ impl Optimizer for SgdOptimizer {
             layer.reset_gradients(&descent, ctx);
           }
           state.t += 1;
+          if let Some(save_iters) = opt_cfg.save_iters {
+            if state.t % save_iters == 0 {
+              arch.save_layer_params(state.t, ctx);
+            }
+          }
           // FIXME(20151016): Doing this at the end of a (mini)batch b/c the
           // predicted labels are stored in a buffer in the net itself, and
           // indices get clobbered if we call .validate() in the middle of a
@@ -197,8 +203,6 @@ impl Optimizer for SgdOptimizer {
       if epoch_idx >= epoch_size {
         return;
       }
-      //arch.data_layer().load(OptPhase::Evaluation, datum, maybe_label, 0, ctx);
-      //arch.loss_layer().load(OptPhase::Evaluation, datum, maybe_label, epoch_idx % batch_size, ctx);
       let batch_idx = epoch_idx % batch_size;
       match datum {
         &SampleDatum::RgbPerChannelBytes(ref frame) => {
@@ -214,8 +218,7 @@ impl Optimizer for SgdOptimizer {
           layer.forward(OptPhase::Evaluation, batch_size, ctx);
         }
         arch.loss_layer().forward(OptPhase::Evaluation, batch_size, ctx);
-        //epoch_correct += arch.loss_layer().correct_guess(batch_size, &ctx);
-        arch.loss_layer().predict_labels(batch_size, &ctx);
+        arch.loss_layer().store_labels(batch_size, &ctx);
         epoch_correct += arch.loss_layer().count_accuracy(batch_size, &ctx);
         epoch_total += batch_size;
       }

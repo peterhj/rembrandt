@@ -1,7 +1,10 @@
 use data::{SampleDatum, SampleLabel};
 use opt::{DescentConfig, DescentSchedule, OptPhase};
 
-use array::{View, MutView, WithZeros, ArrayDeserialize, Array2d, Array3d};
+use array::{
+  View, MutView, WithZeros, ArrayDeserialize, ArraySerialize,
+  NdArrayFormat, Array2d, Array3d,
+};
 use async::{AsyncContext, AsyncLoad, AsyncStore, AsyncSend};
 use async_cuda::array_num::{DeviceNumExt};
 use async_cuda::array_rand::{DeviceRandExt};
@@ -25,6 +28,7 @@ use std::cmp::{max};
 use std::collections::{BTreeMap};
 use std::fmt::{Debug};
 use std::fs::{File};
+use std::io::{Cursor};
 use std::iter::{repeat};
 use std::path::{PathBuf};
 use std::rc::{Rc};
@@ -64,6 +68,10 @@ pub trait Layer {
   fn output_delta(&self, out_layer_id: usize) -> Option<SharedDeviceBuf<f32>>;
 
   fn initialize_params(&mut self, ctx: &DeviceContext) {}
+  fn initialize_gradients(&mut self, ctx: &DeviceContext) {}
+  fn load_params(&mut self, blob: &[u8], ctx: &DeviceContext) -> usize { 0 }
+  fn save_params(&self, ctx: &DeviceContext) -> Vec<u8> { Vec::new() }
+
   //fn load(&mut self, phase: OptPhase, datum: &SampleDatum, maybe_label: Option<SampleLabel>, batch_idx: usize, ctx: &DeviceContext) {}
   fn forward(&mut self, phase: OptPhase, batch_size: usize, ctx: &DeviceContext) {}
   fn backward(&mut self, descent: &DescentSchedule, batch_size: usize, ctx: &DeviceContext) {}
@@ -71,16 +79,23 @@ pub trait Layer {
   fn reset_gradients(&mut self, descent: &DescentSchedule, ctx: &DeviceContext) {}
 
   fn preload_frame(&mut self, batch_idx: usize, frame: &Array3d<u8>, ctx: &DeviceContext) {}
+  fn preload_frame_permute(&mut self, batch_idx: usize, frame: &Array3d<u8>, permute_idx: usize, ctx: &DeviceContext) {}
   fn load_frames(&mut self, batch_size: usize, ctx: &DeviceContext) {}
   fn preload_label(&mut self, batch_idx: usize, label: i32, ctx: &DeviceContext) {}
   fn load_labels(&mut self, batch_size: usize, ctx: &DeviceContext) {}
   fn preload_mask(&mut self, batch_idx: usize, mask: &Array2d<f32>, ctx: &DeviceContext) {}
   fn load_masks(&mut self, batch_size: usize, ctx: &DeviceContext) {}
+  fn store_labels(&mut self, batch_size: usize, ctx: &DeviceContext)
+  { unimplemented!(); }
   fn predict_labels(&mut self, batch_size: usize, ctx: &DeviceContext) -> &[i32]
   { unimplemented!(); }
   fn count_accuracy(&mut self, batch_size: usize, ctx: &DeviceContext) -> usize
   { unimplemented!(); }
+  fn store_probs(&mut self, batch_size: usize, ctx: &DeviceContext)
+  { unimplemented!(); }
   fn predict_probs(&mut self, batch_size: usize, ctx: &DeviceContext) -> &Array2d<f32>
+  { unimplemented!(); }
+  fn store_cdfs(&mut self, batch_size: usize, ctx: &DeviceContext)
   { unimplemented!(); }
   fn predict_cdfs(&mut self, batch_size: usize, ctx: &DeviceContext) -> &Array2d<f32>
   { unimplemented!(); }
@@ -106,9 +121,9 @@ impl LayerConfig for DataLayerConfig {
 }
 
 pub struct DataLayer {
-  pub in_bytes:   DeviceBuf<u8>,
-  pub raw_image:  DeviceBuf<f32>,
-  pub crop_image: SharedDeviceBuf<f32>,
+  //pub in_bytes:   DeviceBuf<u8>,
+  //pub raw_image:  DeviceBuf<f32>,
+  //pub crop_image: SharedDeviceBuf<f32>,
   pub in_buf_host:  Vec<u8>,
   pub in_buf:       DeviceBuf<u8>,
   pub out_buf:      SharedDeviceBuf<f32>,
@@ -122,9 +137,9 @@ impl DataLayer {
     let raw_length = config.raw_width * config.raw_height * config.channels * batch_size;
     let crop_length = config.crop_width * config.crop_height * config.channels * batch_size;
     DataLayer{
-      in_bytes:   DeviceBuf::with_zeros(raw_length),
-      raw_image:  DeviceBuf::with_zeros(raw_length),
-      crop_image: Rc::new(RefCell::new(DeviceBuf::with_zeros(crop_length))),
+      //in_bytes:   DeviceBuf::with_zeros(raw_length),
+      //raw_image:  DeviceBuf::with_zeros(raw_length),
+      //crop_image: Rc::new(RefCell::new(DeviceBuf::with_zeros(crop_length))),
       in_buf_host:  repeat(0).take(raw_length).collect(),
       in_buf:       DeviceBuf::with_zeros(raw_length),
       out_buf:      Rc::new(RefCell::new(DeviceBuf::with_zeros(crop_length))),
@@ -232,6 +247,31 @@ impl Layer for DataLayer {
     let frame = frame.as_slice();
     assert_eq!(raw_length, frame.len());
     copy_memory(frame, &mut self.in_buf_host[batch_idx * raw_length .. (batch_idx + 1) * raw_length]);
+  }
+
+  fn preload_frame_permute(&mut self, batch_idx: usize, frame: &Array3d<u8>, permute_idx: usize, ctx: &DeviceContext) {
+    assert!(batch_idx < self.batch_lim);
+    let DataLayerConfig{
+      raw_width, raw_height, channels, ..} = self.config;
+    let raw_length = raw_width * raw_height * channels;
+    let plane_len = raw_width * raw_height;
+    let frame = frame.as_slice();
+    assert_eq!(raw_length, frame.len());
+    // FIXME(20151022): permute_idx has a special meaning at the moment.
+    if permute_idx == 0 {
+      copy_memory(frame, &mut self.in_buf_host[batch_idx * raw_length .. (batch_idx + 1) * raw_length]);
+    } else if permute_idx == 1 {
+      let batch_offset = batch_idx * raw_length;
+      for c in (0 .. channels) {
+        let c_offset = 2 * ((c + 1) % 2) - 1;
+        copy_memory(
+            &frame[c * plane_len .. (c + 1) * plane_len],
+            &mut self.in_buf_host[batch_offset + (c + c_offset) * plane_len .. batch_offset + (c + 1 + c_offset) * plane_len],
+        );
+      }
+    } else {
+      unreachable!();
+    }
   }
 
   fn load_frames(&mut self, batch_size: usize, ctx: &DeviceContext) {
@@ -404,7 +444,7 @@ impl FullyConnLayer {
     }
   }
 
-  pub fn load_params(&mut self, prefix: &str, ctx: &DeviceContext) {
+  pub fn load_params_old(&mut self, prefix: &str, ctx: &DeviceContext) {
     let FullyConnLayerConfig{in_channels, out_channels, ..} = self.config;
     let weights_path = PathBuf::from(&format!("{}_weights.ndarray", prefix));
     let bias_path = PathBuf::from(&format!("{}_bias.ndarray", prefix));
@@ -727,6 +767,33 @@ impl Layer for Conv2dLayer {
     let init_bias = Array2d::with_zeros((1, out_channels));
     self.weights.as_mut_view().sync_load(&init_weights.as_view(), ctx);
     self.bias.as_mut_view().sync_load(&init_bias.as_view(), ctx);
+  }
+
+  fn load_params(&mut self, blob: &[u8], ctx: &DeviceContext) -> usize {
+    let Conv2dLayerConfig{in_channels, out_channels, ..} = self.config;
+    let mut reader = Cursor::new(blob);
+    let load_weights = Array2d::deserialize(&mut reader)
+      .ok().expect("Conv2dLayer failed to deserialize weights!");
+    let load_bias = Array2d::deserialize(&mut reader)
+      .ok().expect("Conv2dLayer failed to deserialize bias!");
+    assert_eq!((in_channels, out_channels), load_weights.as_view().get_bound());
+    assert_eq!((1, out_channels), load_bias.as_view().get_bound());
+    self.weights.as_mut_view().sync_load(&load_weights.as_view(), ctx);
+    self.bias.as_mut_view().sync_load(&load_bias.as_view(), ctx);
+    reader.position() as usize
+  }
+
+  fn save_params(&self, ctx: &DeviceContext) -> Vec<u8> {
+    let mut blob = Vec::new();
+    let mut save_weights = Array2d::with_zeros(self.weights.as_view().get_bound());
+    let mut save_bias = Array2d::with_zeros(self.bias.as_view().get_bound());
+    self.weights.as_view().sync_store(&mut save_weights.as_mut_view(), ctx);
+    self.bias.as_view().sync_store(&mut save_bias.as_mut_view(), ctx);
+    //(&save_weights.as_view() as &ArraySerialize<f32, (usize, usize), NdArrayFormat>)
+    save_weights.as_view().serialize(&mut blob);
+    //(&save_bias.as_view() as &ArraySerialize<f32, (usize, usize), NdArrayFormat>)
+    save_bias.as_view().serialize(&mut blob);
+    blob
   }
 
   fn reset_gradients(&mut self, descent: &DescentSchedule, ctx: &DeviceContext) {
@@ -1530,7 +1597,7 @@ impl Layer for SoftmaxLossLayer {
     self.zero_mask.as_mut_view().sync_load(&self.zero_mask_host.as_view(), ctx);
   }
 
-  fn predict_labels(&mut self, batch_size: usize, ctx: &DeviceContext) -> &[i32] {
+  fn store_labels(&mut self, batch_size: usize, ctx: &DeviceContext) {
     assert!(batch_size == self.batch_lim);
     assert!(self.config.num_categories <= 1024);
     unsafe { rembrandt_kernel_batch_blockreduce_argmax(
@@ -1542,6 +1609,10 @@ impl Layer for SoftmaxLossLayer {
         ctx.stream.ptr,
     ) };
     self.pred_labels.as_view().sync_store(&mut self.pred_labels_host.as_mut_view(), ctx);
+  }
+
+  fn predict_labels(&mut self, batch_size: usize, ctx: &DeviceContext) -> &[i32] {
+    assert!(batch_size == self.batch_lim);
     self.pred_labels_host.as_slice()
   }
 
@@ -1556,13 +1627,17 @@ impl Layer for SoftmaxLossLayer {
     num_correct
   }
 
-  fn predict_probs(&mut self, batch_size: usize, ctx: &DeviceContext) -> &Array2d<f32> {
+  fn store_probs(&mut self, batch_size: usize, ctx: &DeviceContext) {
     assert!(batch_size == self.batch_lim);
     self.probabilities.as_view().sync_store(&mut self.pred_probs_host.as_mut_view(), ctx);
+  }
+
+  fn predict_probs(&mut self, batch_size: usize, ctx: &DeviceContext) -> &Array2d<f32> {
+    assert!(batch_size == self.batch_lim);
     &self.pred_probs_host
   }
 
-  fn predict_cdfs(&mut self, batch_size: usize, ctx: &DeviceContext) -> &Array2d<f32> {
+  fn store_cdfs(&mut self, batch_size: usize, ctx: &DeviceContext) {
     assert!(batch_size == self.batch_lim);
     assert!(self.config.num_categories <= 1024);
     unsafe { rembrandt_kernel_batch_blockscan_prefix_sum(
@@ -1573,6 +1648,10 @@ impl Layer for SoftmaxLossLayer {
         ctx.stream.ptr,
     ) };
     self.pred_cdfs.as_view().sync_store(&mut self.pred_cdfs_host.as_mut_view(), ctx);
+  }
+
+  fn predict_cdfs(&mut self, batch_size: usize, ctx: &DeviceContext) -> &Array2d<f32> {
+    assert!(batch_size == self.batch_lim);
     &self.pred_cdfs_host
   }
 }

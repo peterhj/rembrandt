@@ -4,19 +4,27 @@ use layer::*;
 use opt::{DescentConfig, DescentSchedule, OptPhase};
 
 use async_cuda::context::{DeviceContext};
+use byteorder::{ReadBytesExt, WriteBytesExt, LittleEndian};
 
 use std::collections::{BTreeMap};
+use std::fs::{OpenOptions, copy, create_dir_all};
+use std::io::{Read, Write};
+use std::path::{PathBuf};
 
 pub trait NetArch {
   fn batch_size(&self) -> usize;
 
-  fn data_layer(&mut self) -> &mut DataLayer {
+  fn load_layer_params(&mut self, maybe_t: Option<usize>, ctx: &DeviceContext) {
     unimplemented!();
   }
 
-  /*fn hidden_layers(&mut self) -> &mut [Box<Layer>] {
+  fn save_layer_params(&mut self, t: usize, ctx: &DeviceContext) {
     unimplemented!();
-  }*/
+  }
+
+  fn data_layer(&mut self) -> &mut DataLayer {
+    unimplemented!();
+  }
 
   fn hidden_layers_forward(&mut self) -> Vec<&mut Box<Layer>> {
     unimplemented!();
@@ -36,6 +44,7 @@ pub trait NetArch {
 }
 
 pub struct LinearNetArch {
+  params_path:    PathBuf,
   batch_size:     usize,
   data_layer:     DataLayer,
   loss_layer:     SoftmaxLossLayer,
@@ -43,8 +52,9 @@ pub struct LinearNetArch {
 }
 
 impl LinearNetArch {
-  pub fn new(batch_size: usize, data_layer: DataLayer, loss_layer: SoftmaxLossLayer, hidden_layers: Vec<Box<Layer>>) -> LinearNetArch {
+  pub fn new(params_path: PathBuf, batch_size: usize, data_layer: DataLayer, loss_layer: SoftmaxLossLayer, hidden_layers: Vec<Box<Layer>>) -> LinearNetArch {
     LinearNetArch{
+      params_path:    params_path,
       batch_size:     batch_size,
       data_layer:     data_layer,
       loss_layer:     loss_layer,
@@ -52,7 +62,7 @@ impl LinearNetArch {
     }
   }
 
-  pub fn with_graph(layer_graph: Graph<Box<LayerConfig>>) -> LinearNetArch {
+  /*pub fn with_graph(layer_graph: Graph<Box<LayerConfig>>) -> LinearNetArch {
     for &layer_id in layer_graph.topological_order().iter() {
       if layer_graph.in_edges[&layer_id].len() <= 1 {
         // TODO
@@ -64,12 +74,73 @@ impl LinearNetArch {
 
     // TODO
     unimplemented!();
-  }
+  }*/
 }
 
 impl NetArch for LinearNetArch {
   fn batch_size(&self) -> usize {
     self.batch_size
+  }
+
+  fn load_layer_params(&mut self, maybe_t: Option<usize>, ctx: &DeviceContext) {
+    let mut blob_path = self.params_path.clone();
+    // FIXME(20151023): if t is None, should load the _newest_ params
+    // available.
+    let t = if let Some(t) = maybe_t {
+      t
+    } else {
+      let mut checkpoint_path = self.params_path.clone();
+      checkpoint_path.push("checkpoint");
+      let mut checkpoint_file = OpenOptions::new()
+        .read(true)
+        .open(&checkpoint_path)
+        .ok().expect("LinearNetArch failed to open checkpoint file!");
+      let t = checkpoint_file.read_u64::<LittleEndian>()
+        .ok().expect("LinearNetArch failed to read checkpoint!") as usize;
+      t
+    };
+    blob_path.push(&format!("layer_params.t_{}.blob", t));
+    let mut blob_file = OpenOptions::new()
+      .read(true)
+      .open(&blob_path)
+      .ok().expect("LinearNetArch failed to open blob file to load layer params!");
+    let mut blob = Vec::new();
+    blob_file.read_to_end(&mut blob)
+      .ok().expect("LinearNetArch failed to read from blob file!");
+    let mut cursor_offset = 0;
+    for layer in self.hidden_layers_forward() {
+      let progress = layer.load_params(&blob[cursor_offset ..], ctx);
+      cursor_offset += progress;
+    }
+  }
+
+  fn save_layer_params(&mut self, t: usize, ctx: &DeviceContext) {
+    create_dir_all(&self.params_path)
+      .ok().expect("LinearNetArch failed to create params dir!");
+    let mut blob = Vec::new();
+    for layer in self.hidden_layers_forward() {
+      let layer_blob = layer.save_params(ctx);
+      blob.extend(&layer_blob);
+    }
+    let mut checkpoint_path = self.params_path.clone();
+    checkpoint_path.push("checkpoint");
+    let mut bak_checkpoint_path = self.params_path.clone();
+    bak_checkpoint_path.push("checkpoint.0");
+    copy(&checkpoint_path, &bak_checkpoint_path).ok();
+    let mut checkpoint_file = OpenOptions::new()
+      .create(true).truncate(true).write(true)
+      .open(&checkpoint_path)
+      .ok().expect("LinearNetArch failed to open checkpoint file!");
+    checkpoint_file.write_u64::<LittleEndian>(t as u64)
+      .ok().expect("LinearNetArch failed to write checkpoint!");
+    let mut blob_path = self.params_path.clone();
+    blob_path.push(&format!("layer_params.t_{}.blob", t));
+    let mut blob_file = OpenOptions::new()
+      .create(true).truncate(true).write(true)
+      .open(&blob_path)
+      .ok().expect("LinearNetArch failed to open blob file to save layer params!");
+    blob_file.write_all(&blob)
+      .ok().expect("LinearNetArch failed to write to blob file!");
   }
 
   fn data_layer(&mut self) -> &mut DataLayer {
@@ -102,7 +173,7 @@ impl NetArch for LinearNetArch {
   }
 }
 
-pub struct DagNetArch {
+/*pub struct DagNetArch {
   layer_graph:    Graph<Box<LayerConfig>>,
   layers:         BTreeMap<usize, Box<Layer>>,
   data_layer_id:  usize,
@@ -149,4 +220,4 @@ impl DagNetArch {
     // TODO
     unimplemented!();
   }
-}
+}*/
