@@ -55,8 +55,9 @@ pub struct OptConfig {
   pub momentum:       f32,
   pub l2_reg_coef:    f32,
   pub anneal:         AnnealingPolicy,
-  pub interval_size:  usize,
-  pub save_iters:     Option<usize>,
+  pub display_interval:   usize,
+  pub validate_interval:  usize,
+  pub save_interval:      Option<usize>,
 }
 
 impl OptConfig {
@@ -144,30 +145,19 @@ impl Optimizer for SgdOptimizer {
         if idx % batch_size == 0 {
           arch.data_layer().load_frames(batch_size, ctx);
           arch.loss_layer().load_labels(batch_size, ctx);
-          for layer in arch.hidden_layers_forward() {
+          /*for layer in arch.hidden_layers_forward() {
             layer.forward(OptPhase::Training, batch_size, ctx);
           }
-          arch.loss_layer().forward(OptPhase::Training, batch_size, ctx);
-          arch.loss_layer().store_labels(batch_size, &ctx);
-          interval_correct += arch.loss_layer().count_accuracy(batch_size, &ctx);
+          arch.loss_layer().forward(OptPhase::Training, batch_size, ctx);*/
+          arch.evaluate(ctx);
+          arch.loss_layer().store_labels(batch_size, ctx);
+          interval_correct += arch.loss_layer().count_accuracy(batch_size, ctx);
           interval_total += batch_size;
-          arch.loss_layer().backward(&descent, batch_size, ctx);
+          /*arch.loss_layer().backward(&descent, batch_size, ctx);
           for layer in arch.hidden_layers_backward() {
             layer.backward(&descent, batch_size, ctx);
-          }
-        }
-        //if idx % opt_cfg.interval_size == 0 {
-        if idx % (5 * 1024) == 0 { // FIXME(20151016)
-          let lap_time = get_time();
-          let elapsed_ms = (lap_time - start_time).num_milliseconds();
-          start_time = lap_time;
-          println!("DEBUG: epoch: {} iter: {} interval: {}/{} train accuracy: {:.3} elapsed: {:.3} s",
-              state.epoch, state.t + 1, epoch_idx + 1, epoch_size,
-              interval_correct as f32 / interval_total as f32,
-              elapsed_ms as f32 * 0.001,
-          );
-          interval_correct = 0;
-          interval_total = 0;
+          }*/
+          arch.evaluate_gradients(&descent, ctx);
         }
         if idx % opt_cfg.minibatch_size == 0 {
           for layer in arch.hidden_layers_forward() {
@@ -175,8 +165,28 @@ impl Optimizer for SgdOptimizer {
             layer.reset_gradients(&descent, ctx);
           }
           state.t += 1;
-          if let Some(save_iters) = opt_cfg.save_iters {
-            if state.t % save_iters == 0 {
+          if state.t % opt_cfg.display_interval == 0 {
+            let mut act_sparse = Vec::new();
+            let mut grad_sparse = Vec::new();
+            for layer in arch.hidden_layers_forward() {
+              act_sparse.push(layer.stats().act_sparseness());
+              grad_sparse.push(layer.stats().grad_sparseness());
+              layer.reset_stats();
+            }
+            let lap_time = get_time();
+            let elapsed_ms = (lap_time - start_time).num_milliseconds();
+            start_time = lap_time;
+            println!("DEBUG: epoch: {} iter: {} interval: {}/{} train accuracy: {:.3} elapsed: {:.3} s act sparse: {:.4?} grad sparse: {:.4?}",
+                state.epoch, state.t, epoch_idx + 1, epoch_size,
+                interval_correct as f32 / interval_total as f32,
+                elapsed_ms as f32 * 0.001,
+                act_sparse, grad_sparse,
+            );
+            interval_correct = 0;
+            interval_total = 0;
+          }
+          if let Some(save_interval) = opt_cfg.save_interval {
+            if state.t % save_interval == 0 {
               arch.save_layer_params(state.t, ctx);
             }
           }
@@ -184,7 +194,7 @@ impl Optimizer for SgdOptimizer {
           // predicted labels are stored in a buffer in the net itself, and
           // indices get clobbered if we call .validate() in the middle of a
           // batch.
-          if (idx / opt_cfg.minibatch_size) % (opt_cfg.interval_size) == 0 {
+          if state.t % opt_cfg.validate_interval == 0 {
             self.validate(opt_cfg, arch, test_data, ctx);
           }
         }
@@ -199,6 +209,9 @@ impl Optimizer for SgdOptimizer {
     let batch_size = arch.batch_size();
     let mut epoch_correct = 0;
     let mut epoch_total = 0;
+    for layer in arch.hidden_layers_forward() {
+      layer.reset_stats();
+    }
     eval_data.each_sample(&mut |epoch_idx, datum, maybe_label| {
       if epoch_idx >= epoch_size {
         return;
@@ -223,6 +236,14 @@ impl Optimizer for SgdOptimizer {
         epoch_total += batch_size;
       }
     });
-    println!("DEBUG: validation accuracy: {:.3}", epoch_correct as f32 / epoch_total as f32);
+    let mut act_sparse = Vec::new();
+    for layer in arch.hidden_layers_forward() {
+      act_sparse.push(layer.stats().act_sparseness());
+      layer.reset_stats();
+    }
+    println!("DEBUG: validation accuracy: {:.3} act sparse: {:?}",
+        epoch_correct as f32 / epoch_total as f32,
+        act_sparse,
+    );
   }
 }

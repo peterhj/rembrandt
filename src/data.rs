@@ -25,6 +25,12 @@ pub enum SampleDatum {
 #[derive(Clone, Copy)]
 pub struct SampleLabel(pub i32);
 
+#[derive(Clone, Copy)]
+pub enum NewSampleLabel {
+  Category{category: i32},
+  BinaryCategory{category: i32, binary: i32},
+}
+
 #[derive(Clone, Debug)]
 pub enum DataMeanConfig {
   MeanPath(PathBuf),

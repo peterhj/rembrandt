@@ -19,9 +19,9 @@ path = "tools/bench-cudnn.rs"
 name = "bench-cublas"
 path = "tools/bench-cublas.rs"
 
-[[bin]]
-name = "run-rembrandt"
-path = "tools/run-rembrandt.rs"
+#[[bin]]
+#name = "run-rembrandt"
+#path = "tools/run-rembrandt.rs"
 
 [dependencies]
 byteorder = "*"

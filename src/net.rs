@@ -41,6 +41,10 @@ pub trait NetArch {
   fn evaluate(&mut self, ctx: &DeviceContext) {
     unimplemented!();
   }
+
+  fn evaluate_gradients(&mut self, descent: &DescentSchedule, ctx: &DeviceContext) {
+    unimplemented!();
+  }
 }
 
 pub struct LinearNetArch {
@@ -147,10 +151,6 @@ impl NetArch for LinearNetArch {
     &mut self.data_layer
   }
 
-  /*fn hidden_layers(&mut self) -> &mut [Box<Layer>] {
-    &mut self.hidden_layers
-  }*/
-
   fn hidden_layers_forward(&mut self) -> Vec<&mut Box<Layer>> {
     self.hidden_layers.iter_mut().collect()
   }
@@ -165,11 +165,18 @@ impl NetArch for LinearNetArch {
 
   fn evaluate(&mut self, ctx: &DeviceContext) {
     let batch_size = self.batch_size();
-    self.data_layer().forward(OptPhase::Evaluation, batch_size, ctx);
     for layer in self.hidden_layers_forward() {
       layer.forward(OptPhase::Training, batch_size, ctx);
     }
     self.loss_layer().forward(OptPhase::Training, batch_size, ctx);
+  }
+
+  fn evaluate_gradients(&mut self, descent: &DescentSchedule, ctx: &DeviceContext) {
+    let batch_size = self.batch_size();
+    self.loss_layer().backward(descent, batch_size, ctx);
+    for layer in self.hidden_layers_backward() {
+      layer.backward(descent, batch_size, ctx);
+    }
   }
 }
 
