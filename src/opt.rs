@@ -145,18 +145,10 @@ impl Optimizer for SgdOptimizer {
         if idx % batch_size == 0 {
           arch.data_layer().load_frames(batch_size, ctx);
           arch.loss_layer().load_labels(batch_size, ctx);
-          /*for layer in arch.hidden_layers_forward() {
-            layer.forward(OptPhase::Training, batch_size, ctx);
-          }
-          arch.loss_layer().forward(OptPhase::Training, batch_size, ctx);*/
-          arch.evaluate(ctx);
+          arch.evaluate(OptPhase::Training, ctx);
           arch.loss_layer().store_labels(batch_size, ctx);
           interval_correct += arch.loss_layer().count_accuracy(batch_size, ctx);
           interval_total += batch_size;
-          /*arch.loss_layer().backward(&descent, batch_size, ctx);
-          for layer in arch.hidden_layers_backward() {
-            layer.backward(&descent, batch_size, ctx);
-          }*/
           arch.evaluate_gradients(&descent, ctx);
         }
         if idx % opt_cfg.minibatch_size == 0 {
@@ -166,21 +158,22 @@ impl Optimizer for SgdOptimizer {
           }
           state.t += 1;
           if state.t % opt_cfg.display_interval == 0 {
-            let mut act_sparse = Vec::new();
+            /*let mut act_sparse = Vec::new();
             let mut grad_sparse = Vec::new();
             for layer in arch.hidden_layers_forward() {
               act_sparse.push(layer.stats().act_sparseness());
               grad_sparse.push(layer.stats().grad_sparseness());
               layer.reset_stats();
-            }
+            }*/
             let lap_time = get_time();
             let elapsed_ms = (lap_time - start_time).num_milliseconds();
             start_time = lap_time;
-            println!("DEBUG: epoch: {} iter: {} interval: {}/{} train accuracy: {:.3} elapsed: {:.3} s act sparse: {:.4?} grad sparse: {:.4?}",
+            //println!("DEBUG: epoch: {} iter: {} interval: {}/{} train accuracy: {:.3} elapsed: {:.3} s act sparse: {:.4?} grad sparse: {:.4?}",
+            println!("DEBUG: epoch: {} iter: {} interval: {}/{} train accuracy: {:.3} elapsed: {:.3} s",
                 state.epoch, state.t, epoch_idx + 1, epoch_size,
                 interval_correct as f32 / interval_total as f32,
                 elapsed_ms as f32 * 0.001,
-                act_sparse, grad_sparse,
+                //act_sparse, grad_sparse,
             );
             interval_correct = 0;
             interval_total = 0;
@@ -209,9 +202,9 @@ impl Optimizer for SgdOptimizer {
     let batch_size = arch.batch_size();
     let mut epoch_correct = 0;
     let mut epoch_total = 0;
-    for layer in arch.hidden_layers_forward() {
+    /*for layer in arch.hidden_layers_forward() {
       layer.reset_stats();
-    }
+    }*/
     eval_data.each_sample(&mut |epoch_idx, datum, maybe_label| {
       if epoch_idx >= epoch_size {
         return;
@@ -227,23 +220,25 @@ impl Optimizer for SgdOptimizer {
       if (epoch_idx + 1) % batch_size == 0 {
         arch.data_layer().load_frames(batch_size, ctx);
         arch.loss_layer().load_labels(batch_size, ctx);
-        for layer in arch.hidden_layers_forward() {
+        /*for layer in arch.hidden_layers_forward() {
           layer.forward(OptPhase::Evaluation, batch_size, ctx);
         }
-        arch.loss_layer().forward(OptPhase::Evaluation, batch_size, ctx);
+        arch.loss_layer().forward(OptPhase::Evaluation, batch_size, ctx);*/
+        arch.evaluate(OptPhase::Evaluation, ctx);
         arch.loss_layer().store_labels(batch_size, &ctx);
         epoch_correct += arch.loss_layer().count_accuracy(batch_size, &ctx);
         epoch_total += batch_size;
       }
     });
-    let mut act_sparse = Vec::new();
+    /*let mut act_sparse = Vec::new();
     for layer in arch.hidden_layers_forward() {
       act_sparse.push(layer.stats().act_sparseness());
       layer.reset_stats();
-    }
-    println!("DEBUG: validation accuracy: {:.3} act sparse: {:?}",
+    }*/
+    //println!("DEBUG: validation accuracy: {:.3} act sparse: {:?}",
+    println!("DEBUG: validation accuracy: {:.3}",
         epoch_correct as f32 / epoch_total as f32,
-        act_sparse,
+        //act_sparse,
     );
   }
 }

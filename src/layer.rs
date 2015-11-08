@@ -631,6 +631,19 @@ impl Layer for FullyConnLayer {
   }
 }
 
+// TODO(20151104): dense and low-rank dense layers (DenseLayer supports batching
+// and replaces FullyConnLayer).
+
+#[derive(Clone, Copy, Debug)]
+pub struct DenseLayerConfig;
+
+pub struct DenseLayer;
+
+#[derive(Clone, Copy, Debug)]
+pub struct LowRankDenseLayerConfig;
+
+pub struct LowRankDenseLayer;
+
 #[derive(Clone, Copy, Debug)]
 pub struct Conv2dLayerConfig {
   pub in_width:     usize,
@@ -935,16 +948,19 @@ impl Layer for Conv2dLayer {
       }
     }
 
-    unsafe { rembrandt_kernel_reduce_count_nonzero(
-        out_act.borrow().as_view().as_ptr(),
-        (out_length * batch_size) as i32,
-        out_act_nz_tmp.as_mut_view().as_mut_ptr(),
-        out_act_nz.as_mut_view().as_mut_ptr(),
-        ctx.stream.ptr,
-    ) };
-    out_act_nz.as_view_2d((1, 1)).sync_store(&mut out_act_nz_h.as_mut_view(), ctx);
-    self.stats.num_nonzero_acts += out_act_nz_h.as_slice()[0] as i64;
-    self.stats.num_total_acts += (out_length * batch_size) as i64;
+    // TODO(20151104): add flag for accumulating stats.
+    if false {
+      unsafe { rembrandt_kernel_reduce_count_nonzero(
+          out_act.borrow().as_view().as_ptr(),
+          (out_length * batch_size) as i32,
+          out_act_nz_tmp.as_mut_view().as_mut_ptr(),
+          out_act_nz.as_mut_view().as_mut_ptr(),
+          ctx.stream.ptr,
+      ) };
+      out_act_nz.as_view_2d((1, 1)).sync_store(&mut out_act_nz_h.as_mut_view(), ctx);
+      self.stats.num_nonzero_acts += out_act_nz_h.as_slice()[0] as i64;
+      self.stats.num_total_acts += (out_length * batch_size) as i64;
+    }
 
     /*for batch_idx in (0 .. batch_size) {
       let &mut Conv2dLayer{
@@ -1075,17 +1091,20 @@ impl Layer for Conv2dLayer {
       ).unwrap() };
     }
 
-    unsafe { rembrandt_kernel_reduce_count_sparse(
-        grad_weights.as_view().as_ptr(),
-        grad_weights.as_view().len() as i32,
-        grad_nz_tmp.as_mut_view().as_mut_ptr(),
-        grad_nz.as_mut_view().as_mut_ptr(),
-        1.0e-4f32,
-        ctx.stream.ptr,
-    ) };
-    grad_nz.as_view_2d((1, 1)).sync_store(&mut grad_nz_h.as_mut_view(), ctx);
-    self.stats.num_nonzero_grad += grad_nz_h.as_slice()[0] as i64;
-    self.stats.num_total_grad += grad_weights.as_view().len() as i64;
+    // TODO(20151104): add flag for accumulating stats.
+    if false {
+      unsafe { rembrandt_kernel_reduce_count_sparse(
+          grad_weights.as_view().as_ptr(),
+          grad_weights.as_view().len() as i32,
+          grad_nz_tmp.as_mut_view().as_mut_ptr(),
+          grad_nz.as_mut_view().as_mut_ptr(),
+          1.0e-4f32,
+          ctx.stream.ptr,
+      ) };
+      grad_nz.as_view_2d((1, 1)).sync_store(&mut grad_nz_h.as_mut_view(), ctx);
+      self.stats.num_nonzero_grad += grad_nz_h.as_slice()[0] as i64;
+      self.stats.num_total_grad += grad_weights.as_view().len() as i64;
+    }
 
     /*for batch_idx in (0 .. batch_size) {
       let &mut Conv2dLayer{
@@ -1778,6 +1797,9 @@ impl Layer for SoftmaxLossLayer {
   fn store_labels(&mut self, batch_size: usize, ctx: &DeviceContext) {
     assert!(batch_size == self.batch_lim);
     assert!(self.config.num_categories <= 1024);
+    /*println!("DEBUG: store_labels:");
+    println!("DEBUG:   true labels:          {:?}", self.true_labels_host);
+    println!("DEBUG:   pred labels (BEFORE): {:?}", self.pred_labels_host);*/
     unsafe { rembrandt_kernel_batch_blockreduce_argmax(
         self.probabilities.as_view().as_ptr(),
         self.config.num_categories as i32,
@@ -1787,6 +1809,7 @@ impl Layer for SoftmaxLossLayer {
         ctx.stream.ptr,
     ) };
     self.pred_labels.as_view().sync_store(&mut self.pred_labels_host.as_mut_view(), ctx);
+    //println!("DEBUG:   pred labels (AFTER):  {:?}", self.pred_labels_host);
   }
 
   fn predict_labels(&mut self, batch_size: usize, ctx: &DeviceContext) -> &[i32] {
@@ -1796,6 +1819,9 @@ impl Layer for SoftmaxLossLayer {
 
   fn count_accuracy(&mut self, batch_size: usize, ctx: &DeviceContext) -> usize {
     assert!(batch_size == self.batch_lim);
+    /*println!("DEBUG: count_accuracy:");
+    println!("DEBUG:   true labels: {:?}", self.true_labels_host);
+    println!("DEBUG:   pred labels: {:?}", self.pred_labels_host);*/
     let mut num_correct = 0;
     for (&y_truth, &y_hat) in self.true_labels_host.as_slice().iter().zip(self.pred_labels_host.as_slice().iter()) {
       if y_truth == y_hat {

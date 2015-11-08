@@ -38,7 +38,7 @@ pub trait NetArch {
     unimplemented!();
   }
 
-  fn evaluate(&mut self, ctx: &DeviceContext) {
+  fn evaluate(&mut self, phase: OptPhase, ctx: &DeviceContext) {
     unimplemented!();
   }
 
@@ -163,12 +163,12 @@ impl NetArch for LinearNetArch {
     &mut self.loss_layer
   }
 
-  fn evaluate(&mut self, ctx: &DeviceContext) {
+  fn evaluate(&mut self, phase: OptPhase, ctx: &DeviceContext) {
     let batch_size = self.batch_size();
     for layer in self.hidden_layers_forward() {
-      layer.forward(OptPhase::Training, batch_size, ctx);
+      layer.forward(phase, batch_size, ctx);
     }
-    self.loss_layer().forward(OptPhase::Training, batch_size, ctx);
+    self.loss_layer().forward(phase, batch_size, ctx);
   }
 
   fn evaluate_gradients(&mut self, descent: &DescentSchedule, ctx: &DeviceContext) {
