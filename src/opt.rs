@@ -156,6 +156,7 @@ impl Optimizer for SgdOptimizer {
             layer.descend(&descent, state.t, ctx);
             layer.reset_gradients(&descent, ctx);
           }
+          arch.loss_layer().reset_objective(ctx);
           state.t += 1;
           if state.t % opt_cfg.display_interval == 0 {
             /*let mut act_sparse = Vec::new();
