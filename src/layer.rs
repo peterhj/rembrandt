@@ -1,4 +1,4 @@
-use data::{SampleDatum, SampleLabel, NewSampleLabel};
+use data::{SampleDatum, SampleLabel};
 use opt::{DescentConfig, DescentSchedule, OptPhase};
 
 use array::{
@@ -117,11 +117,12 @@ pub trait Layer {
   fn preload_mask(&mut self, batch_idx: usize, mask: &Array2d<f32>, ctx: &DeviceContext) {}
   fn load_masks(&mut self, batch_size: usize, ctx: &DeviceContext) {}
 
-  fn preload_label(&mut self, batch_idx: usize, label: i32, ctx: &DeviceContext) {}
+  //fn preload_label(&mut self, batch_idx: usize, label: i32, ctx: &DeviceContext) {}
+  fn preload_label(&mut self, batch_idx: usize, label: SampleLabel, ctx: &DeviceContext) {}
   fn load_labels(&mut self, batch_size: usize, ctx: &DeviceContext) {}
 
-  fn preload_new_label(&mut self, batch_idx: usize, label: NewSampleLabel, ctx: &DeviceContext) {}
-  fn load_new_labels(&mut self, batch_size: usize, ctx: &DeviceContext) {}
+  /*fn preload_new_label(&mut self, batch_idx: usize, label: NewSampleLabel, ctx: &DeviceContext) {}
+  fn load_new_labels(&mut self, batch_size: usize, ctx: &DeviceContext) {}*/
 
   fn store_labels(&mut self, batch_size: usize, ctx: &DeviceContext) { unimplemented!(); }
   fn predict_labels(&mut self, batch_size: usize, ctx: &DeviceContext) -> &[i32] { unimplemented!(); }
@@ -654,7 +655,121 @@ impl Layer for FullyConnLayer {
 #[derive(Clone, Copy, Debug)]
 pub struct DenseLayerConfig;
 
-pub struct DenseLayer;
+pub struct DenseLayer {
+  in_act:       SharedDeviceBuf<f32>,
+  in_delta:     SharedDeviceBuf<f32>,
+  out_act:      SharedDeviceBuf<f32>,
+  out_delta:    SharedDeviceBuf<f32>,
+  weights:      Array2d<f32>,
+  bias:         Array2d<f32>,
+  grad_weights: Array2d<f32>,
+  grad_bias:    Array2d<f32>,
+
+  layer_id:     usize,
+}
+
+/*impl Layer for DenseLayer {
+  fn get_id(&self) -> usize {
+    self.layer_id
+  }
+
+  fn output_activation(&self, out_layer_id: usize) -> Option<SharedDeviceBuf<f32>> {
+    Some(self.out_act.clone())
+  }
+
+  fn output_delta(&self, out_layer_id: usize) -> Option<SharedDeviceBuf<f32>> {
+    Some(self.out_delta.clone())
+  }
+
+  fn reset_gradients(&mut self, descent: &DescentSchedule, ctx: &DeviceContext) {
+    self.grad_weights.as_mut_view().matrix_scale(descent.momentum(), ctx);
+    self.grad_bias.as_mut_view().row_vector_scale(descent.momentum(), ctx);
+  }
+
+  fn forward(&mut self, phase: OptPhase, batch_size: usize, ctx: &DeviceContext) {
+    // TODO(20151109): implement DenseLayer.
+    let (in_channels, out_channels) = self.weights.as_view().get_bound();
+    self.out_act.borrow_mut().as_mut_view_2d((out_channels, batch_size)).matrix_prod(
+        1.0,
+        &self.weights.as_view(), Transpose::T,
+        &self.in_act.borrow().as_view_2d((in_channels, batch_size)), Transpose::N,
+        0.0,
+        ctx);
+    /*self.out_act.borrow_mut().as_mut_view_2d((batch_size, out_channels)).row_vector_sum(
+        1.0,
+        &self.bias.as_view(),
+        ctx);*/
+    match self.config.act_fun {
+      ActivationFunction::Identity => {}
+      ActivationFunction::Rect => {
+        unsafe { rembrandt_kernel_batch_map_rect_inplace(
+            self.out_act.borrow_mut().as_mut_view().as_mut_ptr(),
+            out_channels as i32,
+            batch_size as i32,
+            ctx.stream.ptr,
+        ) };
+      }
+      _ => { unimplemented!(); }
+    }
+  }
+
+  fn backward(&mut self, descent: &DescentSchedule, batch_size: usize, ctx: &DeviceContext) {
+    let (in_channels, out_channels) = self.weights.as_view().get_bound();
+    match self.config.act_fun {
+      ActivationFunction::Identity => {}
+      ActivationFunction::Rect => {
+        unsafe { rembrandt_kernel_map_relu_activation_backprop(
+            out_channels as i32,
+            self.out_act.borrow().as_view().as_ptr(),
+            self.out_delta.borrow_mut().as_mut_view().as_mut_ptr(),
+            ctx.stream.ptr,
+        ) };
+      }
+      ActivationFunction::Sigmoid => {
+        unsafe { rembrandt_kernel_map_sigmoid_activation_backprop(
+            out_channels as i32,
+            self.out_act.borrow().as_view().as_ptr(),
+            self.out_delta.borrow_mut().as_mut_view().as_mut_ptr(),
+            ctx.stream.ptr,
+        ) };
+      }
+      ActivationFunction::Tanh => {
+        unsafe { rembrandt_kernel_map_tanh_activation_backprop(
+            out_channels as i32,
+            self.out_act.borrow().as_view().as_ptr(),
+            self.out_delta.borrow_mut().as_mut_view().as_mut_ptr(),
+            ctx.stream.ptr,
+        ) };
+      }
+      _ => { unimplemented!(); }
+    }
+    self.grad_weights.as_mut_view().matrix_prod(
+        1.0,
+        &self.in_act.borrow().as_view_2d((in_channels, 1)), Transpose::N,
+        &self.out_delta.borrow().as_view_2d((1, out_channels)), Transpose::N,
+        1.0,
+        ctx);
+    self.grad_bias.as_mut_view().row_vector_sum(
+        1.0,
+        &self.out_delta.borrow().as_view_2d((1, out_channels)),
+        ctx);
+    if let Some(ref mut in_delta) = self.in_delta {
+      in_delta.borrow_mut().as_mut_view_2d((in_channels, 1)).matrix_prod(
+          1.0,
+          &self.weights.as_view(), Transpose::N,
+          &self.out_delta.borrow().as_view_2d((1, out_channels)), Transpose::T,
+          0.0,
+          ctx);
+    }
+  }
+
+  fn descend(&mut self, descent: &DescentSchedule, t: usize, ctx: &DeviceContext) {
+    self.grad_weights.as_mut_view().matrix_sum(descent.l2_reg_coef(), &self.weights.as_view(), ctx);
+    self.grad_bias.as_mut_view().matrix_sum(descent.l2_reg_coef(), &self.bias.as_view(), ctx);
+    self.weights.as_mut_view().matrix_sum(-descent.step_size(t), &self.grad_weights.as_view(), ctx);
+    self.bias.as_mut_view().matrix_sum(-descent.step_size(t), &self.grad_bias.as_view(), ctx);
+  }
+}*/
 
 #[derive(Clone, Copy, Debug)]
 pub struct LowRankDenseLayerConfig;
@@ -1794,9 +1909,17 @@ impl Layer for SoftmaxLossLayer {
     }*/
   }
 
-  fn preload_label(&mut self, batch_idx: usize, label: i32, ctx: &DeviceContext) {
+  //fn preload_label(&mut self, batch_idx: usize, label: i32, ctx: &DeviceContext) {
+  fn preload_label(&mut self, batch_idx: usize, label: SampleLabel, ctx: &DeviceContext) {
     assert!(batch_idx < self.batch_lim);
-    self.true_labels_host.as_mut_slice()[batch_idx] = label;
+    match label {
+      SampleLabel::Category{category} => {
+        self.true_labels_host.as_mut_slice()[batch_idx] = category;
+      }
+      _ => {
+        panic!("SoftmaxLossLayer only supports category labels!");
+      }
+    }
   }
 
   fn load_labels(&mut self, batch_size: usize, ctx: &DeviceContext) {
@@ -1959,7 +2082,7 @@ impl Layer for SoftmaxLossLayer {
 #[derive(Clone, Copy, Debug)]
 pub struct MultiBinLogisticLossLayerConfig {
   pub num_categories: usize,
-  pub do_mask:        bool,
+  //pub do_mask:        bool,
 }
 
 impl LayerConfig for MultiBinLogisticLossLayerConfig {
@@ -1975,16 +2098,17 @@ impl LayerConfig for MultiBinLogisticLossLayerConfig {
 pub struct MultiBinLogisticLossLayer {
   pub in_act:       SharedDeviceBuf<f32>,
   pub in_delta:     SharedDeviceBuf<f32>,
-  pub out_act:      DeviceBuf<f32>,
+  pub probs:        DeviceBuf<f32>,
   pub cat_labels:   DeviceBuf<i32>,
-  pub cat_labels_h: Vec<i32>,
+  pub cat_labels_h: Array2d<i32>,
   pub bin_labels:   DeviceBuf<i32>,
-  pub bin_labels_h: Vec<i32>,
-  pub mask:         DeviceBuf<f32>,
-  pub mask_h:       Vec<f32>,
+  pub bin_labels_h: Array2d<i32>,
+  /*pub mask:         DeviceBuf<f32>,
+  pub mask_h:       Vec<f32>,*/
 
-  pub layer_id: usize,
-  pub config:   MultiBinLogisticLossLayerConfig,
+  pub layer_id:     usize,
+  pub config:       MultiBinLogisticLossLayerConfig,
+  pub batch_lim:    usize,
 }
 
 impl MultiBinLogisticLossLayer {
@@ -2005,24 +2129,24 @@ impl Layer for MultiBinLogisticLossLayer {
         self.in_act.borrow().as_view().as_ptr(),
         self.config.num_categories as i32,
         batch_size as i32,
-        self.out_act.as_mut_view().as_mut_ptr(),
+        self.probs.as_mut_view().as_mut_ptr(),
         ctx.stream.ptr,
     ) };
-    if self.config.do_mask {
+    /*if self.config.do_mask {
       unsafe { rembrandt_kernel_batch_map_pos_mask_inplace(
-          self.out_act.as_mut_view().as_mut_ptr(),
+          self.probs.as_mut_view().as_mut_ptr(),
           self.config.num_categories as i32,
           batch_size as i32,
           self.mask.as_view().as_ptr(),
           ctx.stream.ptr,
       ) };
-    }
+    }*/
   }
 
   fn backward(&mut self, descent: &DescentSchedule, batch_size: usize, ctx: &DeviceContext) {
     // TODO(20151101)
     unsafe { rembrandt_kernel_batch_map_multi_bin_logistic_xent_loss_backprop(
-        self.out_act.as_view().as_ptr(),
+        self.probs.as_view().as_ptr(),
         self.config.num_categories as i32,
         batch_size as i32,
         self.cat_labels.as_view().as_ptr(),
@@ -2032,6 +2156,90 @@ impl Layer for MultiBinLogisticLossLayer {
         descent.minibatch_size() as f32,
         ctx.stream.ptr,
     ) };
+  }
+
+  fn preload_label(&mut self, batch_idx: usize, label: SampleLabel, ctx: &DeviceContext) {
+    assert!(batch_idx < self.batch_lim);
+    match label {
+      SampleLabel::Category{category} => {
+        self.cat_labels_h.as_mut_slice()[batch_idx] = category;
+      }
+      SampleLabel::Category2{category, category2} => {
+        assert!(0 <= category && category < self.config.num_categories as i32);
+        assert!(0 <= category2 && category2 < 2);
+        self.cat_labels_h.as_mut_slice()[batch_idx] = category;
+        self.bin_labels_h.as_mut_slice()[batch_idx] = category2;
+      }
+    }
+  }
+
+  fn load_labels(&mut self, batch_size: usize, ctx: &DeviceContext) {
+    assert!(batch_size == self.batch_lim);
+    self.cat_labels.as_mut_view_2d((1, batch_size)).sync_load(&self.cat_labels_h.as_view(), ctx);
+    self.bin_labels.as_mut_view_2d((1, batch_size)).sync_load(&self.bin_labels_h.as_view(), ctx);
+  }
+
+  // TODO(20151101)
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct L2LossLayerConfig {
+  pub num_channels: usize,
+}
+
+impl LayerConfig for L2LossLayerConfig {
+  fn get_in_dims(&self) -> (usize, usize, usize) {
+    (1, 1, self.num_channels)
+  }
+
+  fn get_out_dims(&self) -> (usize, usize, usize) {
+    (1, 1, 1)
+  }
+}
+
+pub struct L2LossLayer {
+  pub in_act:       SharedDeviceBuf<f32>,
+  pub in_delta:     SharedDeviceBuf<f32>,
+  pub target:       DeviceArray2d<f32>,
+  //pub target_h:     Array2d<f32>,
+
+  pub layer_id:     usize,
+  pub config:       L2LossLayerConfig,
+  pub batch_lim:    usize,
+}
+
+impl L2LossLayer {
+}
+
+impl Layer for L2LossLayer {
+  fn get_id(&self) -> usize {
+    self.layer_id
+  }
+
+  fn output_activation(&self, out_layer_id: usize) -> Option<SharedDeviceBuf<f32>> { None }
+  fn output_delta(&self, out_layer_id: usize) -> Option<SharedDeviceBuf<f32>> { None }
+
+  fn forward(&mut self, phase: OptPhase, batch_size: usize, ctx: &DeviceContext) {
+    // TODO(20151109)
+  }
+
+  fn backward(&mut self, descent: &DescentSchedule, batch_size: usize, ctx: &DeviceContext) {
+    // TODO(20151109)
+    self.in_act.borrow().as_view().send(&mut self.in_delta.borrow_mut().as_mut_view(), ctx);
+    self.in_delta.borrow_mut().as_mut_view_2d((self.config.num_channels, batch_size)).row_vector_sum(
+        -1.0,
+        &self.target.as_view(),
+        ctx);
+  }
+
+  fn preload_label(&mut self, batch_idx: usize, label: SampleLabel, ctx: &DeviceContext) {
+    assert!(batch_idx < self.batch_lim);
+    // TODO(20151109)
+  }
+
+  fn load_labels(&mut self, batch_size: usize, ctx: &DeviceContext) {
+    assert!(batch_size == self.batch_lim);
+    // TODO(20151109)
   }
 
   // TODO(20151101)

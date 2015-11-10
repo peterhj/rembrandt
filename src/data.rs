@@ -22,13 +22,13 @@ pub enum SampleDatum {
   RgbInterleavedBytes(Array3d<u8>),
 }
 
-#[derive(Clone, Copy)]
-pub struct SampleLabel(pub i32);
+/*#[derive(Clone, Copy)]
+pub struct SampleLabel(pub i32);*/
 
 #[derive(Clone, Copy)]
-pub enum NewSampleLabel {
+pub enum SampleLabel {
   Category{category: i32},
-  BinaryCategory{category: i32, binary: i32},
+  Category2{category: i32, category2: i32},
 }
 
 #[derive(Clone, Debug)]
@@ -41,8 +41,9 @@ pub enum DataMeanConfig {
 pub struct DataSourceConfig {
   pub data_path:                PathBuf,
   pub maybe_labels_path:        Option<PathBuf>,
+  pub maybe_labels2_path:       Option<PathBuf>,
   pub maybe_mean:               Option<DataMeanConfig>,
-  pub maybe_limit_per_category: Option<usize>,
+  //pub maybe_limit_per_category: Option<usize>,
 }
 
 #[derive(Clone, Debug)]
@@ -70,6 +71,7 @@ impl DatasetConfiguration {
       let source_name = unwrap!(node.lookup("source").and_then(|x| x.as_str()));
       let data_path = PathBuf::from(unwrap!(node.lookup("data_path").and_then(|x| x.as_str())));
       let maybe_labels_path = node.lookup("labels_path").map(|x| PathBuf::from(unwrap!(x.as_str())));
+      let maybe_labels2_path = node.lookup("labels2_path").map(|x| PathBuf::from(unwrap!(x.as_str())));
       let maybe_mean_path = node.lookup("mean_path").map(|x| PathBuf::from(unwrap!(x.as_str())));
       let maybe_mean_values: Option<Vec<f32>> = node.lookup("mean_values").map(|mean_values| {
         unwrap!(mean_values.as_slice()).iter()
@@ -82,12 +84,13 @@ impl DatasetConfiguration {
           maybe_mean_values.map_or(None,
               |x| Some(DataMeanConfig::MeanValues(x))),
               |x| Some(DataMeanConfig::MeanPath(x)));
-      let maybe_limit_per_category = node.lookup("limit_per_category").map(|x| unwrap!(x.as_integer()) as usize);
+      //let maybe_limit_per_category = node.lookup("limit_per_category").map(|x| unwrap!(x.as_integer()) as usize);
       let data_config = DataSourceConfig{
         data_path: data_path,
         maybe_labels_path: maybe_labels_path,
+        maybe_labels2_path: maybe_labels2_path,
         maybe_mean: maybe_mean,
-        maybe_limit_per_category: maybe_limit_per_category,
+        //maybe_limit_per_category: maybe_limit_per_category,
       };
       datasets.insert(data_name.clone(), (source_name.to_string(), data_config));
     }
@@ -131,6 +134,7 @@ pub struct ArrayDbDataSource {
   config:     DataSourceConfig,
   frames_db:  ArrayDb,
   labels_db:  ArrayDb,
+  labels2_db: Option<ArrayDb>,
   //mean_array: Array3d<f32>,
 }
 
@@ -139,11 +143,17 @@ impl ArrayDbDataSource {
     let frames_db = ArrayDb::open(config.data_path.clone(), true);
     let labels_db = ArrayDb::open(config.maybe_labels_path.clone()
       .expect("arraydb source requires labels!"), true);
+    let labels2_db = if let Some(ref labels2_path) = config.maybe_labels2_path {
+      Some(ArrayDb::open(labels2_path.clone(), true))
+    } else {
+      None
+    };
     assert_eq!(frames_db.len(), labels_db.len());
     ArrayDbDataSource{
       config:     config,
       frames_db:  frames_db,
       labels_db:  labels_db,
+      labels2_db: labels2_db,
     }
   }
 }
@@ -163,7 +173,18 @@ impl DataSource for ArrayDbDataSource {
         .ok().expect("arraydb source failed to deserialize datum!");
       let label_value = self.labels_db.get(i).unwrap();
       let label = Cursor::new(label_value).read_i32::<LittleEndian>().unwrap();
-      f(i, &SampleDatum::RgbPerChannelBytes(datum), Some(SampleLabel(label)));
+      let maybe_label2 = if let Some(ref labels2_db) = self.labels2_db {
+        let label2_value = labels2_db.get(i).unwrap();
+        let label2 = Cursor::new(label2_value).read_i32::<LittleEndian>().unwrap();
+        Some(label2)
+      } else {
+        None
+      };
+      let sample_label = match (label, maybe_label2) {
+        (label, None) => SampleLabel::Category{category: label},
+        (label, Some(label2)) => SampleLabel::Category2{category: label, category2: label2},
+      };
+      f(i, &SampleDatum::RgbPerChannelBytes(datum), Some(sample_label));
     }
   }
 }
@@ -192,7 +213,7 @@ fn lmdb_caffe_loader_process(input_data: DataSourceConfig, tx: SyncSender<Option
 
   // FIXME(20150424): hard-coding this for now.
   let labels_count: usize = 1000;
-  let limit_per_category: Option<usize> = None;
+  //let limit_per_category: Option<usize> = None;
 
   loop {
     let mut label_sample_counts: HashMap<i32, usize> = HashMap::new();
@@ -201,11 +222,11 @@ fn lmdb_caffe_loader_process(input_data: DataSourceConfig, tx: SyncSender<Option
     //for (i, kv) in cursor.iter().enumerate() {
     for kv in cursor.iter() {
       // Stop loading if we reached the total sample limit.
-      if limit_per_category.is_some() {
+      /*if limit_per_category.is_some() {
         if samples_count >= limit_per_category.unwrap() * labels_count {
           break;
         }
-      }
+      }*/
 
       // Parse a Caffe-style value. The image data (should) be stored as raw bytes.
       //let key_bytes: &[u8] = kv.key;
@@ -228,11 +249,11 @@ fn lmdb_caffe_loader_process(input_data: DataSourceConfig, tx: SyncSender<Option
         label_sample_counts.insert(label, 0);
       }
       let label_count = *label_sample_counts.get(&label).unwrap();
-      if limit_per_category.is_some() {
+      /*if limit_per_category.is_some() {
         if label_count >= limit_per_category.unwrap() {
           continue;
         }
-      }
+      }*/
 
       let image_flat_bytes = datum.take_data();
       assert_eq!(image_flat_bytes.len(), width * height * channels);
@@ -297,7 +318,7 @@ impl<'a> DataSource for LmdbCaffeDataSource<'a> {
     }*/
     match self.rx.as_ref().unwrap().recv().unwrap() {
       Some((image_label, image_bytes)) => {
-        Some((SampleDatum::RgbPerChannelBytes(image_bytes), Some(SampleLabel(image_label))))
+        Some((SampleDatum::RgbPerChannelBytes(image_bytes), Some(SampleLabel::Category{category: image_label})))
       }
       None => None,
     }
@@ -329,7 +350,7 @@ impl<'a> DataSource for LmdbCaffeDataSource<'a> {
       let image_flat_bytes = datum.take_data();
       assert_eq!(image_flat_bytes.len(), width * height * channels);
       let image_bytes = Array3d::with_data(image_flat_bytes, (width, height, channels));
-      (SampleDatum::RgbPerChannelBytes(image_bytes), Some(SampleLabel(label)))
+      (SampleDatum::RgbPerChannelBytes(image_bytes), Some(SampleLabel::Category{category: label}))
     }).enumerate() {
       f(epoch_idx, datum, label);
     }
@@ -458,7 +479,7 @@ impl DataSource for MnistDataSource {
     let image = Array3d::with_data(image_bytes, (self.image_width, self.image_height, 1));
     let label = unwrap!(self.labels_reader.read_u8().ok()) as i32;
     self.i += 1;
-    Some((SampleDatum::RgbPerChannelBytes(image), Some(SampleLabel(label))))
+    Some((SampleDatum::RgbPerChannelBytes(image), Some(SampleLabel::Category{category: label})))
   }
 
   fn reset(&mut self) {
@@ -494,7 +515,7 @@ impl DataSource for MnistDataSource {
       }
       let image = Array3d::with_data(image_bytes, (self.image_width, self.image_height, 1));
       let label = unwrap!(self.labels_reader.read_u8().ok()) as i32;
-      f(i, &SampleDatum::RgbPerChannelBytes(image), Some(SampleLabel(label)));
+      f(i, &SampleDatum::RgbPerChannelBytes(image), Some(SampleLabel::Category{category: label}));
     }
   }
 }
@@ -545,7 +566,7 @@ impl DataSource for CifarDataSource {
     }
     let image = Array3d::with_data(image_bytes, (32, 32, 3));
     self.i += 1;
-    Some((SampleDatum::RgbPerChannelBytes(image), Some(SampleLabel(label))))
+    Some((SampleDatum::RgbPerChannelBytes(image), Some(SampleLabel::Category{category: label})))
   }
 
   fn reset(&mut self) {

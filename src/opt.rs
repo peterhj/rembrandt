@@ -97,8 +97,8 @@ impl DescentSchedule {
 
 #[derive(Clone, Copy)]
 pub enum OptPhase {
-  Training,
   Evaluation,
+  Training,
 }
 
 pub struct OptState {
@@ -140,7 +140,7 @@ impl Optimizer for SgdOptimizer {
           }
           _ => unimplemented!(),
         }
-        arch.loss_layer().preload_label(batch_idx, maybe_label.unwrap().0, ctx);
+        arch.loss_layer().preload_label(batch_idx, maybe_label.unwrap(), ctx);
         idx += 1;
         if idx % batch_size == 0 {
           arch.data_layer().load_frames(batch_size, ctx);
@@ -173,7 +173,7 @@ impl Optimizer for SgdOptimizer {
             println!("DEBUG: epoch: {} iter: {} interval: {}/{} train accuracy: {:.3} elapsed: {:.3} s",
                 state.epoch, state.t, epoch_idx + 1, epoch_size,
                 interval_correct as f32 / interval_total as f32,
-                elapsed_ms as f32 * 0.001,
+                elapsed_ms as f32 * 1.0e-3,
                 //act_sparse, grad_sparse,
             );
             interval_correct = 0;
@@ -217,14 +217,10 @@ impl Optimizer for SgdOptimizer {
         }
         _ => unimplemented!(),
       }
-      arch.loss_layer().preload_label(batch_idx, maybe_label.unwrap().0, ctx);
+      arch.loss_layer().preload_label(batch_idx, maybe_label.unwrap(), ctx);
       if (epoch_idx + 1) % batch_size == 0 {
         arch.data_layer().load_frames(batch_size, ctx);
         arch.loss_layer().load_labels(batch_size, ctx);
-        /*for layer in arch.hidden_layers_forward() {
-          layer.forward(OptPhase::Evaluation, batch_size, ctx);
-        }
-        arch.loss_layer().forward(OptPhase::Evaluation, batch_size, ctx);*/
         arch.evaluate(OptPhase::Evaluation, ctx);
         arch.loss_layer().store_labels(batch_size, &ctx);
         epoch_correct += arch.loss_layer().count_accuracy(batch_size, &ctx);

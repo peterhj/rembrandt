@@ -25,6 +25,7 @@ path = "tools/bench-cublas.rs"
 
 [dependencies]
 byteorder = "*"
+libc = "*"
 rand = "*"
 time = "*"
 
@@ -42,6 +43,9 @@ path = "../libasync_cuda"
 
 [dependencies.cuda_dnn]
 path = "../libcuda_dnn"
+
+[dependencies.cuda_sparse]
+path = "../libcuda_sparse"
 
 [dependencies.linalg]
 path = "../liblinalg"
