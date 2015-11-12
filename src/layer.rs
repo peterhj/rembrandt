@@ -91,6 +91,7 @@ pub trait LayerConfig: Debug {
 
 pub trait Layer {
   fn get_id(&self) -> usize;
+  fn input_activation(&self) -> Option<SharedDeviceBuf<f32>> { unimplemented!(); }
   fn output_activation(&self, out_layer_id: usize) -> Option<SharedDeviceBuf<f32>>;
   fn output_delta(&self, out_layer_id: usize) -> Option<SharedDeviceBuf<f32>>;
 
@@ -101,6 +102,8 @@ pub trait Layer {
 
   //fn load(&mut self, phase: OptPhase, datum: &SampleDatum, maybe_label: Option<SampleLabel>, batch_idx: usize, ctx: &DeviceContext) {}
   fn forward(&mut self, phase: OptPhase, batch_size: usize, ctx: &DeviceContext) {}
+  fn setup_incremental(&mut self, batch_size: usize, ctx: &DeviceContext) {}
+  fn forward_incremental(&mut self, batch_size: usize, ctx: &DeviceContext) {}
   fn backward(&mut self, descent: &DescentSchedule, batch_size: usize, ctx: &DeviceContext) {}
   fn descend(&mut self, descent: &DescentSchedule, t: usize, ctx: &DeviceContext) {}
   fn reset_gradients(&mut self, descent: &DescentSchedule, ctx: &DeviceContext) {}
@@ -116,6 +119,12 @@ pub trait Layer {
 
   fn preload_mask(&mut self, batch_idx: usize, mask: &Array2d<f32>, ctx: &DeviceContext) {}
   fn load_masks(&mut self, batch_size: usize, ctx: &DeviceContext) {}
+
+  fn target_probs(&mut self, batch_size: usize) -> &DeviceArray2d<f32> { unimplemented!(); }
+  fn target_labels(&mut self, batch_size: usize) -> &DeviceArray2d<i32> { unimplemented!(); }
+  fn recv_target(&mut self, batch_size: usize, target_act: &DeviceBuf<f32>, ctx: &DeviceContext) { unimplemented!(); }
+  fn recv_target_probs(&mut self, batch_size: usize, target_act: &DeviceArray2d<f32>, ctx: &DeviceContext) { unimplemented!(); }
+  fn recv_target_labels(&mut self, batch_size: usize, target_act: &DeviceArray2d<i32>, ctx: &DeviceContext) { unimplemented!(); }
 
   //fn preload_label(&mut self, batch_idx: usize, label: i32, ctx: &DeviceContext) {}
   fn preload_label(&mut self, batch_idx: usize, label: SampleLabel, ctx: &DeviceContext) {}
@@ -649,26 +658,47 @@ impl Layer for FullyConnLayer {
   }
 }
 
-// TODO(20151104): dense and low-rank dense layers (DenseLayer supports batching
+// TODO(20151104): dense and low-rank dense layers (AffineLayer supports batching
 // and replaces FullyConnLayer).
 
 #[derive(Clone, Copy, Debug)]
-pub struct DenseLayerConfig;
+pub struct AffineLayerConfig {
+  pub in_channels:  usize,
+  pub out_channels: usize,
+  pub act_fun:      ActivationFunction,
+  pub init_weights: ParamsInitialization,
+}
 
-pub struct DenseLayer {
+pub struct AffineLayer {
   in_act:       SharedDeviceBuf<f32>,
   in_delta:     SharedDeviceBuf<f32>,
   out_act:      SharedDeviceBuf<f32>,
   out_delta:    SharedDeviceBuf<f32>,
+
   weights:      Array2d<f32>,
   bias:         Array2d<f32>,
   grad_weights: Array2d<f32>,
   grad_bias:    Array2d<f32>,
 
+  bias_op:      CudnnAddOp,
+
   layer_id:     usize,
+  config:       AffineLayerConfig,
+  batch_lim:    usize,
 }
 
-/*impl Layer for DenseLayer {
+impl AffineLayer {
+  pub fn new() -> AffineLayer {
+    /*let bias_op = CudnnAddOp::new(
+        CudnnTensorDesc::<f32>::create_4d(1, 1, out_channels, 1).unwrap(),
+        CudnnTensorDesc::<f32>::create_4d(out_width, out_height, out_channels, batch_size).unwrap(),
+    );*/
+    // TODO(20151111)
+    unimplemented!();
+  }
+}
+
+/*impl Layer for AffineLayer {
   fn get_id(&self) -> usize {
     self.layer_id
   }
@@ -687,7 +717,7 @@ pub struct DenseLayer {
   }
 
   fn forward(&mut self, phase: OptPhase, batch_size: usize, ctx: &DeviceContext) {
-    // TODO(20151109): implement DenseLayer.
+    // TODO(20151109): implement AffineLayer.
     let (in_channels, out_channels) = self.weights.as_view().get_bound();
     self.out_act.borrow_mut().as_mut_view_2d((out_channels, batch_size)).matrix_prod(
         1.0,
@@ -772,9 +802,332 @@ pub struct DenseLayer {
 }*/
 
 #[derive(Clone, Copy, Debug)]
-pub struct LowRankDenseLayerConfig;
+pub struct MimicAffineLayerConfig {
+  pub in_channels:      usize,
+  pub bottleneck_rank:  usize,
+  pub hidden_channels:  usize,
+  pub hidden_act_fun:   ActivationFunction,
+  pub out_channels:     usize,
+  pub init_weights:     ParamsInitialization,
+}
 
-pub struct LowRankDenseLayer;
+pub struct MimicAffineLayer {
+  in_act:       SharedDeviceBuf<f32>,
+  in_delta:     Option<SharedDeviceBuf<f32>>,
+  out_act:      SharedDeviceBuf<f32>,
+  out_delta:    SharedDeviceBuf<f32>,
+
+  downsamp_weights: DeviceArray2d<f32>,
+  upsamp_weights:   DeviceArray2d<f32>,
+  //hidden_weights:   DeviceArray2d<f32>,
+  //combined_hidden:  bool,
+  out_weights:      DeviceArray2d<f32>,
+  out_bias:         DeviceArray2d<f32>,
+
+  grad_downsamp_weights:  DeviceArray2d<f32>,
+  grad_upsamp_weights:    DeviceArray2d<f32>,
+  grad_out_weights:       DeviceArray2d<f32>,
+  grad_out_bias:          DeviceArray2d<f32>,
+
+  bottleneck_act:   DeviceArray2d<f32>,
+  bottleneck_delta: DeviceArray2d<f32>,
+  hidden_act:       DeviceArray2d<f32>,
+  hidden_delta:     DeviceArray2d<f32>,
+
+  layer_id:     usize,
+  config:       MimicAffineLayerConfig,
+  batch_lim:    usize,
+}
+
+impl MimicAffineLayer {
+  pub fn new(layer_id: usize, config: MimicAffineLayerConfig, batch_size: usize, prev_layer: Option<&Layer>) -> MimicAffineLayer {
+    MimicAffineLayer{
+      in_act:       prev_layer.unwrap().output_activation(-1).unwrap(),
+      in_delta:     prev_layer.unwrap().output_delta(-1),
+      out_act:      Rc::new(RefCell::new(DeviceBuf::with_zeros(config.out_channels * batch_size))),
+      out_delta:    Rc::new(RefCell::new(DeviceBuf::with_zeros(config.out_channels * batch_size))),
+
+      downsamp_weights: DeviceArray2d::with_zeros((config.bottleneck_rank, config.in_channels)),
+      upsamp_weights:   DeviceArray2d::with_zeros((config.hidden_channels, config.bottleneck_rank)),
+      //hidden_weights:   DeviceArray2d::with_zeros((config.hidden_channels, config.in_channels)),
+      //combined_hidden:  false,
+      out_weights:      DeviceArray2d::with_zeros((config.out_channels, config.hidden_channels)),
+      out_bias:         DeviceArray2d::with_zeros((config.out_channels, 1)),
+
+      grad_downsamp_weights:  DeviceArray2d::with_zeros((config.bottleneck_rank, config.in_channels)),
+      grad_upsamp_weights:    DeviceArray2d::with_zeros((config.hidden_channels, config.bottleneck_rank)),
+      grad_out_weights:       DeviceArray2d::with_zeros((config.out_channels, config.hidden_channels)),
+      grad_out_bias:          DeviceArray2d::with_zeros((config.out_channels, 1)),
+
+      bottleneck_act:   DeviceArray2d::with_zeros((config.bottleneck_rank, batch_size)),
+      bottleneck_delta: DeviceArray2d::with_zeros((config.bottleneck_rank, batch_size)),
+      hidden_act:       DeviceArray2d::with_zeros((config.hidden_channels, batch_size)),
+      hidden_delta:     DeviceArray2d::with_zeros((config.hidden_channels, batch_size)),
+
+      layer_id:     layer_id,
+      config:       config,
+      batch_lim:    batch_size,
+    }
+  }
+}
+
+impl Layer for MimicAffineLayer {
+  fn get_id(&self) -> usize {
+    self.layer_id
+  }
+
+  fn output_activation(&self, out_layer_id: usize) -> Option<SharedDeviceBuf<f32>> {
+    Some(self.out_act.clone())
+  }
+
+  fn output_delta(&self, out_layer_id: usize) -> Option<SharedDeviceBuf<f32>> {
+    Some(self.out_delta.clone())
+  }
+
+  fn initialize_params(&mut self, ctx: &DeviceContext) {
+    let MimicAffineLayerConfig{
+      in_channels, out_channels,
+      bottleneck_rank, hidden_channels,
+      .. } = self.config;
+    let mut rng = thread_rng();
+    let mut init_downsamp_weights = Array2d::with_zeros((bottleneck_rank, in_channels));
+    let mut init_upsamp_weights = Array2d::with_zeros((hidden_channels, bottleneck_rank));
+    let mut init_out_weights = Array2d::with_zeros((out_channels, hidden_channels));
+    match self.config.init_weights {
+      ParamsInitialization::None => {
+        panic!("params initialization explicitly disabled!");
+      }
+      ParamsInitialization::Uniform{half_range} => {
+        let dist = Range::new(-half_range as f64, half_range as f64);
+        for w in init_downsamp_weights.as_mut_view().as_mut_slice().iter_mut() {
+          *w = dist.ind_sample(&mut rng) as f32;
+        }
+        for w in init_upsamp_weights.as_mut_view().as_mut_slice().iter_mut() {
+          *w = dist.ind_sample(&mut rng) as f32;
+        }
+        for w in init_out_weights.as_mut_view().as_mut_slice().iter_mut() {
+          *w = dist.ind_sample(&mut rng) as f32;
+        }
+      }
+      ParamsInitialization::Normal{mean, std} => {
+        let dist = Normal::new(mean as f64, std as f64);
+        for w in init_downsamp_weights.as_mut_view().as_mut_slice().iter_mut() {
+          *w = dist.ind_sample(&mut rng) as f32;
+        }
+        for w in init_upsamp_weights.as_mut_view().as_mut_slice().iter_mut() {
+          *w = dist.ind_sample(&mut rng) as f32;
+        }
+        for w in init_out_weights.as_mut_view().as_mut_slice().iter_mut() {
+          *w = dist.ind_sample(&mut rng) as f32;
+        }
+      }
+      _ => unimplemented!(),
+    }
+    println!("DEBUG: MimicAffineLayer: initializing params...");
+    self.downsamp_weights.as_mut_view().sync_load(&init_downsamp_weights.as_view(), ctx);
+    self.upsamp_weights.as_mut_view().sync_load(&init_upsamp_weights.as_view(), ctx);
+    self.out_weights.as_mut_view().sync_load(&init_out_weights.as_view(), ctx);
+  }
+
+  fn load_params(&mut self, blob: &[u8], ctx: &DeviceContext) -> usize {
+    let MimicAffineLayerConfig{
+      in_channels, out_channels,
+      bottleneck_rank, hidden_channels,
+      .. } = self.config;
+    let mut reader = Cursor::new(blob);
+    let load_downsamp_weights = Array2d::deserialize(&mut reader)
+      .ok().expect("MimicAffineLayer failed to deserialize weights!");
+    let load_upsamp_weights = Array2d::deserialize(&mut reader)
+      .ok().expect("MimicAffineLayer failed to deserialize weights!");
+    let load_out_weights = Array2d::deserialize(&mut reader)
+      .ok().expect("MimicAffineLayer failed to deserialize weights!");
+    assert_eq!((bottleneck_rank, in_channels), load_downsamp_weights.as_view().get_bound());
+    assert_eq!((hidden_channels, bottleneck_rank), load_upsamp_weights.as_view().get_bound());
+    assert_eq!((out_channels, hidden_channels), load_out_weights.as_view().get_bound());
+    self.downsamp_weights.as_mut_view().sync_load(&load_downsamp_weights.as_view(), ctx);
+    self.upsamp_weights.as_mut_view().sync_load(&load_upsamp_weights.as_view(), ctx);
+    self.out_weights.as_mut_view().sync_load(&load_out_weights.as_view(), ctx);
+    let progress = reader.position() as usize;
+    println!("DEBUG: MimicAffineLayer: load params: read {}", progress);
+    progress
+  }
+
+  fn save_params(&self, ctx: &DeviceContext) -> Vec<u8> {
+    let mut blob = Vec::new();
+    let mut save_downsamp_weights = Array2d::with_zeros(self.downsamp_weights.as_view().get_bound());
+    let mut save_upsamp_weights = Array2d::with_zeros(self.upsamp_weights.as_view().get_bound());
+    let mut save_out_weights = Array2d::with_zeros(self.out_weights.as_view().get_bound());
+    self.downsamp_weights.as_view().sync_store(&mut save_downsamp_weights.as_mut_view(), ctx);
+    self.upsamp_weights.as_view().sync_store(&mut save_upsamp_weights.as_mut_view(), ctx);
+    self.out_weights.as_view().sync_store(&mut save_out_weights.as_mut_view(), ctx);
+    save_downsamp_weights.as_view().serialize(&mut blob);
+    save_upsamp_weights.as_view().serialize(&mut blob);
+    save_out_weights.as_view().serialize(&mut blob);
+    blob
+  }
+
+  fn reset_gradients(&mut self, descent: &DescentSchedule, ctx: &DeviceContext) {
+    self.grad_downsamp_weights.as_mut_view().matrix_scale(descent.momentum(), ctx);
+    self.grad_upsamp_weights.as_mut_view().matrix_scale(descent.momentum(), ctx);
+    self.grad_out_weights.as_mut_view().matrix_scale(descent.momentum(), ctx);
+    self.grad_out_bias.as_mut_view().matrix_scale(descent.momentum(), ctx);
+  }
+
+  fn forward(&mut self, phase: OptPhase, batch_size: usize, ctx: &DeviceContext) {
+    assert_eq!(batch_size, self.batch_lim);
+
+    let MimicAffineLayerConfig{
+      in_channels, out_channels,
+      bottleneck_rank, hidden_channels, hidden_act_fun,
+      .. } = self.config;
+
+    self.bottleneck_act.as_mut_view().matrix_prod(
+        1.0,
+        &self.downsamp_weights.as_view(), Transpose::N,
+        &self.in_act.borrow().as_view_2d((in_channels, batch_size)), Transpose::N,
+        0.0,
+        ctx);
+    self.hidden_act.as_mut_view().matrix_prod(
+        1.0,
+        &self.upsamp_weights.as_view(), Transpose::N,
+        &self.bottleneck_act.as_view(), Transpose::N,
+        0.0,
+        ctx);
+    match hidden_act_fun {
+      ActivationFunction::Identity => {}
+      ActivationFunction::Rect => {
+        unsafe { rembrandt_kernel_batch_map_rect_inplace(
+            self.hidden_act.as_mut_view().as_mut_ptr(),
+            hidden_channels as i32,
+            batch_size as i32,
+            ctx.stream.ptr,
+        ) };
+      }
+      ActivationFunction::Sigmoid => {
+        // TODO(20151111)
+        unimplemented!();
+      }
+      ActivationFunction::Tanh => {
+        // TODO(20151111)
+        unimplemented!();
+      }
+      _ => unimplemented!(),
+    }
+    self.out_act.borrow_mut().as_mut_view_2d((out_channels, batch_size)).matrix_prod(
+        1.0,
+        &self.out_weights.as_view(), Transpose::N,
+        &self.hidden_act.as_view(), Transpose::N,
+        0.0,
+        ctx);
+    for batch_idx in (0 .. batch_size) {
+      let out_bias_view = self.out_bias.as_view();
+      let mut out_act_ref = self.out_act.borrow_mut();
+      let mut out_act_view = out_act_ref.as_mut_view_2d((out_channels, batch_size));
+      out_act_view.mut_view((0, batch_idx), (out_channels, batch_idx + 1)).col_vector_sum(
+          1.0,
+          &out_bias_view,
+          ctx);
+    }
+  }
+
+  fn setup_incremental(&mut self, batch_size: usize, ctx: &DeviceContext) {
+    assert_eq!(batch_size, self.batch_lim);
+
+    // TODO(20151110)
+    unimplemented!();
+  }
+
+  fn forward_incremental(&mut self, batch_size: usize, ctx: &DeviceContext) {
+    assert_eq!(batch_size, self.batch_lim);
+
+    // TODO(20151110)
+    unimplemented!();
+  }
+
+  fn backward(&mut self, descent: &DescentSchedule, batch_size: usize, ctx: &DeviceContext) {
+    assert_eq!(batch_size, self.batch_lim);
+
+    let MimicAffineLayerConfig{
+      in_channels, out_channels,
+      bottleneck_rank, hidden_channels, hidden_act_fun,
+      .. } = self.config;
+
+    self.grad_out_weights.as_mut_view().matrix_prod(
+        1.0,
+        &self.out_delta.borrow().as_view_2d((out_channels, batch_size)), Transpose::N,
+        &self.hidden_act.as_view(), Transpose::T,
+        1.0,
+        ctx);
+    for batch_idx in (0 .. batch_size) {
+      let out_delta_ref = self.out_delta.borrow();
+      let out_delta_view = out_delta_ref.as_view_2d((out_channels, batch_size));
+      let mut grad_out_bias_view = self.grad_out_bias.as_mut_view();
+      grad_out_bias_view.mut_view((0, batch_idx), (out_channels, batch_idx + 1)).col_vector_sum(
+          1.0,
+          &out_delta_view.view((0, batch_idx), (out_channels, batch_idx + 1)),
+          ctx);
+    }
+    self.hidden_delta.as_mut_view().matrix_prod(
+        1.0,
+        &self.out_weights.as_view(), Transpose::T,
+        &self.out_delta.borrow().as_view_2d((out_channels, batch_size)), Transpose::N,
+        0.0,
+        ctx);
+
+    match hidden_act_fun {
+      ActivationFunction::Identity => {}
+      ActivationFunction::Rect => {
+        unsafe { rembrandt_kernel_batch_map_rect_backprop_inplace(
+            self.hidden_act.as_view().as_ptr(),
+            hidden_channels as i32,
+            batch_size as i32,
+            self.hidden_delta.as_mut_view().as_mut_ptr(),
+            ctx.stream.ptr,
+        ) };
+      }
+      _ => unimplemented!(),
+    }
+
+    self.grad_upsamp_weights.as_mut_view().matrix_prod(
+        1.0,
+        &self.hidden_delta.as_view(), Transpose::N,
+        &self.bottleneck_act.as_view(), Transpose::T,
+        1.0,
+        ctx);
+    self.bottleneck_delta.as_mut_view().matrix_prod(
+        1.0,
+        &self.upsamp_weights.as_view(), Transpose::T,
+        &self.hidden_delta.as_view(), Transpose::N,
+        0.0,
+        ctx);
+
+    self.grad_downsamp_weights.as_mut_view().matrix_prod(
+        1.0,
+        &self.bottleneck_delta.as_view(), Transpose::N,
+        &self.in_act.borrow().as_view_2d((in_channels, batch_size)), Transpose::T,
+        1.0,
+        ctx);
+    if let Some(ref mut in_delta) = self.in_delta {
+      in_delta.borrow_mut().as_mut_view_2d((in_channels, batch_size)).matrix_prod(
+          1.0,
+          &self.downsamp_weights.as_view(), Transpose::T,
+          &self.bottleneck_delta.as_view(), Transpose::N,
+          0.0,
+          ctx);
+    }
+  }
+
+  fn descend(&mut self, descent: &DescentSchedule, t: usize, ctx: &DeviceContext) {
+    self.grad_downsamp_weights.as_mut_view().matrix_sum(descent.l2_reg_coef(), &self.downsamp_weights.as_view(), ctx);
+    self.grad_upsamp_weights.as_mut_view().matrix_sum(descent.l2_reg_coef(), &self.upsamp_weights.as_view(), ctx);
+    self.grad_out_weights.as_mut_view().matrix_sum(descent.l2_reg_coef(), &self.out_weights.as_view(), ctx);
+    self.grad_out_bias.as_mut_view().matrix_sum(descent.l2_reg_coef(), &self.out_bias.as_view(), ctx);
+    self.downsamp_weights.as_mut_view().matrix_sum(-descent.step_size(t), &self.grad_downsamp_weights.as_view(), ctx);
+    self.upsamp_weights.as_mut_view().matrix_sum(-descent.step_size(t), &self.grad_upsamp_weights.as_view(), ctx);
+    self.out_weights.as_mut_view().matrix_sum(-descent.step_size(t), &self.grad_out_weights.as_view(), ctx);
+    self.out_bias.as_mut_view().matrix_sum(-descent.step_size(t), &self.grad_out_bias.as_view(), ctx);
+  }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct Conv2dLayerConfig {
@@ -1540,6 +1893,7 @@ pub struct DropoutLayer {
   pub out_delta:  SharedDeviceBuf<f32>,
   pub layer_id:   usize,
   pub config:     DropoutLayerConfig,
+  pub batch_lim:  usize,
 }
 
 impl DropoutLayer {
@@ -1556,6 +1910,7 @@ impl DropoutLayer {
       out_delta:  Rc::new(RefCell::new(DeviceBuf::with_zeros(act_length))),
       layer_id:   layer_id,
       config:     config,
+      batch_lim:  batch_size,
     }
   }
 }
@@ -1574,6 +1929,7 @@ impl Layer for DropoutLayer {
   }
 
   fn forward(&mut self, phase: OptPhase, batch_size: usize, ctx: &DeviceContext) {
+    assert_eq!(batch_size, self.batch_lim);
     match phase {
       OptPhase::Training => {
         let act_length = self.in_act.borrow().as_view().len();
@@ -1595,6 +1951,7 @@ impl Layer for DropoutLayer {
   }
 
   fn backward(&mut self, descent: &DescentSchedule, batch_size: usize, ctx: &DeviceContext) {
+    assert_eq!(batch_size, self.batch_lim);
     let act_length = self.in_act.borrow().as_view().len();
     unsafe { rembrandt_kernel_map_dropout_backprop(
         self.out_delta.borrow().as_view().as_ptr(),
@@ -1741,6 +2098,10 @@ impl Layer for SoftmaxLossLayer {
     self.layer_id
   }
 
+  fn input_activation(&self) -> Option<SharedDeviceBuf<f32>> {
+    Some(self.in_act.clone())
+  }
+
   fn output_activation(&self, out_layer_id: usize) -> Option<SharedDeviceBuf<f32>> { None }
   fn output_delta(&self, out_layer_id: usize) -> Option<SharedDeviceBuf<f32>> { None }
 
@@ -1856,7 +2217,7 @@ impl Layer for SoftmaxLossLayer {
   fn backward(&mut self, descent: &DescentSchedule, batch_size: usize, ctx: &DeviceContext) {
     assert!(batch_size == self.batch_lim);
 
-    unsafe { rembrandt_kernel_batch_map_softmax_cross_entropy_loss(
+    /*unsafe { rembrandt_kernel_batch_map_softmax_cross_entropy_loss(
         self.probabilities.as_view().as_ptr(),
         self.config.num_categories as i32,
         batch_size as i32,
@@ -1864,7 +2225,7 @@ impl Layer for SoftmaxLossLayer {
         self.loss_accum.as_mut_view().as_mut_ptr(),
         descent.minibatch_size() as f32,
         ctx.stream.ptr,
-    ) };
+    ) };*/
     // TODO(20151108): reduce the minibatch loss.
 
     unsafe { rembrandt_kernel_batch_map_softmax_cross_entropy_loss_backprop(
@@ -1907,6 +2268,23 @@ impl Layer for SoftmaxLossLayer {
           ctx,
       );
     }*/
+  }
+
+  fn target_probs(&mut self, batch_size: usize) -> &DeviceArray2d<f32> {
+    assert_eq!(batch_size, self.batch_lim);
+    &self.probabilities
+  }
+
+  fn target_labels(&mut self, batch_size: usize) -> &DeviceArray2d<i32> {
+    assert_eq!(batch_size, self.batch_lim);
+    &self.pred_labels
+  }
+
+  fn recv_target_labels(&mut self, batch_size: usize, target_labels: &DeviceArray2d<i32>, ctx: &DeviceContext) {
+    assert_eq!(batch_size, self.batch_lim);
+    //target_act.as_view_2d((self.config.num_channels, batch_size)).send(
+    target_labels.as_view().send(
+        &mut self.true_labels.as_mut_view(), ctx);
   }
 
   //fn preload_label(&mut self, batch_idx: usize, label: i32, ctx: &DeviceContext) {
@@ -2193,22 +2571,61 @@ impl LayerConfig for L2LossLayerConfig {
   }
 
   fn get_out_dims(&self) -> (usize, usize, usize) {
-    (1, 1, 1)
+    (1, 1, self.num_channels)
   }
 }
 
 pub struct L2LossLayer {
-  pub in_act:       SharedDeviceBuf<f32>,
-  pub in_delta:     SharedDeviceBuf<f32>,
-  pub target:       DeviceArray2d<f32>,
-  //pub target_h:     Array2d<f32>,
+  pub in_act:         SharedDeviceBuf<f32>,
+  pub in_delta:       SharedDeviceBuf<f32>,
 
-  pub layer_id:     usize,
-  pub config:       L2LossLayerConfig,
-  pub batch_lim:    usize,
+  pub probs:          DeviceArray2d<f32>,
+  pub target_act:     DeviceArray2d<f32>,
+  //pub target_act_h:   Array2d<f32>,
+  pub diff:           DeviceArray2d<f32>,
+  pub jacob_outer:    DeviceArray2d<f32>,
+
+  pub tmp_max:        DeviceArray2d<f32>,
+  pub true_labels:    DeviceArray2d<i32>,
+  pub true_labels_h:  Array2d<i32>,
+  pub pred_labels:    DeviceArray2d<i32>,
+  pub pred_labels_h:  Array2d<i32>,
+
+  pub softmax_op:     CudnnSoftmaxOp,
+
+  pub layer_id:       usize,
+  pub config:         L2LossLayerConfig,
+  pub batch_lim:      usize,
 }
 
 impl L2LossLayer {
+  pub fn new(layer_id: usize, config: L2LossLayerConfig, batch_size: usize, prev_layer: Option<&Layer>) -> L2LossLayer {
+    let softmax_op = CudnnSoftmaxOp::new(
+        CudnnTensorDesc::<f32>::create_4d(1, 1, config.num_channels, batch_size).unwrap(),
+        CudnnTensorDesc::<f32>::create_4d(1, 1, config.num_channels, batch_size).unwrap(),
+    );
+    L2LossLayer{
+      in_act:         prev_layer.unwrap().output_activation(-1).unwrap(),
+      in_delta:       prev_layer.unwrap().output_delta(-1).unwrap(),
+
+      probs:          DeviceArray2d::with_zeros((config.num_channels, batch_size)),
+      target_act:     DeviceArray2d::with_zeros((config.num_channels, batch_size)),
+      diff:           DeviceArray2d::with_zeros((config.num_channels, batch_size)),
+      jacob_outer:    DeviceArray2d::with_zeros((config.num_channels, config.num_channels * batch_size)),
+
+      tmp_max:        DeviceArray2d::with_zeros((1, batch_size)),
+      true_labels:    DeviceArray2d::with_zeros((1, batch_size)),
+      true_labels_h:  Array2d::with_zeros((1, batch_size)),
+      pred_labels:    DeviceArray2d::with_zeros((1, batch_size)),
+      pred_labels_h:  Array2d::with_zeros((1, batch_size)),
+
+      softmax_op:     softmax_op,
+
+      layer_id:       layer_id,
+      config:         config,
+      batch_lim:      batch_size,
+    }
+  }
 }
 
 impl Layer for L2LossLayer {
@@ -2216,33 +2633,165 @@ impl Layer for L2LossLayer {
     self.layer_id
   }
 
+  /*fn input_activation(&self) -> Option<SharedDeviceBuf<f32>> {
+    Some(self.in_act.clone())
+  }*/
+
   fn output_activation(&self, out_layer_id: usize) -> Option<SharedDeviceBuf<f32>> { None }
   fn output_delta(&self, out_layer_id: usize) -> Option<SharedDeviceBuf<f32>> { None }
 
   fn forward(&mut self, phase: OptPhase, batch_size: usize, ctx: &DeviceContext) {
-    // TODO(20151109)
+    unsafe { self.softmax_op.forward(
+        self.in_act.borrow().as_view().as_ptr(),
+        self.probs.as_mut_view().as_mut_ptr(),
+        &ctx.dnn,
+    ).unwrap() };
   }
 
-  fn backward(&mut self, descent: &DescentSchedule, batch_size: usize, ctx: &DeviceContext) {
-    // TODO(20151109)
+  /*fn backward(&mut self, descent: &DescentSchedule, batch_size: usize, ctx: &DeviceContext) {
     self.in_act.borrow().as_view().send(&mut self.in_delta.borrow_mut().as_mut_view(), ctx);
-    self.in_delta.borrow_mut().as_mut_view_2d((self.config.num_channels, batch_size)).row_vector_sum(
+    /*self.probs.as_view().send(
+        &mut self.in_delta.borrow_mut().as_mut_view_2d((self.config.num_channels, batch_size)), ctx);*/
+    self.in_delta.borrow_mut().as_mut_view_2d((self.config.num_channels, batch_size)).matrix_sum(
         -1.0,
-        &self.target.as_view(),
+        &self.target_act.as_view(),
         ctx);
+    self.in_delta.borrow_mut().as_mut_view_2d((1, self.config.num_channels * batch_size)).row_vector_scale(
+        1.0 / descent.minibatch_size() as f32,
+        ctx);
+  }*/
+
+  // XXX(20151110): following was an incorrect backprop that somehow still
+  // learned something, albeit glacially.
+  /*fn backward(&mut self, descent: &DescentSchedule, batch_size: usize, ctx: &DeviceContext) {
+    //self.in_act.borrow().as_view().send(&mut self.in_delta.borrow_mut().as_mut_view(), ctx);
+    self.probs.as_view().send(
+        &mut self.in_delta.borrow_mut().as_mut_view_2d((self.config.num_channels, batch_size)), ctx);
+    self.in_delta.borrow_mut().as_mut_view_2d((self.config.num_channels, batch_size)).matrix_sum(
+        -1.0,
+        &self.target_act.as_view(),
+        ctx);
+    self.in_delta.borrow_mut().as_mut_view_2d((1, self.config.num_channels * batch_size)).row_vector_scale(
+        1.0 / descent.minibatch_size() as f32,
+        ctx);
+  }*/
+
+  fn backward(&mut self, descent: &DescentSchedule, batch_size: usize, ctx: &DeviceContext) {
+    assert_eq!(batch_size, self.batch_lim);
+
+    let L2LossLayerConfig{num_channels} = self.config;
+
+    self.probs.as_view().send(&mut self.diff.as_mut_view(), ctx);
+    self.diff.as_mut_view().matrix_sum(
+        -1.0,
+        &self.target_act.as_view(),
+        ctx);
+
+    // TODO(20151111)
+    for batch_idx in (0 .. batch_size) {
+      {
+        let probs_view = self.probs.as_view();
+        let diff_view = self.diff.as_view();
+        let mut delta_ref = self.in_delta.borrow_mut();
+        let mut delta_view = delta_ref.as_mut_view_2d((num_channels, batch_size));
+        delta_view.mut_view((0, batch_idx), (num_channels, batch_idx + 1)).diag_matrix_prod(
+            &probs_view.view((0, batch_idx), (num_channels, batch_idx + 1)),
+            &diff_view.view((0, batch_idx), (num_channels, batch_idx + 1)),
+            ctx);
+      }
+      // FIXME(20151111): outer product can be replaced with an inner product
+      // and a vector scale.
+      {
+        let probs_view = self.probs.as_view();
+        let mut jacob_outer_view = self.jacob_outer.as_mut_view();
+        jacob_outer_view.mut_view((0, num_channels * batch_idx), (num_channels, num_channels * (batch_idx + 1))).matrix_prod(
+            -1.0,
+            &probs_view.view((0, batch_idx), (num_channels, batch_idx + 1)), Transpose::N,
+            &probs_view.view((0, batch_idx), (num_channels, batch_idx + 1)), Transpose::T,
+            0.0,
+            ctx);
+      }
+      {
+        let jacob_outer_view = self.jacob_outer.as_view();
+        let diff_view = self.diff.as_view();
+        let mut delta_ref = self.in_delta.borrow_mut();
+        let mut delta_view = delta_ref.as_mut_view_2d((num_channels, batch_size));
+        delta_view.mut_view((0, batch_idx), (num_channels, batch_idx + 1)).matrix_prod(
+            1.0,
+            &jacob_outer_view.view((0, num_channels * batch_idx), (num_channels, num_channels * (batch_idx + 1))), Transpose::N,
+            &diff_view.view((0, batch_idx), (num_channels, batch_idx + 1)), Transpose::N,
+            1.0,
+            ctx);
+      }
+    }
+
+    // FIXME(20151111): normalization by minibatch size.
+    self.in_delta.borrow_mut().as_mut_view_2d((1, self.config.num_channels * batch_size)).row_vector_scale(
+        1.0 / descent.minibatch_size() as f32,
+        ctx);
+  }
+
+  fn recv_target(&mut self, batch_size: usize, target_act: &DeviceBuf<f32>, ctx: &DeviceContext) {
+    assert_eq!(batch_size, self.batch_lim);
+    target_act.as_view_2d((self.config.num_channels, batch_size)).send(
+        &mut self.target_act.as_mut_view(), ctx);
+  }
+
+  fn recv_target_probs(&mut self, batch_size: usize, target_act: &DeviceArray2d<f32>, ctx: &DeviceContext) {
+    assert_eq!(batch_size, self.batch_lim);
+    target_act.as_view().send(
+        &mut self.target_act.as_mut_view(), ctx);
+  }
+
+  fn recv_target_labels(&mut self, batch_size: usize, target_labels: &DeviceArray2d<i32>, ctx: &DeviceContext) {
+    assert_eq!(batch_size, self.batch_lim);
+    //target_act.as_view_2d((self.config.num_channels, batch_size)).send(
+    target_labels.as_view().send(
+        &mut self.true_labels.as_mut_view(), ctx);
   }
 
   fn preload_label(&mut self, batch_idx: usize, label: SampleLabel, ctx: &DeviceContext) {
     assert!(batch_idx < self.batch_lim);
-    // TODO(20151109)
+    match label {
+      SampleLabel::Category{category} => {
+        self.true_labels_h.as_mut_slice()[batch_idx] = category;
+      }
+      _ => {
+        panic!("L2LossLayer only supports category labels!");
+      }
+    }
   }
 
   fn load_labels(&mut self, batch_size: usize, ctx: &DeviceContext) {
-    assert!(batch_size == self.batch_lim);
-    // TODO(20151109)
+    assert_eq!(batch_size, self.batch_lim);
+    self.true_labels.as_mut_view().sync_load(&self.true_labels_h.as_view(), ctx);
   }
 
-  // TODO(20151101)
+  fn store_labels(&mut self, batch_size: usize, ctx: &DeviceContext) {
+    assert_eq!(batch_size, self.batch_lim);
+    assert!(self.config.num_channels <= 1024);
+    unsafe { rembrandt_kernel_batch_blockreduce_argmax(
+        self.in_act.borrow().as_view().as_ptr(),
+        self.config.num_channels as i32,
+        batch_size as i32,
+        self.tmp_max.as_mut_view().as_mut_ptr(),
+        self.pred_labels.as_mut_view().as_mut_ptr(),
+        ctx.stream.ptr,
+    ) };
+    self.pred_labels.as_view().sync_store(&mut self.pred_labels_h.as_mut_view(), ctx);
+    //println!("DEBUG: L2LossLayer: store_labels: {:?}", self.pred_labels_h.as_slice());
+  }
+
+  fn count_accuracy(&mut self, batch_size: usize, ctx: &DeviceContext) -> usize {
+    assert_eq!(batch_size, self.batch_lim);
+    let mut num_correct = 0;
+    for (&y_truth, &y_hat) in self.true_labels_h.as_slice().iter().zip(self.pred_labels_h.as_slice().iter()) {
+      if y_truth == y_hat {
+        num_correct += 1;
+      }
+    }
+    num_correct
+  }
 }
 
 /*pub struct SoftmaxPolicyGradientLossLayer {

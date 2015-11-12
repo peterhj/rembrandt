@@ -14,6 +14,10 @@ use std::path::{PathBuf};
 pub trait NetArch {
   fn batch_size(&self) -> usize;
 
+  fn initialize_layer_params(&mut self, ctx: &DeviceContext) {
+    unimplemented!();
+  }
+
   fn load_layer_params(&mut self, maybe_t: Option<usize>, ctx: &DeviceContext) {
     unimplemented!();
   }
@@ -34,7 +38,8 @@ pub trait NetArch {
     unimplemented!();
   }
 
-  fn loss_layer(&mut self) -> &mut SoftmaxLossLayer {
+  //fn loss_layer(&mut self) -> &mut SoftmaxLossLayer {
+  fn loss_layer(&mut self) -> &mut Layer {
     unimplemented!();
   }
 
@@ -51,12 +56,12 @@ pub struct LinearNetArch {
   params_path:    PathBuf,
   batch_size:     usize,
   data_layer:     DataLayer,
-  loss_layer:     SoftmaxLossLayer,
+  loss_layer:     Box<Layer>,
   hidden_layers:  Vec<Box<Layer>>,
 }
 
 impl LinearNetArch {
-  pub fn new(params_path: PathBuf, batch_size: usize, data_layer: DataLayer, loss_layer: SoftmaxLossLayer, hidden_layers: Vec<Box<Layer>>) -> LinearNetArch {
+  pub fn new(params_path: PathBuf, batch_size: usize, data_layer: DataLayer, loss_layer: Box<Layer>, hidden_layers: Vec<Box<Layer>>) -> LinearNetArch {
     LinearNetArch{
       params_path:    params_path,
       batch_size:     batch_size,
@@ -84,6 +89,12 @@ impl LinearNetArch {
 impl NetArch for LinearNetArch {
   fn batch_size(&self) -> usize {
     self.batch_size
+  }
+
+  fn initialize_layer_params(&mut self, ctx: &DeviceContext) {
+    for layer in self.hidden_layers_forward() {
+      layer.initialize_params(ctx);
+    }
   }
 
   fn load_layer_params(&mut self, maybe_t: Option<usize>, ctx: &DeviceContext) {
@@ -159,8 +170,8 @@ impl NetArch for LinearNetArch {
     self.hidden_layers.iter_mut().rev().collect()
   }
 
-  fn loss_layer(&mut self) -> &mut SoftmaxLossLayer {
-    &mut self.loss_layer
+  fn loss_layer(&mut self) -> &mut Layer {
+    &mut *self.loss_layer
   }
 
   fn evaluate(&mut self, phase: OptPhase, ctx: &DeviceContext) {

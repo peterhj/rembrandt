@@ -239,3 +239,155 @@ impl Optimizer for SgdOptimizer {
     );
   }
 }
+
+pub struct MimicSgdOptimizer;
+
+impl MimicSgdOptimizer {
+  pub fn train(&self,
+      opt_cfg: &OptConfig,
+      state: &mut OptState,
+      target_arch: &mut NetArch,
+      arch: &mut NetArch,
+      train_data: &mut DataSource,
+      test_data: &mut DataSource,
+      ctx: &DeviceContext)
+  {
+    let descent = DescentSchedule::new(*opt_cfg);
+    let epoch_size = (train_data.len() / opt_cfg.minibatch_size) * opt_cfg.minibatch_size;
+    let batch_size = arch.batch_size();
+    assert!(opt_cfg.minibatch_size >= batch_size);
+    assert_eq!(0, opt_cfg.minibatch_size % batch_size);
+    let mut start_time = get_time();
+    // FIXME(20151022): gradients are initialized to zero; should do it explicitly.
+    //arch.initialize_gradients();
+    let mut interval_target_correct = 0;
+    let mut interval_target_total = 0;
+    let mut interval_correct = 0;
+    let mut interval_total = 0;
+    let mut idx = 0;
+    loop {
+      interval_target_correct = 0;
+      interval_target_total = 0;
+      interval_correct = 0;
+      interval_total = 0;
+      train_data.each_sample(&mut |epoch_idx, datum, maybe_label| {
+        if epoch_idx >= epoch_size {
+          return;
+        }
+        let batch_idx = idx % batch_size;
+        match datum {
+          &SampleDatum::RgbPerChannelBytes(ref frame) => {
+            target_arch.data_layer().preload_frame(batch_idx, frame, ctx);
+            arch.data_layer().preload_frame(batch_idx, frame, ctx);
+          }
+          _ => unimplemented!(),
+        }
+        target_arch.loss_layer().preload_label(batch_idx, maybe_label.unwrap(), ctx);
+        arch.loss_layer().preload_label(batch_idx, maybe_label.unwrap(), ctx);
+        idx += 1;
+
+        // TODO(20151110): evaluate the target arch as well.
+        if idx % batch_size == 0 {
+          target_arch.data_layer().load_frames(batch_size, ctx);
+          target_arch.loss_layer().load_labels(batch_size, ctx);
+          target_arch.evaluate(OptPhase::Evaluation, ctx);
+          // TODO(20151110): save the target loss input activations in the
+          // training arch.
+          /*{
+            let target_act = target_arch.loss_layer().input_activation();
+            let target_act_ref = target_act.as_ref().unwrap().borrow();
+            arch.loss_layer().recv_target(batch_size, &*target_act_ref, ctx);
+          }*/
+          {
+            // FIXME(20151111)
+            arch.loss_layer().recv_target_probs(batch_size, target_arch.loss_layer().target_probs(batch_size), ctx);
+            //arch.loss_layer().recv_target_labels(batch_size, target_arch.loss_layer().target_labels(batch_size), ctx);
+          }
+          arch.data_layer().load_frames(batch_size, ctx);
+          arch.loss_layer().load_labels(batch_size, ctx);
+          arch.evaluate(OptPhase::Training, ctx);
+          target_arch.loss_layer().store_labels(batch_size, ctx);
+          arch.loss_layer().store_labels(batch_size, ctx);
+          interval_target_correct += target_arch.loss_layer().count_accuracy(batch_size, ctx);
+          interval_target_total += batch_size;
+          interval_correct += arch.loss_layer().count_accuracy(batch_size, ctx);
+          interval_total += batch_size;
+          arch.evaluate_gradients(&descent, ctx);
+        }
+
+        if idx % opt_cfg.minibatch_size == 0 {
+          for layer in arch.hidden_layers_forward() {
+            layer.descend(&descent, state.t, ctx);
+            layer.reset_gradients(&descent, ctx);
+          }
+          arch.loss_layer().reset_objective(ctx);
+          state.t += 1;
+          if state.t % opt_cfg.display_interval == 0 {
+            let lap_time = get_time();
+            let elapsed_ms = (lap_time - start_time).num_milliseconds();
+            start_time = lap_time;
+            println!("DEBUG: epoch: {} iter: {} interval: {}/{} target acc: {:.3} train acc: {:.3} elapsed: {:.3} s",
+                state.epoch, state.t, epoch_idx + 1, epoch_size,
+                interval_target_correct as f32 / interval_target_total as f32,
+                interval_correct as f32 / interval_total as f32,
+                elapsed_ms as f32 * 1.0e-3,
+            );
+            interval_target_correct = 0;
+            interval_target_total = 0;
+            interval_correct = 0;
+            interval_total = 0;
+          }
+          if let Some(save_interval) = opt_cfg.save_interval {
+            if state.t % save_interval == 0 {
+              arch.save_layer_params(state.t, ctx);
+            }
+          }
+          // FIXME(20151016): Doing this at the end of a (mini)batch b/c the
+          // predicted labels are stored in a buffer in the net itself, and
+          // indices get clobbered if we call .validate() in the middle of a
+          // batch.
+          if state.t % opt_cfg.validate_interval == 0 {
+            self.validate(opt_cfg, arch, test_data, ctx);
+          }
+        }
+      });
+      state.epoch += 1;
+    }
+  }
+
+  fn validate(&self,
+      opt_cfg: &OptConfig,
+      arch: &mut NetArch,
+      eval_data: &mut DataSource,
+      ctx: &DeviceContext)
+  {
+    let epoch_size = (eval_data.len() / opt_cfg.minibatch_size) * opt_cfg.minibatch_size;
+    let batch_size = arch.batch_size();
+    let mut epoch_correct = 0;
+    let mut epoch_total = 0;
+    eval_data.each_sample(&mut |epoch_idx, datum, maybe_label| {
+      if epoch_idx >= epoch_size {
+        return;
+      }
+      let batch_idx = epoch_idx % batch_size;
+      match datum {
+        &SampleDatum::RgbPerChannelBytes(ref frame) => {
+          arch.data_layer().preload_frame(batch_idx, frame, ctx);
+        }
+        _ => unimplemented!(),
+      }
+      arch.loss_layer().preload_label(batch_idx, maybe_label.unwrap(), ctx);
+      if (epoch_idx + 1) % batch_size == 0 {
+        arch.data_layer().load_frames(batch_size, ctx);
+        arch.loss_layer().load_labels(batch_size, ctx);
+        arch.evaluate(OptPhase::Evaluation, ctx);
+        arch.loss_layer().store_labels(batch_size, &ctx);
+        epoch_correct += arch.loss_layer().count_accuracy(batch_size, &ctx);
+        epoch_total += batch_size;
+      }
+    });
+    println!("DEBUG: validation accuracy: {:.3}",
+        epoch_correct as f32 / epoch_total as f32,
+    );
+  }
+}

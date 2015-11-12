@@ -31,13 +31,19 @@ fn bench2() {
 
   let trials = 1000;
 
-  let m = 1;
   // XXX: first layer.
+  /*let m = 1;
   let n = 2000;
-  let k = 10 * 361;
-  let x_nnz = 20;
-  // XXX: second layer.
-  /*let n = 361;
+  let k = 361;
+  let x_nnz = 10;*/
+  // XXX: middle layer.
+  let m = 1;
+  let n = 361;
+  let k = 20000;
+  let x_nnz = 2000;
+  // XXX: last layer.
+  /*let m = 1;
+  let n = 361;
   let k = 2000;
   let x_nnz = 400;*/
 
@@ -63,14 +69,16 @@ fn bench2() {
   println!("DEBUG: allocating other arrays...");
   /*let w = DeviceArray2d::with_zeros((k, n));
   let mut y = DeviceArray2d::with_zeros((m, n));*/
+
   let w = DeviceArray2d::with_zeros((n, k));
+  //let w = DeviceArray2d::with_zeros((k, n)); // XXX: transpose A.
   let mut y = DeviceArray2d::with_zeros((n, m));
 
   let mut work: DeviceArray2d<i32> = DeviceArray2d::with_zeros((4 * 1024, 1));
 
   let desc = CusparseMatrixDesc::create().unwrap();
 
-  println!("DEBUG: benchmarking scsrmm...");
+  println!("DEBUG: benchmarking matrix sparse vector product...");
   ctx.synchronize();
   let start_time = get_time();
   for _ in (0 .. trials) {
@@ -84,6 +92,7 @@ fn bench2() {
     y.as_mut_view().matrix_sparse_vector_prod(
         1.0,
         &w.as_view(), Transpose::N,
+        //&w.as_view(), Transpose::T,
         &x_val.as_view(), &x_col_ind.as_view(), x_nnz,
         0.0,
         &mut work.as_mut_view(),
@@ -92,12 +101,14 @@ fn bench2() {
   ctx.synchronize();
   let elapsed_ms = (get_time() - start_time).num_milliseconds();
 
+  let total_gemm_flops = trials * 2 * m * n * x_nnz;
+
   println!("stats per trial:");
   //println!("inputsize:  {} byte", 4 * m * n);
   //println!("outputsize: {} byte", 4 * m * k);
-  //println!("flopcount:  {} flop", total_gemm_flops / trials);
+  println!("flopcount:  {} flop", total_gemm_flops / trials);
   println!("elapsed:    {:.3} ms", (elapsed_ms as f32) / (trials as f32));
-  //println!("gflops:     {:.3} Gflop/s", (total_gemm_flops as f32) / (elapsed_ms as f32 * 0.001) * 1.0e-9);
+  println!("gflops:     {:.3} Gflop/s", (total_gemm_flops as f32) / (elapsed_ms as f32 * 0.001) * 1.0e-9);
 
   // 1st layer
 
