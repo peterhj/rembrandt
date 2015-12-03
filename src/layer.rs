@@ -101,37 +101,47 @@ pub trait Layer {
   fn save_params(&self, ctx: &DeviceContext) -> Vec<u8> { Vec::new() }
 
   //fn load(&mut self, phase: OptPhase, datum: &SampleDatum, maybe_label: Option<SampleLabel>, batch_idx: usize, ctx: &DeviceContext) {}
+  //fn setup_incremental(&mut self, batch_size: usize, ctx: &DeviceContext) {}
+  //fn forward_incremental(&mut self, batch_size: usize, ctx: &DeviceContext) {}
+
+  // The core layer functionality.
   fn forward(&mut self, phase: OptPhase, batch_size: usize, ctx: &DeviceContext) {}
-  fn setup_incremental(&mut self, batch_size: usize, ctx: &DeviceContext) {}
-  fn forward_incremental(&mut self, batch_size: usize, ctx: &DeviceContext) {}
   fn backward(&mut self, descent: &DescentSchedule, batch_size: usize, ctx: &DeviceContext) {}
+  fn backward_nonuniform(&mut self, batch_size: usize, ctx: &DeviceContext) { unimplemented!(); }
   fn descend(&mut self, descent: &DescentSchedule, t: usize, ctx: &DeviceContext) {}
+  fn descend_nonuniform(&mut self, minibatch_size: f32, step_size: f32, l2_reg_coef: f32, ctx: &DeviceContext) { unimplemented!(); }
   fn reset_gradients(&mut self, descent: &DescentSchedule, ctx: &DeviceContext) {}
   fn reset_objective(&mut self, ctx: &DeviceContext) {}
 
+  // For tracking statistics about the activations and gradients.
   fn reset_stats(&mut self) { unimplemented!(); }
   fn stats(&self) -> &LayerStats { unimplemented!(); }
 
+  // For loading input frames into the data layer.
   fn expose_host_frame_buf(&mut self, batch_idx: usize) -> &mut [u8] { unimplemented!(); }
   fn preload_frame(&mut self, batch_idx: usize, frame: &Array3d<u8>, ctx: &DeviceContext) {}
   fn preload_frame_permute(&mut self, batch_idx: usize, frame: &Array3d<u8>, permute_idx: usize, ctx: &DeviceContext) {}
   fn load_frames(&mut self, batch_size: usize, ctx: &DeviceContext) {}
 
+  // TODO(20151129): For loading labels into the loss layer.
+  //fn preload_label(&mut self, batch_idx: usize, label: i32, ctx: &DeviceContext) {}
+  fn preload_label(&mut self, batch_idx: usize, label: &SampleLabel, ctx: &DeviceContext) {}
+  fn load_labels(&mut self, batch_size: usize, ctx: &DeviceContext) {}
+  /*fn preload_new_label(&mut self, batch_idx: usize, label: NewSampleLabel, ctx: &DeviceContext) {}
+  fn load_new_labels(&mut self, batch_size: usize, ctx: &DeviceContext) {}*/
+
+  // TODO(20151129): For loading masks into the loss layer.
   fn preload_mask(&mut self, batch_idx: usize, mask: &Array2d<f32>, ctx: &DeviceContext) {}
   fn load_masks(&mut self, batch_size: usize, ctx: &DeviceContext) {}
 
+  // FIXME(20151129): For mimic training.
   fn target_probs(&mut self, batch_size: usize) -> &DeviceArray2d<f32> { unimplemented!(); }
   fn target_labels(&mut self, batch_size: usize) -> &DeviceArray2d<i32> { unimplemented!(); }
   fn recv_target(&mut self, batch_size: usize, target_act: &DeviceBuf<f32>, ctx: &DeviceContext) { unimplemented!(); }
   fn recv_target_probs(&mut self, batch_size: usize, target_act: &DeviceArray2d<f32>, ctx: &DeviceContext) { unimplemented!(); }
   fn recv_target_labels(&mut self, batch_size: usize, target_act: &DeviceArray2d<i32>, ctx: &DeviceContext) { unimplemented!(); }
 
-  //fn preload_label(&mut self, batch_idx: usize, label: i32, ctx: &DeviceContext) {}
-  fn preload_label(&mut self, batch_idx: usize, label: SampleLabel, ctx: &DeviceContext) {}
-  fn load_labels(&mut self, batch_size: usize, ctx: &DeviceContext) {}
-
-  /*fn preload_new_label(&mut self, batch_idx: usize, label: NewSampleLabel, ctx: &DeviceContext) {}
-  fn load_new_labels(&mut self, batch_size: usize, ctx: &DeviceContext) {}*/
+  // TODO(20151129): For storing predictions from the lass layer.
 
   fn store_labels(&mut self, batch_size: usize, ctx: &DeviceContext) { unimplemented!(); }
   fn predict_labels(&mut self, batch_size: usize, ctx: &DeviceContext) -> &[i32] { unimplemented!(); }
@@ -1030,7 +1040,7 @@ impl Layer for MimicAffineLayer {
     }
   }
 
-  fn setup_incremental(&mut self, batch_size: usize, ctx: &DeviceContext) {
+  /*fn setup_incremental(&mut self, batch_size: usize, ctx: &DeviceContext) {
     assert_eq!(batch_size, self.batch_lim);
 
     // TODO(20151110)
@@ -1042,7 +1052,7 @@ impl Layer for MimicAffineLayer {
 
     // TODO(20151110)
     unimplemented!();
-  }
+  }*/
 
   fn backward(&mut self, descent: &DescentSchedule, batch_size: usize, ctx: &DeviceContext) {
     assert_eq!(batch_size, self.batch_lim);
@@ -1165,6 +1175,8 @@ pub struct Conv2dLayer {
   pub bias:         DeviceArray2d<f32>,
   pub grad_weights: DeviceArray2d<f32>,
   pub grad_bias:    DeviceArray2d<f32>,
+  pub accum_grad_w: DeviceArray2d<f32>,
+  pub accum_grad_b: DeviceArray2d<f32>,
 
   //pub in_col:       DeviceArray2d<f32>,
   //pub grad_col:     DeviceArray2d<f32>,
@@ -1264,6 +1276,8 @@ impl Conv2dLayer {
       bias:         DeviceArray2d::with_zeros((1, out_channels)),
       grad_weights: DeviceArray2d::with_zeros((conv_size * conv_size * in_channels, out_channels)),
       grad_bias:    DeviceArray2d::with_zeros((1, out_channels)),
+      accum_grad_w: DeviceArray2d::with_zeros((conv_size * conv_size * in_channels, out_channels)),
+      accum_grad_b: DeviceArray2d::with_zeros((1, out_channels)),
 
       // XXX(20151016): note that im2col buffers are NOT duplicated for batch.
       //in_col:       DeviceArray2d::with_zeros((out_width * out_height, conv_size * conv_size * in_channels)),
@@ -1684,11 +1698,23 @@ impl Layer for Conv2dLayer {
     }*/
   }
 
+  fn backward_nonuniform(&mut self, batch_size: usize, /*minibatch_sizes: &[f32],*/ ctx: &DeviceContext) {
+    assert!(batch_size <= self.batch_lim);
+    // TODO(20151129)
+  }
+
   fn descend(&mut self, descent: &DescentSchedule, t: usize, ctx: &DeviceContext) {
     self.grad_weights.as_mut_view().matrix_sum(descent.l2_reg_coef(), &self.weights.as_view(), ctx);
     self.grad_bias.as_mut_view().matrix_sum(descent.l2_reg_coef(), &self.bias.as_view(), ctx);
     self.weights.as_mut_view().matrix_sum(-descent.step_size(t), &self.grad_weights.as_view(), ctx);
     self.bias.as_mut_view().matrix_sum(-descent.step_size(t), &self.grad_bias.as_view(), ctx);
+  }
+
+  fn descend_nonuniform(&mut self, minibatch_size: f32, step_size: f32, l2_reg_coef: f32, ctx: &DeviceContext) {
+    self.accum_grad_w.as_mut_view().matrix_sum(l2_reg_coef, &self.weights.as_view(), ctx);
+    self.accum_grad_b.as_mut_view().matrix_sum(l2_reg_coef, &self.bias.as_view(), ctx);
+    self.weights.as_mut_view().matrix_sum(-step_size / minibatch_size, &self.accum_grad_w.as_view(), ctx);
+    self.bias.as_mut_view().matrix_sum(-step_size / minibatch_size, &self.accum_grad_b.as_view(), ctx);
   }
 }
 
@@ -2288,10 +2314,10 @@ impl Layer for SoftmaxLossLayer {
   }
 
   //fn preload_label(&mut self, batch_idx: usize, label: i32, ctx: &DeviceContext) {
-  fn preload_label(&mut self, batch_idx: usize, label: SampleLabel, ctx: &DeviceContext) {
+  fn preload_label(&mut self, batch_idx: usize, label: &SampleLabel, ctx: &DeviceContext) {
     assert!(batch_idx < self.batch_lim);
     match label {
-      SampleLabel::Category{category} => {
+      &SampleLabel::Category{category} => {
         self.true_labels_host.as_mut_slice()[batch_idx] = category;
       }
       _ => {
@@ -2458,12 +2484,13 @@ impl Layer for SoftmaxLossLayer {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct MultiBinLogisticLossLayerConfig {
-  pub num_categories: usize,
+pub struct MultiSoftmaxKLLossLayerConfig {
+  pub num_categories:   usize,
+  pub num_train_labels: usize,
   //pub do_mask:        bool,
 }
 
-impl LayerConfig for MultiBinLogisticLossLayerConfig {
+impl LayerConfig for MultiSoftmaxKLLossLayerConfig {
   fn get_in_dims(&self) -> (usize, usize, usize) {
     (1, 1, self.num_categories)
   }
@@ -2473,7 +2500,322 @@ impl LayerConfig for MultiBinLogisticLossLayerConfig {
   }
 }
 
-pub struct MultiBinLogisticLossLayer {
+pub struct MultiSoftmaxKLLossLayer {
+  pub in_act:           SharedDeviceBuf<f32>,
+  pub in_delta:         SharedDeviceBuf<f32>,
+  pub probabilities:    DeviceArray2d<f32>,
+  /*pub loss_accum:       DeviceArray2d<f32>,
+  pub loss:             DeviceArray2d<f32>,
+  pub loss_host:        Array2d<f32>,*/
+  pub tmp_max:          DeviceArray2d<f32>,
+
+  pub mask:             DeviceArray2d<f32>,
+  pub mask_host:        Array2d<f32>,
+
+  pub true_labels:      DeviceArray2d<i32>,
+  pub true_labels_host: Array2d<i32>,
+  pub pred_labels:      DeviceArray2d<i32>,
+  pub pred_labels_host: Array2d<i32>,
+  pub ranked_labels:    Vec<i32>,
+  pub pred_probs_host:  Array2d<f32>,
+  pub pred_cdfs:        DeviceArray2d<f32>,
+  pub pred_cdfs_host:   Array2d<f32>,
+  pub pred_qvals:       DeviceArray2d<f32>,
+  pub pred_qvals_host:  Array2d<f32>,
+
+  pub train_softmax_op: CudnnSoftmaxOp,
+  pub infer_softmax_op: CudnnSoftmaxOp,
+  //pub softmax_op:       CudnnSoftmaxOp,
+
+  pub layer_id:         usize,
+  pub config:           MultiSoftmaxKLLossLayerConfig,
+  pub batch_lim:        usize,
+}
+
+impl MultiSoftmaxKLLossLayer {
+  pub fn new(layer_id: usize, config: MultiSoftmaxKLLossLayerConfig, batch_size: usize, prev_layer: Option<&Layer>) -> MultiSoftmaxKLLossLayer {
+    // FIXME(20151129): During training, use up to K labels; during inference,
+    // use only one label.
+    assert!(config.num_train_labels >= 1);
+
+    let train_softmax_op = CudnnSoftmaxOp::new(
+        CudnnTensorDesc::<f32>::create_4d(1, 1, config.num_categories * config.num_train_labels, batch_size).unwrap(),
+        CudnnTensorDesc::<f32>::create_4d(1, 1, config.num_categories * config.num_train_labels, batch_size).unwrap(),
+    );
+    let infer_softmax_op = CudnnSoftmaxOp::new(
+        CudnnTensorDesc::<f32>::create_4d(1, 1, config.num_categories, batch_size).unwrap(),
+        CudnnTensorDesc::<f32>::create_4d(1, 1, config.num_categories, batch_size).unwrap(),
+    );
+
+    MultiSoftmaxKLLossLayer{
+      in_act:           prev_layer.unwrap().output_activation(-1).unwrap(),
+      in_delta:         prev_layer.unwrap().output_delta(-1).unwrap(),
+      probabilities:    DeviceArray2d::with_zeros((config.num_categories * config.num_train_labels, batch_size)),
+      /*loss_accum:       DeviceArray2d::with_zeros((1, batch_size)),
+      loss:             DeviceArray2d::with_zeros((1, 1)),
+      loss_host:        Array2d::with_zeros((1, 1)),*/
+      tmp_max:          DeviceArray2d::with_zeros((1, batch_size)),
+
+      mask:             DeviceArray2d::with_zeros((config.num_categories, batch_size)),
+      mask_host:        Array2d::with_zeros((config.num_categories, batch_size)),
+
+      true_labels:      DeviceArray2d::with_zeros((config.num_train_labels, batch_size)),
+      true_labels_host: Array2d::with_zeros((config.num_train_labels, batch_size)),
+      pred_labels:      DeviceArray2d::with_zeros((config.num_train_labels, batch_size)),
+      pred_labels_host: Array2d::with_zeros((config.num_train_labels, batch_size)),
+      ranked_labels:    repeat(0).take(config.num_categories * batch_size).collect(),
+      pred_probs_host:  Array2d::with_zeros((config.num_categories, batch_size)),
+      pred_cdfs:        DeviceArray2d::with_zeros((config.num_categories, batch_size)),
+      pred_cdfs_host:   Array2d::with_zeros((config.num_categories, batch_size)),
+      pred_qvals:       DeviceArray2d::with_zeros((config.num_categories, batch_size)),
+      pred_qvals_host:  Array2d::with_zeros((config.num_categories, batch_size)),
+
+      train_softmax_op: train_softmax_op,
+      infer_softmax_op: infer_softmax_op,
+
+      layer_id:         layer_id,
+      config:           config,
+      batch_lim:        batch_size,
+    }
+  }
+}
+
+impl Layer for MultiSoftmaxKLLossLayer {
+  fn get_id(&self) -> usize {
+    self.layer_id
+  }
+
+  fn input_activation(&self) -> Option<SharedDeviceBuf<f32>> {
+    Some(self.in_act.clone())
+  }
+
+  fn output_activation(&self, out_layer_id: usize) -> Option<SharedDeviceBuf<f32>> { None }
+  fn output_delta(&self, out_layer_id: usize) -> Option<SharedDeviceBuf<f32>> { None }
+
+  fn reset_objective(&mut self, ctx: &DeviceContext) {
+    /*self.loss_accum.as_mut_view().row_vector_scale(0.0, ctx);
+    self.loss.as_mut_view().row_vector_scale(0.0, ctx);*/
+  }
+
+  fn forward(&mut self, phase: OptPhase, batch_size: usize, ctx: &DeviceContext) {
+    assert!(batch_size == self.batch_lim);
+
+    /*if self.config.do_mask {
+      unsafe { rembrandt_kernel_batch_map_pos_mask_inplace(
+          self.in_act.borrow_mut().as_mut_view().as_mut_ptr(),
+          self.config.num_categories as i32,
+          batch_size as i32,
+          self.mask.as_view().as_ptr(),
+          ctx.stream.ptr,
+      ) };
+    }*/
+    match phase {
+      OptPhase::Evaluation => {
+        unsafe { self.infer_softmax_op.forward(
+            self.in_act.borrow().as_view().as_ptr(),
+            self.probabilities.as_mut_view().as_mut_ptr(),
+            &ctx.dnn,
+        ).unwrap() };
+      }
+      OptPhase::Training => {
+        unsafe { self.train_softmax_op.forward(
+            self.in_act.borrow().as_view().as_ptr(),
+            self.probabilities.as_mut_view().as_mut_ptr(),
+            &ctx.dnn,
+        ).unwrap() };
+      }
+    }
+  }
+
+  fn backward(&mut self, descent: &DescentSchedule, batch_size: usize, ctx: &DeviceContext) {
+    assert!(batch_size == self.batch_lim);
+
+    /*unsafe { rembrandt_kernel_batch_map_softmax_cross_entropy_loss(
+        self.probabilities.as_view().as_ptr(),
+        self.config.num_categories as i32,
+        batch_size as i32,
+        self.true_labels.as_view().as_ptr(),
+        self.loss_accum.as_mut_view().as_mut_ptr(),
+        descent.minibatch_size() as f32,
+        ctx.stream.ptr,
+    ) };*/
+    // TODO(20151108): reduce the minibatch loss.
+
+    unsafe { rembrandt_kernel_batch_map_softmax_cross_entropy_loss_backprop(
+        self.probabilities.as_view().as_ptr(),
+        (self.config.num_categories * self.config.num_train_labels) as i32,
+        batch_size as i32,
+        self.true_labels.as_view().as_ptr(),
+        self.in_delta.borrow_mut().as_mut_view().as_mut_ptr(),
+        descent.minibatch_size() as f32,
+        ctx.stream.ptr,
+    ) };
+  }
+
+  fn target_probs(&mut self, batch_size: usize) -> &DeviceArray2d<f32> {
+    assert_eq!(batch_size, self.batch_lim);
+    &self.probabilities
+  }
+
+  fn target_labels(&mut self, batch_size: usize) -> &DeviceArray2d<i32> {
+    assert_eq!(batch_size, self.batch_lim);
+    &self.pred_labels
+  }
+
+  fn recv_target_labels(&mut self, batch_size: usize, target_labels: &DeviceArray2d<i32>, ctx: &DeviceContext) {
+    assert_eq!(batch_size, self.batch_lim);
+    //target_act.as_view_2d((self.config.num_channels, batch_size)).send(
+    target_labels.as_view().send(
+        &mut self.true_labels.as_mut_view(), ctx);
+  }
+
+  //fn preload_label(&mut self, batch_idx: usize, label: i32, ctx: &DeviceContext) {
+  fn preload_label(&mut self, batch_idx: usize, label: &SampleLabel, ctx: &DeviceContext) {
+    assert!(batch_idx < self.batch_lim);
+    match label {
+      &SampleLabel::Category{category} => {
+        self.true_labels_host.as_mut_slice()[batch_idx] = category;
+      }
+      _ => {
+        panic!("SoftmaxLossLayer only supports category labels!");
+      }
+    }
+  }
+
+  fn load_labels(&mut self, batch_size: usize, ctx: &DeviceContext) {
+    assert!(batch_size == self.batch_lim);
+    self.true_labels.as_mut_view().sync_load(&self.true_labels_host.as_view(), ctx);
+  }
+
+  /*fn preload_mask(&mut self, batch_idx: usize, mask: &Array2d<f32>, ctx: &DeviceContext) {
+    assert!(batch_idx < self.batch_lim);
+    assert!(self.config.do_mask);
+    self.mask_host.as_mut_slice()[batch_idx * self.config.num_categories .. (batch_idx + 1) * self.config.num_categories].clone_from_slice(mask.as_slice());
+  }
+
+  fn load_masks(&mut self, batch_size: usize, ctx: &DeviceContext) {
+    assert!(batch_size == self.batch_lim);
+    assert!(self.config.do_mask);
+    self.mask.as_mut_view().sync_load(&self.mask_host.as_view(), ctx);
+  }*/
+
+  fn store_labels(&mut self, batch_size: usize, ctx: &DeviceContext) {
+    assert!(batch_size == self.batch_lim);
+    assert!(self.config.num_categories <= 1024);
+    /*println!("DEBUG: store_labels:");
+    println!("DEBUG:   true labels:          {:?}", self.true_labels_host);
+    println!("DEBUG:   pred labels (BEFORE): {:?}", self.pred_labels_host);*/
+    unsafe { rembrandt_kernel_batch_blockreduce_argmax(
+        self.probabilities.as_view().as_ptr(),
+        self.config.num_categories as i32,
+        batch_size as i32,
+        self.tmp_max.as_mut_view().as_mut_ptr(),
+        self.pred_labels.as_mut_view().as_mut_ptr(),
+        ctx.stream.ptr,
+    ) };
+    self.pred_labels.as_view().sync_store(&mut self.pred_labels_host.as_mut_view(), ctx);
+    //println!("DEBUG:   pred labels (AFTER):  {:?}", self.pred_labels_host);
+  }
+
+  fn predict_labels(&mut self, batch_size: usize, ctx: &DeviceContext) -> &[i32] {
+    assert!(batch_size == self.batch_lim);
+    self.pred_labels_host.as_slice()
+  }
+
+  fn count_accuracy(&mut self, batch_size: usize, ctx: &DeviceContext) -> usize {
+    assert!(batch_size == self.batch_lim);
+    /*println!("DEBUG: count_accuracy:");
+    println!("DEBUG:   true labels: {:?}", self.true_labels_host);
+    println!("DEBUG:   pred labels: {:?}", self.pred_labels_host);*/
+    let mut num_correct = 0;
+    for (&y_truth, &y_hat) in self.true_labels_host.as_slice().iter().zip(self.pred_labels_host.as_slice().iter()) {
+      if y_truth == y_hat {
+        num_correct += 1;
+      }
+    }
+    num_correct
+  }
+
+  fn store_ranked_labels(&mut self, batch_size: usize, ctx: &DeviceContext) {
+    assert!(batch_size == self.batch_lim);
+    self.store_probs(batch_size, ctx);
+  }
+
+  fn predict_ranked_labels(&mut self, batch_size: usize) -> &[i32] {
+    assert!(batch_size == self.batch_lim);
+    let mut tmp_labels: Vec<(i32, i32)> = repeat((0, 0)).take(self.config.num_categories).collect();
+    for batch_idx in (0 .. batch_size) {
+      for j in (0 .. self.config.num_categories) {
+        let prob = self.pred_probs_host.as_slice()[batch_idx * self.config.num_categories + j];
+        // FIXME(20151108): a nasty hack casting f32 to i32 in order to call .sort();
+        // one of the more annoying parts of rust.
+        tmp_labels[j] = ((-prob * 1.0e6) as i32, j as i32);
+      }
+      tmp_labels.sort();
+      for k in (0 .. self.config.num_categories) {
+        self.ranked_labels[batch_idx * self.config.num_categories + k] = tmp_labels[k].1;
+      }
+    }
+    &self.ranked_labels
+  }
+
+  fn store_loss(&mut self, batch_size: usize, ctx: &DeviceContext) {
+    // TODO(20151108)
+    unimplemented!();
+  }
+
+  fn predict_loss(&mut self, batch_size: usize, ctx: &DeviceContext) -> f32 {
+    // TODO(20151108)
+    unimplemented!();
+  }
+
+  fn store_probs(&mut self, batch_size: usize, ctx: &DeviceContext) {
+    assert!(batch_size == self.batch_lim);
+    self.probabilities.as_view().sync_store(&mut self.pred_probs_host.as_mut_view(), ctx);
+  }
+
+  fn predict_probs(&mut self, batch_size: usize, ctx: &DeviceContext) -> &Array2d<f32> {
+    assert!(batch_size == self.batch_lim);
+    &self.pred_probs_host
+  }
+
+  fn store_cdfs(&mut self, batch_size: usize, ctx: &DeviceContext) {
+    assert!(batch_size == self.batch_lim);
+    assert!(self.config.num_categories <= 1024);
+    unsafe { rembrandt_kernel_batch_blockscan_prefix_sum(
+        self.probabilities.as_view().as_ptr(),
+        self.config.num_categories as i32,
+        batch_size as i32,
+        self.pred_cdfs.as_mut_view().as_mut_ptr(),
+        ctx.stream.ptr,
+    ) };
+    self.pred_cdfs.as_view().sync_store(&mut self.pred_cdfs_host.as_mut_view(), ctx);
+  }
+
+  fn predict_cdfs(&mut self, batch_size: usize, ctx: &DeviceContext) -> &Array2d<f32> {
+    assert!(batch_size == self.batch_lim);
+    &self.pred_cdfs_host
+  }
+}
+
+
+#[derive(Clone, Copy, Debug)]
+pub struct BinaryLogisticKLLossLayerConfig {
+  pub num_categories: usize,
+  //pub do_mask:        bool,
+}
+
+impl LayerConfig for BinaryLogisticKLLossLayerConfig {
+  fn get_in_dims(&self) -> (usize, usize, usize) {
+    (1, 1, self.num_categories)
+  }
+
+  fn get_out_dims(&self) -> (usize, usize, usize) {
+    (1, 1, self.num_categories)
+  }
+}
+
+pub struct BinaryLogisticKLLossLayer {
   pub in_act:       SharedDeviceBuf<f32>,
   pub in_delta:     SharedDeviceBuf<f32>,
   pub probs:        DeviceBuf<f32>,
@@ -2483,17 +2825,44 @@ pub struct MultiBinLogisticLossLayer {
   pub bin_labels_h: Array2d<i32>,
   /*pub mask:         DeviceBuf<f32>,
   pub mask_h:       Vec<f32>,*/
+  pub pred_cat_labels:    DeviceArray2d<i32>,
+  pub pred_cat_labels_h:  Array2d<i32>,
+  pub tmp_max:      DeviceArray2d<f32>,
 
   pub layer_id:     usize,
-  pub config:       MultiBinLogisticLossLayerConfig,
+  pub config:       BinaryLogisticKLLossLayerConfig,
   pub batch_lim:    usize,
 }
 
-impl MultiBinLogisticLossLayer {
-  // TODO(20151101)
+impl BinaryLogisticKLLossLayer {
+  pub fn new(layer_id: usize, config: BinaryLogisticKLLossLayerConfig, batch_size: usize, prev_layer: Option<&Layer>) -> BinaryLogisticKLLossLayer {
+    BinaryLogisticKLLossLayer{
+      in_act:       prev_layer.unwrap().output_activation(-1).unwrap(),
+      in_delta:     prev_layer.unwrap().output_delta(-1).unwrap(),
+      probs:        DeviceBuf::with_zeros(config.num_categories * batch_size),
+      /*loss_accum:     DeviceArray2d::with_zeros((1, batch_size)),
+      loss:           DeviceArray2d::with_zeros((1, 1)),
+      loss_host:      Array2d::with_zeros((1, 1)),*/
+
+      /*mask:             DeviceArray2d::with_zeros((config.num_categories, batch_size)),
+      mask_host:        Array2d::with_zeros((config.num_categories, batch_size)),*/
+
+      cat_labels:   DeviceBuf::with_zeros(1 * batch_size),
+      cat_labels_h: Array2d::with_zeros((1, batch_size)),
+      bin_labels:   DeviceBuf::with_zeros(1 * batch_size),
+      bin_labels_h: Array2d::with_zeros((1, batch_size)),
+      pred_cat_labels:    DeviceArray2d::with_zeros((1, batch_size)),
+      pred_cat_labels_h:  Array2d::with_zeros((1, batch_size)),
+      tmp_max:      DeviceArray2d::with_zeros((1, batch_size)),
+
+      layer_id:       layer_id,
+      config:         config,
+      batch_lim:      batch_size,
+    }
+  }
 }
 
-impl Layer for MultiBinLogisticLossLayer {
+impl Layer for BinaryLogisticKLLossLayer {
   fn get_id(&self) -> usize {
     self.layer_id
   }
@@ -2536,25 +2905,59 @@ impl Layer for MultiBinLogisticLossLayer {
     ) };
   }
 
-  fn preload_label(&mut self, batch_idx: usize, label: SampleLabel, ctx: &DeviceContext) {
+  fn preload_label(&mut self, batch_idx: usize, label: &SampleLabel, ctx: &DeviceContext) {
     assert!(batch_idx < self.batch_lim);
     match label {
-      SampleLabel::Category{category} => {
+      &SampleLabel::Category{category} => {
         self.cat_labels_h.as_mut_slice()[batch_idx] = category;
       }
-      SampleLabel::Category2{category, category2} => {
+      &SampleLabel::Category2{category, category2} => {
         assert!(0 <= category && category < self.config.num_categories as i32);
         assert!(0 <= category2 && category2 < 2);
         self.cat_labels_h.as_mut_slice()[batch_idx] = category;
         self.bin_labels_h.as_mut_slice()[batch_idx] = category2;
       }
+      _ => unimplemented!(),
     }
   }
 
   fn load_labels(&mut self, batch_size: usize, ctx: &DeviceContext) {
     assert!(batch_size == self.batch_lim);
-    self.cat_labels.as_mut_view_2d((1, batch_size)).sync_load(&self.cat_labels_h.as_view(), ctx);
-    self.bin_labels.as_mut_view_2d((1, batch_size)).sync_load(&self.bin_labels_h.as_view(), ctx);
+    self.cat_labels.as_mut_view_2d((1, batch_size))
+      .sync_load(&self.cat_labels_h.as_view(), ctx);
+    self.bin_labels.as_mut_view_2d((1, batch_size))
+      .sync_load(&self.bin_labels_h.as_view(), ctx);
+  }
+
+  fn store_labels(&mut self, batch_size: usize, ctx: &DeviceContext) {
+    assert!(batch_size == self.batch_lim);
+    assert!(self.config.num_categories <= 1024);
+    unsafe { rembrandt_kernel_batch_blockreduce_argmax(
+        self.probs.as_view().as_ptr(),
+        self.config.num_categories as i32,
+        batch_size as i32,
+        self.tmp_max.as_mut_view().as_mut_ptr(),
+        self.pred_cat_labels.as_mut_view().as_mut_ptr(),
+        ctx.stream.ptr,
+    ) };
+    self.pred_cat_labels.as_view()
+      .sync_store(&mut self.pred_cat_labels_h.as_mut_view(), ctx);
+  }
+
+  fn predict_labels(&mut self, batch_size: usize, ctx: &DeviceContext) -> &[i32] {
+    assert!(batch_size == self.batch_lim);
+    self.pred_cat_labels_h.as_slice()
+  }
+
+  fn count_accuracy(&mut self, batch_size: usize, ctx: &DeviceContext) -> usize {
+    assert!(batch_size == self.batch_lim);
+    let mut num_correct = 0;
+    for (&y_truth, &y_hat) in self.cat_labels_h.as_slice().iter().zip(self.pred_cat_labels_h.as_slice().iter()) {
+      if y_truth == y_hat {
+        num_correct += 1;
+      }
+    }
+    num_correct
   }
 
   // TODO(20151101)
@@ -2750,10 +3153,10 @@ impl Layer for L2LossLayer {
         &mut self.true_labels.as_mut_view(), ctx);
   }
 
-  fn preload_label(&mut self, batch_idx: usize, label: SampleLabel, ctx: &DeviceContext) {
+  fn preload_label(&mut self, batch_idx: usize, label: &SampleLabel, ctx: &DeviceContext) {
     assert!(batch_idx < self.batch_lim);
     match label {
-      SampleLabel::Category{category} => {
+      &SampleLabel::Category{category} => {
         self.true_labels_h.as_mut_slice()[batch_idx] = category;
       }
       _ => {

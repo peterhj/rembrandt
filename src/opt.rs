@@ -1,4 +1,4 @@
-use data::{SampleDatum, SampleLabel, DataSource};
+use data::{SampleDatum, SampleLabel, SampleLabelConfig, DataSource};
 use layer::{Layer};
 use net::{NetArch};
 
@@ -116,7 +116,7 @@ pub struct SgdOptimizer;
 impl Optimizer for SgdOptimizer {
   fn train(&self, opt_cfg: &OptConfig, state: &mut OptState, arch: &mut NetArch, train_data: &mut DataSource, test_data: &mut DataSource, ctx: &DeviceContext) {
     let descent = DescentSchedule::new(*opt_cfg);
-    let epoch_size = (train_data.len() / opt_cfg.minibatch_size) * opt_cfg.minibatch_size;
+    let epoch_size = (train_data.num_samples() / opt_cfg.minibatch_size) * opt_cfg.minibatch_size;
     let batch_size = arch.batch_size();
     assert!(opt_cfg.minibatch_size >= batch_size);
     assert_eq!(0, opt_cfg.minibatch_size % batch_size);
@@ -129,7 +129,7 @@ impl Optimizer for SgdOptimizer {
     loop {
       interval_correct = 0;
       interval_total = 0;
-      train_data.each_sample(&mut |epoch_idx, datum, maybe_label| {
+      train_data.each_sample(SampleLabelConfig::Category, &mut |epoch_idx, datum, maybe_label| {
         if epoch_idx >= epoch_size {
           return;
         }
@@ -140,7 +140,7 @@ impl Optimizer for SgdOptimizer {
           }
           _ => unimplemented!(),
         }
-        arch.loss_layer().preload_label(batch_idx, maybe_label.unwrap(), ctx);
+        arch.loss_layer().preload_label(batch_idx, maybe_label.as_ref().unwrap(), ctx);
         idx += 1;
         if idx % batch_size == 0 {
           arch.data_layer().load_frames(batch_size, ctx);
@@ -199,14 +199,14 @@ impl Optimizer for SgdOptimizer {
 
   fn validate(&self, opt_cfg: &OptConfig, arch: &mut NetArch, eval_data: &mut DataSource, ctx: &DeviceContext) {
     //let epoch_size = eval_data.len();
-    let epoch_size = (eval_data.len() / opt_cfg.minibatch_size) * opt_cfg.minibatch_size;
+    let epoch_size = (eval_data.num_samples() / opt_cfg.minibatch_size) * opt_cfg.minibatch_size;
     let batch_size = arch.batch_size();
     let mut epoch_correct = 0;
     let mut epoch_total = 0;
     /*for layer in arch.hidden_layers_forward() {
       layer.reset_stats();
     }*/
-    eval_data.each_sample(&mut |epoch_idx, datum, maybe_label| {
+    eval_data.each_sample(SampleLabelConfig::Category, &mut |epoch_idx, datum, maybe_label| {
       if epoch_idx >= epoch_size {
         return;
       }
@@ -217,7 +217,7 @@ impl Optimizer for SgdOptimizer {
         }
         _ => unimplemented!(),
       }
-      arch.loss_layer().preload_label(batch_idx, maybe_label.unwrap(), ctx);
+      arch.loss_layer().preload_label(batch_idx, maybe_label.as_ref().unwrap(), ctx);
       if (epoch_idx + 1) % batch_size == 0 {
         arch.data_layer().load_frames(batch_size, ctx);
         arch.loss_layer().load_labels(batch_size, ctx);
@@ -253,7 +253,7 @@ impl MimicSgdOptimizer {
       ctx: &DeviceContext)
   {
     let descent = DescentSchedule::new(*opt_cfg);
-    let epoch_size = (train_data.len() / opt_cfg.minibatch_size) * opt_cfg.minibatch_size;
+    let epoch_size = (train_data.num_samples() / opt_cfg.minibatch_size) * opt_cfg.minibatch_size;
     let batch_size = arch.batch_size();
     assert!(opt_cfg.minibatch_size >= batch_size);
     assert_eq!(0, opt_cfg.minibatch_size % batch_size);
@@ -270,7 +270,7 @@ impl MimicSgdOptimizer {
       interval_target_total = 0;
       interval_correct = 0;
       interval_total = 0;
-      train_data.each_sample(&mut |epoch_idx, datum, maybe_label| {
+      train_data.each_sample(SampleLabelConfig::Category, &mut |epoch_idx, datum, maybe_label| {
         if epoch_idx >= epoch_size {
           return;
         }
@@ -282,8 +282,8 @@ impl MimicSgdOptimizer {
           }
           _ => unimplemented!(),
         }
-        target_arch.loss_layer().preload_label(batch_idx, maybe_label.unwrap(), ctx);
-        arch.loss_layer().preload_label(batch_idx, maybe_label.unwrap(), ctx);
+        target_arch.loss_layer().preload_label(batch_idx, maybe_label.as_ref().unwrap(), ctx);
+        arch.loss_layer().preload_label(batch_idx, maybe_label.as_ref().unwrap(), ctx);
         idx += 1;
 
         // TODO(20151110): evaluate the target arch as well.
@@ -361,11 +361,11 @@ impl MimicSgdOptimizer {
       eval_data: &mut DataSource,
       ctx: &DeviceContext)
   {
-    let epoch_size = (eval_data.len() / opt_cfg.minibatch_size) * opt_cfg.minibatch_size;
+    let epoch_size = (eval_data.num_samples() / opt_cfg.minibatch_size) * opt_cfg.minibatch_size;
     let batch_size = arch.batch_size();
     let mut epoch_correct = 0;
     let mut epoch_total = 0;
-    eval_data.each_sample(&mut |epoch_idx, datum, maybe_label| {
+    eval_data.each_sample(SampleLabelConfig::Category, &mut |epoch_idx, datum, maybe_label| {
       if epoch_idx >= epoch_size {
         return;
       }
@@ -376,7 +376,7 @@ impl MimicSgdOptimizer {
         }
         _ => unimplemented!(),
       }
-      arch.loss_layer().preload_label(batch_idx, maybe_label.unwrap(), ctx);
+      arch.loss_layer().preload_label(batch_idx, maybe_label.as_ref().unwrap(), ctx);
       if (epoch_idx + 1) % batch_size == 0 {
         arch.data_layer().load_frames(batch_size, ctx);
         arch.loss_layer().load_labels(batch_size, ctx);

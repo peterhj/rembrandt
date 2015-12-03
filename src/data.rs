@@ -3,6 +3,7 @@ use caffe_proto::{Datum};
 use array::{ArrayDeserialize, Array3d};
 use arraydb::{ArrayDb};
 use byteorder::{ReadBytesExt, BigEndian, LittleEndian};
+use episodb::{EpisoDb};
 use lmdb::{LmdbEnv, LmdbCursor};
 use protobuf::{MessageStatic, parse_from_bytes};
 use toml::{Parser};
@@ -26,9 +27,19 @@ pub enum SampleDatum {
 pub struct SampleLabel(pub i32);*/
 
 #[derive(Clone, Copy)]
+pub enum SampleLabelConfig {
+  Category,
+  Category2,
+  Lookahead{lookahead: usize},
+  Lookahead2{lookahead: usize},
+}
+
+#[derive(Clone)]
 pub enum SampleLabel {
   Category{category: i32},
   Category2{category: i32, category2: i32},
+  MultiCategory{categories: Vec<i32>},
+  MultiCategory2{categories1: Vec<i32>, category2: i32},
 }
 
 #[derive(Clone, Debug)]
@@ -100,11 +111,30 @@ impl DatasetConfiguration {
 }
 
 pub trait DataSource: Send {
-  fn request_sample(&mut self) -> Option<(SampleDatum, Option<SampleLabel>)>;
-  fn reset(&mut self);
-  fn len(&self) -> usize;
+  fn request_sample(&mut self) -> Option<(SampleDatum, Option<SampleLabel>)> { unimplemented!(); }
+  fn reset(&mut self) { unimplemented!(); }
+  fn len(&self) -> usize { unimplemented!(); }
 
-  fn each_sample(&mut self, f: &mut FnMut(usize, &SampleDatum, Option<SampleLabel>)) {
+  fn num_samples(&self) -> usize { self.len() }
+  fn num_episodes(&self) -> usize { unimplemented!(); }
+
+  fn each_sample(&mut self, label_cfg: SampleLabelConfig, f: &mut FnMut(usize, &SampleDatum, Option<SampleLabel>)) {
+    unimplemented!();
+  }
+
+  fn each_episode(&mut self, label_cfg: SampleLabelConfig, f: &mut FnMut(usize, &[(SampleDatum, Option<SampleLabel>)])) {
+    unimplemented!();
+  }
+
+  fn get_episode_range(&mut self, ep_idx: usize) -> (usize, usize) {
+    unimplemented!();
+  }
+
+  fn get_episode(&mut self, label_cfg: SampleLabelConfig, ep_idx: usize) -> Vec<(SampleDatum, Option<SampleLabel>)> {
+    unimplemented!();
+  }
+
+  fn get_episode_sample(&mut self, label_cfg: SampleLabelConfig, ep_idx: usize, sample_idx: usize) -> Option<(SampleDatum, Option<SampleLabel>)> {
     unimplemented!();
   }
 }
@@ -123,10 +153,180 @@ impl DataSourceBuilder {
   pub fn build(source_name: &str, data_config: DataSourceConfig) -> Box<DataSource> {
     match source_name {
       "arraydb"     => Box::new(ArrayDbDataSource::open(data_config)),
+      "episodb"     => Box::new(EpisoDbDataSource::open(data_config)),
       "lmdb_caffe"  => Box::new(LmdbCaffeDataSource::new(data_config)),
       "mnist"       => Box::new(MnistDataSource::new(data_config)),
       s => panic!("unknown data source kind: {}", s),
     }
+  }
+}
+
+pub struct EpisoDbDataSource {
+  config:     DataSourceConfig,
+  frames_db:  EpisoDb,
+  labels_db:  EpisoDb,
+  labels2_db: Option<EpisoDb>,
+  tmp_ep:         usize,
+  tmp_categories: Vec<i32>,
+}
+
+impl EpisoDbDataSource {
+  pub fn open(config: DataSourceConfig) -> EpisoDbDataSource {
+    let frames_db = EpisoDb::open_read_only(config.data_path.clone());
+    let labels_db = EpisoDb::open_read_only(config.maybe_labels_path.clone()
+      .expect("episodb source requires category labels!"));
+    assert_eq!(frames_db.num_frames(), labels_db.num_frames());
+    assert_eq!(frames_db.num_episodes(), labels_db.num_episodes());
+    EpisoDbDataSource{
+      config:     config,
+      frames_db:  frames_db,
+      labels_db:  labels_db,
+      labels2_db: None,
+      tmp_ep:         -1,
+      tmp_categories: vec![],
+    }
+  }
+}
+
+impl DataSource for EpisoDbDataSource {
+  fn num_samples(&self) -> usize {
+    self.frames_db.num_frames()
+  }
+
+  fn num_episodes(&self) -> usize {
+    self.frames_db.num_episodes()
+  }
+
+  fn each_sample(&mut self, label_cfg: SampleLabelConfig, f: &mut FnMut(usize, &SampleDatum, Option<SampleLabel>)) {
+    let mut epoch_idx = 0;
+    self.each_episode(label_cfg, &mut |ep_idx, episode| {
+      for &(ref datum, ref label) in episode.iter() {
+        f(epoch_idx, datum, label.clone());
+        epoch_idx += 1;
+      }
+    });
+  }
+
+  fn each_episode(&mut self, label_cfg: SampleLabelConfig, f: &mut FnMut(usize, &[(SampleDatum, Option<SampleLabel>)])) {
+    for ep_idx in (0 .. self.num_episodes()) {
+      let episode = self.get_episode(label_cfg, ep_idx);
+      f(ep_idx, &episode);
+    }
+  }
+
+  fn get_episode_range(&mut self, ep_idx: usize) -> (usize, usize) {
+    let (start_idx, end_idx) = self.frames_db.get_episode(ep_idx).unwrap();
+    (start_idx, end_idx)
+  }
+
+  fn get_episode(&mut self, label_cfg: SampleLabelConfig, ep_idx: usize) -> Vec<(SampleDatum, Option<SampleLabel>)> {
+    let mut episode = vec![];
+    let (start_idx, end_idx) = self.frames_db.get_episode(ep_idx).unwrap();
+
+    self.tmp_categories.clear();
+    for idx in (start_idx .. end_idx) {
+      let category_value = self.labels_db.get_frame(idx).unwrap();
+      let category = Cursor::new(category_value).read_i32::<LittleEndian>().unwrap();
+      self.tmp_categories.push(category);
+    }
+
+    episode.clear();
+    'for_each_sample:
+    for (i, idx) in (start_idx .. end_idx).enumerate() {
+      /*// FIXME(20151129): Right now we skip samples with category `-1`;
+      // should allow user to specify how to handle those.
+      let sample_label = match label_cfg {
+        SampleLabelConfig::Category => {
+          if self.tmp_categories[i] == -1 {
+            continue 'for_each_sample;
+          }
+          SampleLabel::Category{category: self.tmp_categories[i]}
+        }
+        SampleLabelConfig::Category2 => {
+          // TODO(20151129)
+          unimplemented!();
+        }
+        SampleLabelConfig::Lookahead{lookahead} => {
+          assert!(lookahead >= 1);
+          if idx + lookahead > end_idx {
+            continue 'for_each_sample;
+          }
+          let lookahead_cats = &self.tmp_categories[i .. i + lookahead];
+          for k in (0 .. lookahead) {
+            if lookahead_cats[k] == -1 {
+              continue 'for_each_sample;
+            }
+          }
+          SampleLabel::MultiCategory{categories: lookahead_cats.to_vec()}
+        }
+        SampleLabelConfig::Lookahead2{lookahead} => {
+          // TODO(20151129)
+          unimplemented!();
+        }
+      };
+      let frame_value = self.frames_db.get_frame(idx).unwrap();
+      let sample_datum = SampleDatum::RgbPerChannelBytes(Array3d::<u8>::deserialize(&mut Cursor::new(frame_value))
+        .ok().expect("arraydb source failed to deserialize datum!"));
+      episode.push((sample_datum, Some(sample_label)));*/
+      if let Some(sample) = self.get_episode_sample(label_cfg, ep_idx, idx) {
+        episode.push(sample);
+      }
+    }
+
+    episode
+  }
+
+  fn get_episode_sample(&mut self, label_cfg: SampleLabelConfig, ep_idx: usize, sample_idx: usize) -> Option<(SampleDatum, Option<SampleLabel>)> {
+    let (start_idx, end_idx) = self.frames_db.get_episode(ep_idx).unwrap();
+    assert!(start_idx <= sample_idx);
+    assert!(sample_idx < end_idx);
+    let i = sample_idx - start_idx;
+
+    // FIXME(20151202): just read necessary categories.
+    if self.tmp_ep != ep_idx {
+      self.tmp_categories.clear();
+      for idx in (start_idx .. end_idx) {
+        let category_value = self.labels_db.get_frame(idx).unwrap();
+        let category = Cursor::new(category_value).read_i32::<LittleEndian>().unwrap();
+        self.tmp_categories.push(category);
+      }
+    }
+
+    // FIXME(20151129): Right now we skip samples with category `-1`;
+    // should allow user to specify how to handle those.
+    let sample_label = match label_cfg {
+      SampleLabelConfig::Category => {
+        if self.tmp_categories[i] == -1 {
+          return None;
+        }
+        SampleLabel::Category{category: self.tmp_categories[i]}
+      }
+      SampleLabelConfig::Category2 => {
+        // TODO(20151129)
+        unimplemented!();
+      }
+      SampleLabelConfig::Lookahead{lookahead} => {
+        assert!(lookahead >= 1);
+        if sample_idx + lookahead > end_idx {
+          return None;
+        }
+        let lookahead_cats = &self.tmp_categories[i .. i + lookahead];
+        for k in (0 .. lookahead) {
+          if lookahead_cats[k] == -1 {
+            return None;
+          }
+        }
+        SampleLabel::MultiCategory{categories: lookahead_cats.to_vec()}
+      }
+      SampleLabelConfig::Lookahead2{lookahead} => {
+        // TODO(20151129)
+        unimplemented!();
+      }
+    };
+    let frame_value = self.frames_db.get_frame(sample_idx).unwrap();
+    let sample_datum = SampleDatum::RgbPerChannelBytes(Array3d::<u8>::deserialize(&mut Cursor::new(frame_value))
+      .ok().expect("arraydb source failed to deserialize datum!"));
+    Some((sample_datum, Some(sample_label)))
   }
 }
 
@@ -166,7 +366,7 @@ impl DataSource for ArrayDbDataSource {
     self.frames_db.len()
   }
 
-  fn each_sample(&mut self, f: &mut FnMut(usize, &SampleDatum, Option<SampleLabel>)) {
+  fn each_sample(&mut self, label_cfg: SampleLabelConfig, f: &mut FnMut(usize, &SampleDatum, Option<SampleLabel>)) {
     for i in (0 .. self.frames_db.len()) {
       let datum_value = self.frames_db.get(i).unwrap();
       let datum = Array3d::<u8>::deserialize(&mut Cursor::new(datum_value))
@@ -332,10 +532,10 @@ impl<'a> DataSource for LmdbCaffeDataSource<'a> {
     // TODO(20150917)
   }
 
-  fn each_sample(&mut self, f: &mut FnMut(usize, &SampleDatum, Option<SampleLabel>)) {
+  fn each_sample(&mut self, label_cfg: SampleLabelConfig, f: &mut FnMut(usize, &SampleDatum, Option<SampleLabel>)) {
     let cursor = LmdbCursor::new_read_only(&self.env)
       .ok().expect("failed to open lmdb cursor!");
-    for (epoch_idx, (ref datum, label)) in cursor.iter().map(|kv| {
+    for (epoch_idx, kv) in cursor.iter().enumerate() {
       // Parse a Caffe-style value. The image data (should) be stored as raw bytes.
       let value_bytes: &[u8] = kv.value;
       let mut datum: Datum = match parse_from_bytes(value_bytes) {
@@ -345,14 +545,13 @@ impl<'a> DataSource for LmdbCaffeDataSource<'a> {
       let channels = datum.get_channels() as usize;
       let height = datum.get_height() as usize;
       let width = datum.get_width() as usize;
-      let label = datum.get_label();
+      let category = datum.get_label();
 
       let image_flat_bytes = datum.take_data();
       assert_eq!(image_flat_bytes.len(), width * height * channels);
       let image_bytes = Array3d::with_data(image_flat_bytes, (width, height, channels));
-      (SampleDatum::RgbPerChannelBytes(image_bytes), Some(SampleLabel::Category{category: label}))
-    }).enumerate() {
-      f(epoch_idx, datum, label);
+      let (datum, label) = (SampleDatum::RgbPerChannelBytes(image_bytes), Some(SampleLabel::Category{category: category}));
+      f(epoch_idx, &datum, label);
     }
   }
 }
@@ -493,7 +692,7 @@ impl DataSource for MnistDataSource {
     self.n
   }
 
-  fn each_sample(&mut self, f: &mut FnMut(usize, &SampleDatum, Option<SampleLabel>)) {
+  fn each_sample(&mut self, label_cfg: SampleLabelConfig, f: &mut FnMut(usize, &SampleDatum, Option<SampleLabel>)) {
     self.reset();
     for i in (0 .. self.n) {
       let image_len = self.image_width * self.image_height;

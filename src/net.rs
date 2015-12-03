@@ -7,8 +7,9 @@ use async_cuda::context::{DeviceContext};
 use byteorder::{ReadBytesExt, WriteBytesExt, LittleEndian};
 
 use std::collections::{BTreeMap};
-use std::fs::{OpenOptions, copy, create_dir_all};
+use std::fs::{OpenOptions, copy, create_dir_all, read_link, remove_file};
 use std::io::{Read, Write};
+use std::os::unix::fs::{symlink};
 use std::path::{PathBuf};
 
 pub trait NetArch {
@@ -98,12 +99,14 @@ impl NetArch for LinearNetArch {
   }
 
   fn load_layer_params(&mut self, maybe_t: Option<usize>, ctx: &DeviceContext) {
-    let mut blob_path = self.params_path.clone();
+    /*let mut blob_path = self.params_path.clone();
+
     // FIXME(20151023): if t is None, should load the _newest_ params
     // available.
     let t = if let Some(t) = maybe_t {
       t
     } else {
+      // FIXME(20151120): load from symlink.
       let mut checkpoint_path = self.params_path.clone();
       checkpoint_path.push("checkpoint");
       let mut checkpoint_file = OpenOptions::new()
@@ -114,7 +117,15 @@ impl NetArch for LinearNetArch {
         .ok().expect("LinearNetArch failed to read checkpoint!") as usize;
       t
     };
-    blob_path.push(&format!("layer_params.t_{}.blob", t));
+
+    blob_path.push(&format!("layer_params.t_{}.blob", t));*/
+
+    let mut latest_path = self.params_path.clone();
+    latest_path.push("layer_params.latest.blob");
+    /*let blob_path = read_link(&latest_path)
+      .ok().expect("LinearNetArch failed to read latest symlink!");*/
+    let blob_path = latest_path;
+
     let mut blob_file = OpenOptions::new()
       .read(true)
       .open(&blob_path)
@@ -122,6 +133,7 @@ impl NetArch for LinearNetArch {
     let mut blob = Vec::new();
     blob_file.read_to_end(&mut blob)
       .ok().expect("LinearNetArch failed to read from blob file!");
+
     let mut cursor_offset = 0;
     for layer in self.hidden_layers_forward() {
       let progress = layer.load_params(&blob[cursor_offset ..], ctx);
@@ -132,30 +144,43 @@ impl NetArch for LinearNetArch {
   fn save_layer_params(&mut self, t: usize, ctx: &DeviceContext) {
     create_dir_all(&self.params_path)
       .ok().expect("LinearNetArch failed to create params dir!");
+
     let mut blob = Vec::new();
     for layer in self.hidden_layers_forward() {
       let layer_blob = layer.save_params(ctx);
       blob.extend(&layer_blob);
     }
+
     let mut checkpoint_path = self.params_path.clone();
     checkpoint_path.push("checkpoint");
     let mut bak_checkpoint_path = self.params_path.clone();
     bak_checkpoint_path.push("checkpoint.0");
+
     copy(&checkpoint_path, &bak_checkpoint_path).ok();
+
     let mut checkpoint_file = OpenOptions::new()
       .create(true).truncate(true).write(true)
       .open(&checkpoint_path)
       .ok().expect("LinearNetArch failed to open checkpoint file!");
     checkpoint_file.write_u64::<LittleEndian>(t as u64)
       .ok().expect("LinearNetArch failed to write checkpoint!");
+
     let mut blob_path = self.params_path.clone();
     blob_path.push(&format!("layer_params.t_{}.blob", t));
+    let blob_filename = PathBuf::from(&blob_path.file_name().unwrap());
+
     let mut blob_file = OpenOptions::new()
       .create(true).truncate(true).write(true)
       .open(&blob_path)
       .ok().expect("LinearNetArch failed to open blob file to save layer params!");
     blob_file.write_all(&blob)
       .ok().expect("LinearNetArch failed to write to blob file!");
+
+    let mut latest_path = self.params_path.clone();
+    latest_path.push("layer_params.latest.blob");
+    remove_file(&latest_path).ok();
+    symlink(&blob_filename, &latest_path)
+      .ok().expect("LinearNetArch failed to symlink latest blob!");
   }
 
   fn data_layer(&mut self) -> &mut DataLayer {

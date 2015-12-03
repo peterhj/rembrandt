@@ -47,6 +47,9 @@ path = "../libcuda_dnn"
 [dependencies.cuda_sparse]
 path = "../libcuda_sparse"
 
+[dependencies.episodb]
+path = "../../episodb"
+
 [dependencies.linalg]
 path = "../liblinalg"
 

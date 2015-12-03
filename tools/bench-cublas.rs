@@ -31,16 +31,32 @@ fn bench2() {
 
   let trials = 1000;
 
+  // XXX: Convention: (n, m)  = (n, k) x (k, m)
+ 
+  let num_input = 16; 
+  //let num_hidden = 16;
+  let num_hidden = 4;
+  // XXX: shallow conv first layer.
+  /*let n = 361 * num_hidden;
+  let k = 361 * num_input;
+  let m = 1;
+  let x_nnz = num_input * 1;*/
+  // XXX: shallow conv second layer.
+  let n = 361 * 1;
+  let k = 361 * num_hidden;
+  let m = 1;
+  let x_nnz = 361 * num_hidden / 4;
+
   // XXX: first layer.
   /*let m = 1;
   let n = 2000;
   let k = 361;
   let x_nnz = 10;*/
   // XXX: middle layer.
-  let m = 1;
+  /*let m = 1;
   let n = 361;
   let k = 20000;
-  let x_nnz = 2000;
+  let x_nnz = 2000;*/
   // XXX: last layer.
   /*let m = 1;
   let n = 361;
@@ -73,6 +89,7 @@ fn bench2() {
   let w = DeviceArray2d::with_zeros((n, k));
   //let w = DeviceArray2d::with_zeros((k, n)); // XXX: transpose A.
   let mut y = DeviceArray2d::with_zeros((n, m));
+  let mut y_h = Array2d::with_zeros((n, m));
 
   let mut work: DeviceArray2d<i32> = DeviceArray2d::with_zeros((4 * 1024, 1));
 
@@ -97,6 +114,7 @@ fn bench2() {
         0.0,
         &mut work.as_mut_view(),
         &ctx);
+    y.as_view().sync_store(&mut y_h.as_mut_view(), &ctx);
   }
   ctx.synchronize();
   let elapsed_ms = (get_time() - start_time).num_milliseconds();
