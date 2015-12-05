@@ -97,7 +97,7 @@ impl DescentSchedule {
 
 #[derive(Clone, Copy)]
 pub enum OptPhase {
-  Evaluation,
+  Inference,
   Training,
 }
 
@@ -221,7 +221,7 @@ impl Optimizer for SgdOptimizer {
       if (epoch_idx + 1) % batch_size == 0 {
         arch.data_layer().load_frames(batch_size, ctx);
         arch.loss_layer().load_labels(batch_size, ctx);
-        arch.evaluate(OptPhase::Evaluation, ctx);
+        arch.evaluate(OptPhase::Inference, ctx);
         arch.loss_layer().store_labels(batch_size, &ctx);
         epoch_correct += arch.loss_layer().count_accuracy(batch_size, &ctx);
         epoch_total += batch_size;
@@ -240,7 +240,136 @@ impl Optimizer for SgdOptimizer {
   }
 }
 
-pub struct MimicSgdOptimizer;
+pub struct SgdOptimizer2;
+
+impl SgdOptimizer2 {
+  pub fn train(&self, label_cfg: SampleLabelConfig, opt_cfg: &OptConfig, state: &mut OptState, arch: &mut NetArch, train_data: &mut DataSource, test_data: &mut DataSource, ctx: &DeviceContext) {
+    let descent = DescentSchedule::new(*opt_cfg);
+    let epoch_size = (train_data.num_samples() / opt_cfg.minibatch_size) * opt_cfg.minibatch_size;
+    let batch_size = arch.batch_size();
+    assert!(opt_cfg.minibatch_size >= batch_size);
+    assert_eq!(0, opt_cfg.minibatch_size % batch_size);
+    let mut start_time = get_time();
+    // FIXME(20151022): gradients are initialized to zero; should do it explicitly.
+    //arch.initialize_gradients();
+    let mut interval_correct = 0;
+    let mut interval_total = 0;
+    let mut idx = 0;
+    loop {
+      interval_correct = 0;
+      interval_total = 0;
+      train_data.each_sample(label_cfg, &mut |epoch_idx, datum, maybe_label| {
+        if epoch_idx >= epoch_size {
+          return;
+        }
+        let batch_idx = idx % batch_size;
+        match datum {
+          &SampleDatum::RgbPerChannelBytes(ref frame) => {
+            arch.data_layer().preload_frame(batch_idx, frame, ctx);
+          }
+          _ => unimplemented!(),
+        }
+        arch.loss_layer().preload_label(batch_idx, maybe_label.as_ref().unwrap(), ctx);
+        idx += 1;
+        if idx % batch_size == 0 {
+          arch.data_layer().load_frames(batch_size, ctx);
+          arch.loss_layer().load_labels(batch_size, ctx);
+          arch.evaluate(OptPhase::Training, ctx);
+          arch.loss_layer().store_labels(batch_size, ctx);
+          interval_correct += arch.loss_layer().count_accuracy(batch_size, ctx);
+          interval_total += batch_size;
+          arch.evaluate_gradients(&descent, ctx);
+        }
+        if idx % opt_cfg.minibatch_size == 0 {
+          for layer in arch.hidden_layers_forward() {
+            layer.descend(&descent, state.t, ctx);
+            layer.reset_gradients(&descent, ctx);
+          }
+          arch.loss_layer().reset_objective(ctx);
+          state.t += 1;
+          if state.t % opt_cfg.display_interval == 0 {
+            /*let mut act_sparse = Vec::new();
+            let mut grad_sparse = Vec::new();
+            for layer in arch.hidden_layers_forward() {
+              act_sparse.push(layer.stats().act_sparseness());
+              grad_sparse.push(layer.stats().grad_sparseness());
+              layer.reset_stats();
+            }*/
+            let lap_time = get_time();
+            let elapsed_ms = (lap_time - start_time).num_milliseconds();
+            start_time = lap_time;
+            //println!("DEBUG: epoch: {} iter: {} interval: {}/{} train accuracy: {:.3} elapsed: {:.3} s act sparse: {:.4?} grad sparse: {:.4?}",
+            println!("DEBUG: epoch: {} iter: {} interval: {}/{} train accuracy: {:.3} elapsed: {:.3} s",
+                state.epoch, state.t, epoch_idx + 1, epoch_size,
+                interval_correct as f32 / interval_total as f32,
+                elapsed_ms as f32 * 1.0e-3,
+                //act_sparse, grad_sparse,
+            );
+            interval_correct = 0;
+            interval_total = 0;
+          }
+          if let Some(save_interval) = opt_cfg.save_interval {
+            if state.t % save_interval == 0 {
+              arch.save_layer_params(state.t, ctx);
+            }
+          }
+          // FIXME(20151016): Doing this at the end of a (mini)batch b/c the
+          // predicted labels are stored in a buffer in the net itself, and
+          // indices get clobbered if we call .validate() in the middle of a
+          // batch.
+          if state.t % opt_cfg.validate_interval == 0 {
+            self.validate(label_cfg, opt_cfg, arch, test_data, ctx);
+          }
+        }
+      });
+      state.epoch += 1;
+    }
+  }
+
+  pub fn validate(&self, label_cfg: SampleLabelConfig, opt_cfg: &OptConfig, arch: &mut NetArch, eval_data: &mut DataSource, ctx: &DeviceContext) {
+    //let epoch_size = eval_data.len();
+    let epoch_size = (eval_data.num_samples() / opt_cfg.minibatch_size) * opt_cfg.minibatch_size;
+    let batch_size = arch.batch_size();
+    let mut epoch_correct = 0;
+    let mut epoch_total = 0;
+    /*for layer in arch.hidden_layers_forward() {
+      layer.reset_stats();
+    }*/
+    eval_data.each_sample(label_cfg, &mut |epoch_idx, datum, maybe_label| {
+      if epoch_idx >= epoch_size {
+        return;
+      }
+      let batch_idx = epoch_idx % batch_size;
+      match datum {
+        &SampleDatum::RgbPerChannelBytes(ref frame) => {
+          arch.data_layer().preload_frame(batch_idx, frame, ctx);
+        }
+        _ => unimplemented!(),
+      }
+      arch.loss_layer().preload_label(batch_idx, maybe_label.as_ref().unwrap(), ctx);
+      if (epoch_idx + 1) % batch_size == 0 {
+        arch.data_layer().load_frames(batch_size, ctx);
+        arch.loss_layer().load_labels(batch_size, ctx);
+        arch.evaluate(OptPhase::Inference, ctx);
+        arch.loss_layer().store_labels(batch_size, &ctx);
+        epoch_correct += arch.loss_layer().count_accuracy(batch_size, &ctx);
+        epoch_total += batch_size;
+      }
+    });
+    /*let mut act_sparse = Vec::new();
+    for layer in arch.hidden_layers_forward() {
+      act_sparse.push(layer.stats().act_sparseness());
+      layer.reset_stats();
+    }*/
+    //println!("DEBUG: validation accuracy: {:.3} act sparse: {:?}",
+    println!("DEBUG: validation accuracy: {:.3}",
+        epoch_correct as f32 / epoch_total as f32,
+        //act_sparse,
+    );
+  }
+}
+
+/*pub struct MimicSgdOptimizer;
 
 impl MimicSgdOptimizer {
   pub fn train(&self,
@@ -290,7 +419,7 @@ impl MimicSgdOptimizer {
         if idx % batch_size == 0 {
           target_arch.data_layer().load_frames(batch_size, ctx);
           target_arch.loss_layer().load_labels(batch_size, ctx);
-          target_arch.evaluate(OptPhase::Evaluation, ctx);
+          target_arch.evaluate(OptPhase::Inference, ctx);
           // TODO(20151110): save the target loss input activations in the
           // training arch.
           /*{
@@ -380,7 +509,7 @@ impl MimicSgdOptimizer {
       if (epoch_idx + 1) % batch_size == 0 {
         arch.data_layer().load_frames(batch_size, ctx);
         arch.loss_layer().load_labels(batch_size, ctx);
-        arch.evaluate(OptPhase::Evaluation, ctx);
+        arch.evaluate(OptPhase::Inference, ctx);
         arch.loss_layer().store_labels(batch_size, &ctx);
         epoch_correct += arch.loss_layer().count_accuracy(batch_size, &ctx);
         epoch_total += batch_size;
@@ -390,4 +519,4 @@ impl MimicSgdOptimizer {
         epoch_correct as f32 / epoch_total as f32,
     );
   }
-}
+}*/

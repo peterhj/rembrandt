@@ -280,7 +280,7 @@ impl Layer for DataLayer {
               (range_w.ind_sample(&mut rng), range_h.ind_sample(&mut rng))
             }
             // XXX: Always center crop during evaluation.
-            OptPhase::Evaluation  => ((raw_width - crop_width) / 2, (raw_height - crop_height) / 2),
+            OptPhase::Inference  => ((raw_width - crop_width) / 2, (raw_height - crop_height) / 2),
           };
           for c in (0 .. channels) {
             let (_, back_raw_view) = self.raw_image.as_view().split_at(c * raw_width * raw_height, raw_width * raw_height);
@@ -1970,7 +1970,7 @@ impl Layer for DropoutLayer {
             ctx.stream.ptr,
         ) };
       }
-      OptPhase::Evaluation => {
+      OptPhase::Inference => {
         self.in_act.borrow().as_view().send(&mut self.out_act.borrow_mut().as_mut_view(), ctx);
       }
     }
@@ -2487,16 +2487,15 @@ impl Layer for SoftmaxLossLayer {
 pub struct MultiSoftmaxKLLossLayerConfig {
   pub num_categories:   usize,
   pub num_train_labels: usize,
-  //pub do_mask:        bool,
 }
 
 impl LayerConfig for MultiSoftmaxKLLossLayerConfig {
   fn get_in_dims(&self) -> (usize, usize, usize) {
-    (1, 1, self.num_categories)
+    (1, 1, self.num_categories * self.num_train_labels)
   }
 
   fn get_out_dims(&self) -> (usize, usize, usize) {
-    (1, 1, self.num_categories)
+    (1, 1, self.num_categories * self.num_train_labels)
   }
 }
 
@@ -2509,8 +2508,8 @@ pub struct MultiSoftmaxKLLossLayer {
   pub loss_host:        Array2d<f32>,*/
   pub tmp_max:          DeviceArray2d<f32>,
 
-  pub mask:             DeviceArray2d<f32>,
-  pub mask_host:        Array2d<f32>,
+  /*pub mask:             DeviceArray2d<f32>,
+  pub mask_host:        Array2d<f32>,*/
 
   pub true_labels:      DeviceArray2d<i32>,
   pub true_labels_host: Array2d<i32>,
@@ -2525,7 +2524,6 @@ pub struct MultiSoftmaxKLLossLayer {
 
   pub train_softmax_op: CudnnSoftmaxOp,
   pub infer_softmax_op: CudnnSoftmaxOp,
-  //pub softmax_op:       CudnnSoftmaxOp,
 
   pub layer_id:         usize,
   pub config:           MultiSoftmaxKLLossLayerConfig,
@@ -2539,8 +2537,8 @@ impl MultiSoftmaxKLLossLayer {
     assert!(config.num_train_labels >= 1);
 
     let train_softmax_op = CudnnSoftmaxOp::new(
-        CudnnTensorDesc::<f32>::create_4d(1, 1, config.num_categories * config.num_train_labels, batch_size).unwrap(),
-        CudnnTensorDesc::<f32>::create_4d(1, 1, config.num_categories * config.num_train_labels, batch_size).unwrap(),
+        CudnnTensorDesc::<f32>::create_4d(1, 1, config.num_categories, config.num_train_labels * batch_size).unwrap(),
+        CudnnTensorDesc::<f32>::create_4d(1, 1, config.num_categories, config.num_train_labels * batch_size).unwrap(),
     );
     let infer_softmax_op = CudnnSoftmaxOp::new(
         CudnnTensorDesc::<f32>::create_4d(1, 1, config.num_categories, batch_size).unwrap(),
@@ -2556,8 +2554,8 @@ impl MultiSoftmaxKLLossLayer {
       loss_host:        Array2d::with_zeros((1, 1)),*/
       tmp_max:          DeviceArray2d::with_zeros((1, batch_size)),
 
-      mask:             DeviceArray2d::with_zeros((config.num_categories, batch_size)),
-      mask_host:        Array2d::with_zeros((config.num_categories, batch_size)),
+      /*mask:             DeviceArray2d::with_zeros((config.num_categories, batch_size)),
+      mask_host:        Array2d::with_zeros((config.num_categories, batch_size)),*/
 
       true_labels:      DeviceArray2d::with_zeros((config.num_train_labels, batch_size)),
       true_labels_host: Array2d::with_zeros((config.num_train_labels, batch_size)),
@@ -2600,18 +2598,12 @@ impl Layer for MultiSoftmaxKLLossLayer {
   fn forward(&mut self, phase: OptPhase, batch_size: usize, ctx: &DeviceContext) {
     assert!(batch_size == self.batch_lim);
 
-    /*if self.config.do_mask {
-      unsafe { rembrandt_kernel_batch_map_pos_mask_inplace(
-          self.in_act.borrow_mut().as_mut_view().as_mut_ptr(),
-          self.config.num_categories as i32,
-          batch_size as i32,
-          self.mask.as_view().as_ptr(),
-          ctx.stream.ptr,
-      ) };
-    }*/
     match phase {
-      OptPhase::Evaluation => {
-        unsafe { self.infer_softmax_op.forward(
+      OptPhase::Inference => {
+        // FIXME(20151203): to use the smaller softmax op during inference, need
+        // to shrink the output of 
+        //unsafe { self.infer_softmax_op.forward(
+        unsafe { self.train_softmax_op.forward(
             self.in_act.borrow().as_view().as_ptr(),
             self.probabilities.as_mut_view().as_mut_ptr(),
             &ctx.dnn,
@@ -2643,8 +2635,8 @@ impl Layer for MultiSoftmaxKLLossLayer {
 
     unsafe { rembrandt_kernel_batch_map_softmax_cross_entropy_loss_backprop(
         self.probabilities.as_view().as_ptr(),
-        (self.config.num_categories * self.config.num_train_labels) as i32,
-        batch_size as i32,
+        self.config.num_categories as i32,
+        (self.config.num_train_labels * batch_size) as i32,
         self.true_labels.as_view().as_ptr(),
         self.in_delta.borrow_mut().as_mut_view().as_mut_ptr(),
         descent.minibatch_size() as f32,
@@ -2652,29 +2644,20 @@ impl Layer for MultiSoftmaxKLLossLayer {
     ) };
   }
 
-  fn target_probs(&mut self, batch_size: usize) -> &DeviceArray2d<f32> {
-    assert_eq!(batch_size, self.batch_lim);
-    &self.probabilities
-  }
-
-  fn target_labels(&mut self, batch_size: usize) -> &DeviceArray2d<i32> {
-    assert_eq!(batch_size, self.batch_lim);
-    &self.pred_labels
-  }
-
-  fn recv_target_labels(&mut self, batch_size: usize, target_labels: &DeviceArray2d<i32>, ctx: &DeviceContext) {
-    assert_eq!(batch_size, self.batch_lim);
-    //target_act.as_view_2d((self.config.num_channels, batch_size)).send(
-    target_labels.as_view().send(
-        &mut self.true_labels.as_mut_view(), ctx);
-  }
-
-  //fn preload_label(&mut self, batch_idx: usize, label: i32, ctx: &DeviceContext) {
   fn preload_label(&mut self, batch_idx: usize, label: &SampleLabel, ctx: &DeviceContext) {
     assert!(batch_idx < self.batch_lim);
     match label {
       &SampleLabel::Category{category} => {
-        self.true_labels_host.as_mut_slice()[batch_idx] = category;
+        // FIXME(20151205)
+        unimplemented!();
+        //self.true_labels_host.as_mut_slice()[batch_idx] = category;
+      }
+      &SampleLabel::MultiCategory{ref categories} => {
+        assert_eq!(self.config.num_train_labels, categories.len());
+        for k in (0 .. self.config.num_train_labels) {
+          //self.true_labels_host.as_mut_slice()[batch_idx + k * self.batch_lim] = categories[k];
+          self.true_labels_host.as_mut_slice()[k + batch_idx * self.config.num_train_labels] = categories[k];
+        }
       }
       _ => {
         panic!("SoftmaxLossLayer only supports category labels!");
@@ -2687,18 +2670,6 @@ impl Layer for MultiSoftmaxKLLossLayer {
     self.true_labels.as_mut_view().sync_load(&self.true_labels_host.as_view(), ctx);
   }
 
-  /*fn preload_mask(&mut self, batch_idx: usize, mask: &Array2d<f32>, ctx: &DeviceContext) {
-    assert!(batch_idx < self.batch_lim);
-    assert!(self.config.do_mask);
-    self.mask_host.as_mut_slice()[batch_idx * self.config.num_categories .. (batch_idx + 1) * self.config.num_categories].clone_from_slice(mask.as_slice());
-  }
-
-  fn load_masks(&mut self, batch_size: usize, ctx: &DeviceContext) {
-    assert!(batch_size == self.batch_lim);
-    assert!(self.config.do_mask);
-    self.mask.as_mut_view().sync_load(&self.mask_host.as_view(), ctx);
-  }*/
-
   fn store_labels(&mut self, batch_size: usize, ctx: &DeviceContext) {
     assert!(batch_size == self.batch_lim);
     assert!(self.config.num_categories <= 1024);
@@ -2708,7 +2679,7 @@ impl Layer for MultiSoftmaxKLLossLayer {
     unsafe { rembrandt_kernel_batch_blockreduce_argmax(
         self.probabilities.as_view().as_ptr(),
         self.config.num_categories as i32,
-        batch_size as i32,
+        (self.config.num_train_labels * batch_size) as i32,
         self.tmp_max.as_mut_view().as_mut_ptr(),
         self.pred_labels.as_mut_view().as_mut_ptr(),
         ctx.stream.ptr,
@@ -2728,9 +2699,12 @@ impl Layer for MultiSoftmaxKLLossLayer {
     println!("DEBUG:   true labels: {:?}", self.true_labels_host);
     println!("DEBUG:   pred labels: {:?}", self.pred_labels_host);*/
     let mut num_correct = 0;
-    for (&y_truth, &y_hat) in self.true_labels_host.as_slice().iter().zip(self.pred_labels_host.as_slice().iter()) {
-      if y_truth == y_hat {
-        num_correct += 1;
+    //for (&y_truth, &y_hat) in self.true_labels_host.as_slice().iter().zip(self.pred_labels_host.as_slice().iter()).take(self.config.num_categories) {
+    for (k, (&y_truth, &y_hat)) in self.true_labels_host.as_slice().iter().zip(self.pred_labels_host.as_slice().iter()).enumerate() {
+      if k % self.config.num_train_labels == 0 {
+        if y_truth == y_hat {
+          num_correct += 1;
+        }
       }
     }
     num_correct
@@ -2778,26 +2752,7 @@ impl Layer for MultiSoftmaxKLLossLayer {
     assert!(batch_size == self.batch_lim);
     &self.pred_probs_host
   }
-
-  fn store_cdfs(&mut self, batch_size: usize, ctx: &DeviceContext) {
-    assert!(batch_size == self.batch_lim);
-    assert!(self.config.num_categories <= 1024);
-    unsafe { rembrandt_kernel_batch_blockscan_prefix_sum(
-        self.probabilities.as_view().as_ptr(),
-        self.config.num_categories as i32,
-        batch_size as i32,
-        self.pred_cdfs.as_mut_view().as_mut_ptr(),
-        ctx.stream.ptr,
-    ) };
-    self.pred_cdfs.as_view().sync_store(&mut self.pred_cdfs_host.as_mut_view(), ctx);
-  }
-
-  fn predict_cdfs(&mut self, batch_size: usize, ctx: &DeviceContext) -> &Array2d<f32> {
-    assert!(batch_size == self.batch_lim);
-    &self.pred_cdfs_host
-  }
 }
-
 
 #[derive(Clone, Copy, Debug)]
 pub struct BinaryLogisticKLLossLayerConfig {

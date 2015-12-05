@@ -223,51 +223,16 @@ impl DataSource for EpisoDbDataSource {
     let mut episode = vec![];
     let (start_idx, end_idx) = self.frames_db.get_episode(ep_idx).unwrap();
 
-    self.tmp_categories.clear();
+    /*self.tmp_categories.clear();
     for idx in (start_idx .. end_idx) {
       let category_value = self.labels_db.get_frame(idx).unwrap();
       let category = Cursor::new(category_value).read_i32::<LittleEndian>().unwrap();
       self.tmp_categories.push(category);
-    }
+    }*/
 
     episode.clear();
     'for_each_sample:
     for (i, idx) in (start_idx .. end_idx).enumerate() {
-      /*// FIXME(20151129): Right now we skip samples with category `-1`;
-      // should allow user to specify how to handle those.
-      let sample_label = match label_cfg {
-        SampleLabelConfig::Category => {
-          if self.tmp_categories[i] == -1 {
-            continue 'for_each_sample;
-          }
-          SampleLabel::Category{category: self.tmp_categories[i]}
-        }
-        SampleLabelConfig::Category2 => {
-          // TODO(20151129)
-          unimplemented!();
-        }
-        SampleLabelConfig::Lookahead{lookahead} => {
-          assert!(lookahead >= 1);
-          if idx + lookahead > end_idx {
-            continue 'for_each_sample;
-          }
-          let lookahead_cats = &self.tmp_categories[i .. i + lookahead];
-          for k in (0 .. lookahead) {
-            if lookahead_cats[k] == -1 {
-              continue 'for_each_sample;
-            }
-          }
-          SampleLabel::MultiCategory{categories: lookahead_cats.to_vec()}
-        }
-        SampleLabelConfig::Lookahead2{lookahead} => {
-          // TODO(20151129)
-          unimplemented!();
-        }
-      };
-      let frame_value = self.frames_db.get_frame(idx).unwrap();
-      let sample_datum = SampleDatum::RgbPerChannelBytes(Array3d::<u8>::deserialize(&mut Cursor::new(frame_value))
-        .ok().expect("arraydb source failed to deserialize datum!"));
-      episode.push((sample_datum, Some(sample_label)));*/
       if let Some(sample) = self.get_episode_sample(label_cfg, ep_idx, idx) {
         episode.push(sample);
       }
@@ -278,28 +243,23 @@ impl DataSource for EpisoDbDataSource {
 
   fn get_episode_sample(&mut self, label_cfg: SampleLabelConfig, ep_idx: usize, sample_idx: usize) -> Option<(SampleDatum, Option<SampleLabel>)> {
     let (start_idx, end_idx) = self.frames_db.get_episode(ep_idx).unwrap();
+    let (start_idx2, end_idx2) = self.labels_db.get_episode(ep_idx).unwrap();
+    assert_eq!(start_idx, start_idx2);
+    assert_eq!(end_idx, end_idx2);
     assert!(start_idx <= sample_idx);
     assert!(sample_idx < end_idx);
-    let i = sample_idx - start_idx;
-
-    // FIXME(20151202): just read necessary categories.
-    if self.tmp_ep != ep_idx {
-      self.tmp_categories.clear();
-      for idx in (start_idx .. end_idx) {
-        let category_value = self.labels_db.get_frame(idx).unwrap();
-        let category = Cursor::new(category_value).read_i32::<LittleEndian>().unwrap();
-        self.tmp_categories.push(category);
-      }
-    }
+    //let i = sample_idx - start_idx;
 
     // FIXME(20151129): Right now we skip samples with category `-1`;
     // should allow user to specify how to handle those.
     let sample_label = match label_cfg {
       SampleLabelConfig::Category => {
-        if self.tmp_categories[i] == -1 {
+        let category_value = self.labels_db.get_frame(sample_idx).unwrap();
+        let category = Cursor::new(category_value).read_i32::<LittleEndian>().unwrap();
+        if category == -1 {
           return None;
         }
-        SampleLabel::Category{category: self.tmp_categories[i]}
+        SampleLabel::Category{category: category}
       }
       SampleLabelConfig::Category2 => {
         // TODO(20151129)
@@ -308,15 +268,20 @@ impl DataSource for EpisoDbDataSource {
       SampleLabelConfig::Lookahead{lookahead} => {
         assert!(lookahead >= 1);
         if sample_idx + lookahead > end_idx {
+          //println!("DEBUG: episodb: past lookahead: {} {} {}", start_idx, sample_idx, end_idx);
           return None;
         }
-        let lookahead_cats = &self.tmp_categories[i .. i + lookahead];
+        let mut lookahead_cats = Vec::with_capacity(lookahead);
         for k in (0 .. lookahead) {
-          if lookahead_cats[k] == -1 {
+          let category_value = self.labels_db.get_frame(sample_idx + k).unwrap();
+          let category = Cursor::new(category_value).read_i32::<LittleEndian>().unwrap();
+          if category == -1 {
+            //println!("DEBUG: episodb: invalid category, returning None");
             return None;
           }
+          lookahead_cats.push(category);
         }
-        SampleLabel::MultiCategory{categories: lookahead_cats.to_vec()}
+        SampleLabel::MultiCategory{categories: lookahead_cats}
       }
       SampleLabelConfig::Lookahead2{lookahead} => {
         // TODO(20151129)
