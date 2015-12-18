@@ -10,7 +10,7 @@ use async_cuda::array_num::{DeviceNumExt};
 use async_cuda::array_rand::{DeviceRandExt};
 use async_cuda::array_types::{DeviceArray2d, DeviceBuf};
 use async_cuda::context::{DeviceContext};
-use cuda_dnn::{
+use cuda_dnn::v3::{
   CudnnConvFwdOp, CudnnConvBwdFilterOp, CudnnConvBwdDataOp,
   CudnnAddOp, CudnnActKind, CudnnActOp, CudnnSoftmaxOp,
   CudnnTensorDesc, CudnnFilterDesc, CudnnConvDesc,
@@ -2517,10 +2517,11 @@ pub struct MultiSoftmaxKLLossLayer {
   pub pred_labels_host: Array2d<i32>,
   pub ranked_labels:    Vec<i32>,
   pub pred_probs_host:  Array2d<f32>,
-  pub pred_cdfs:        DeviceArray2d<f32>,
+  pub pred_probs1_h:    Array2d<f32>,
+  /*pub pred_cdfs:        DeviceArray2d<f32>,
   pub pred_cdfs_host:   Array2d<f32>,
   pub pred_qvals:       DeviceArray2d<f32>,
-  pub pred_qvals_host:  Array2d<f32>,
+  pub pred_qvals_host:  Array2d<f32>,*/
 
   pub train_softmax_op: CudnnSoftmaxOp,
   pub infer_softmax_op: CudnnSoftmaxOp,
@@ -2552,7 +2553,7 @@ impl MultiSoftmaxKLLossLayer {
       /*loss_accum:       DeviceArray2d::with_zeros((1, batch_size)),
       loss:             DeviceArray2d::with_zeros((1, 1)),
       loss_host:        Array2d::with_zeros((1, 1)),*/
-      tmp_max:          DeviceArray2d::with_zeros((1, batch_size)),
+      tmp_max:          DeviceArray2d::with_zeros((config.num_train_labels, batch_size)),
 
       /*mask:             DeviceArray2d::with_zeros((config.num_categories, batch_size)),
       mask_host:        Array2d::with_zeros((config.num_categories, batch_size)),*/
@@ -2562,11 +2563,12 @@ impl MultiSoftmaxKLLossLayer {
       pred_labels:      DeviceArray2d::with_zeros((config.num_train_labels, batch_size)),
       pred_labels_host: Array2d::with_zeros((config.num_train_labels, batch_size)),
       ranked_labels:    repeat(0).take(config.num_categories * batch_size).collect(),
-      pred_probs_host:  Array2d::with_zeros((config.num_categories, batch_size)),
-      pred_cdfs:        DeviceArray2d::with_zeros((config.num_categories, batch_size)),
+      pred_probs_host:  Array2d::with_zeros((config.num_categories * config.num_train_labels, batch_size)),
+      pred_probs1_h:    Array2d::with_zeros((config.num_categories, batch_size)),
+      /*pred_cdfs:        DeviceArray2d::with_zeros((config.num_categories, batch_size)),
       pred_cdfs_host:   Array2d::with_zeros((config.num_categories, batch_size)),
       pred_qvals:       DeviceArray2d::with_zeros((config.num_categories, batch_size)),
-      pred_qvals_host:  Array2d::with_zeros((config.num_categories, batch_size)),
+      pred_qvals_host:  Array2d::with_zeros((config.num_categories, batch_size)),*/
 
       train_softmax_op: train_softmax_op,
       infer_softmax_op: infer_softmax_op,
@@ -2746,11 +2748,21 @@ impl Layer for MultiSoftmaxKLLossLayer {
   fn store_probs(&mut self, batch_size: usize, ctx: &DeviceContext) {
     assert!(batch_size == self.batch_lim);
     self.probabilities.as_view().sync_store(&mut self.pred_probs_host.as_mut_view(), ctx);
+    let &mut MultiSoftmaxKLLossLayer{
+      ref mut pred_probs1_h, ref pred_probs_host, .. } = self;
+    let pred_probs_h = pred_probs_host.as_slice();
+    let mut pred_probs1_h = pred_probs1_h.as_mut_slice();
+    for idx in (0 .. batch_size) {
+      for j in (0 .. self.config.num_categories) {
+        //pred_probs1_h[j] = pred_probs_h[j * self.config.num_train_labels];
+        pred_probs1_h[j + idx * batch_size] = pred_probs_h[j + idx * batch_size * self.config.num_train_labels];
+      }
+    }
   }
 
   fn predict_probs(&mut self, batch_size: usize, ctx: &DeviceContext) -> &Array2d<f32> {
     assert!(batch_size == self.batch_lim);
-    &self.pred_probs_host
+    &self.pred_probs1_h
   }
 }
 

@@ -1,6 +1,6 @@
 extern crate cuda_dnn;
 
-use cuda_dnn::*;
+use cuda_dnn::v3::*;
 
 fn main() {
   let cudnn = CudnnHandle::create()
