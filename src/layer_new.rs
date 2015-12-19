@@ -59,11 +59,15 @@ pub trait Layer {
 }
 
 pub trait InputLayer: Layer {
+  fn downcast(&self) -> &Layer;
+
   fn expose_host_frame_buf(&mut self, batch_idx: usize) -> &mut [u8] { unimplemented!(); }
   fn load_frames(&mut self, batch_size: usize, ctx: &DeviceCtxRef) { unimplemented!(); }
 }
 
 pub trait LossLayer: Layer {
+  fn downcast(&self) -> &Layer;
+
   fn preload_label(&mut self, batch_idx: usize, label: &SampleLabel, ctx: &DeviceCtxRef) { unimplemented!(); }
   fn load_labels(&mut self, batch_size: usize, ctx: &DeviceCtxRef) { unimplemented!(); }
 
@@ -106,14 +110,41 @@ pub enum ActivationFunction {
 pub enum LayerConfig {
   Data3d(Data3dLayerConfig),
   Conv2d(Conv2dLayerConfig),
-  Categorical(CategoricalLossLayerConfig),
-  MultiCategorical(MultiCategoricalLossLayerConfig),
+  SoftmaxKL(CategoricalLossLayerConfig),
+  MultiSoftmaxKL(MultiCategoricalLossLayerConfig),
 }
 
 impl LayerConfig {
   pub fn params_len(&self) -> usize {
     match *self {
       LayerConfig::Conv2d(cfg) => cfg.params_len(),
+      _ => unimplemented!(),
+    }
+  }
+
+  pub fn build_layer(&self, batch_size: usize, prev_layer: Option<&Layer>, ctx: &DeviceCtxRef) -> Box<Layer> {
+    match *self {
+      LayerConfig::Conv2d(cfg) => {
+        Box::new(Conv2dLayer::new(batch_size, cfg, prev_layer, ctx))
+      }
+      _ => unimplemented!(),
+    }
+  }
+
+  pub fn build_input_layer(&self, batch_size: usize, ctx: &DeviceCtxRef) -> Box<InputLayer> {
+    match *self {
+      LayerConfig::Data3d(cfg) => {
+        Box::new(Data3dLayer::new(batch_size, cfg, ctx))
+      }
+      _ => unimplemented!(),
+    }
+  }
+
+  pub fn build_loss_layer(&self, batch_size: usize, prev_layer: Option<&Layer>, ctx: &DeviceCtxRef) -> Box<LossLayer> {
+    match *self {
+      LayerConfig::SoftmaxKL(cfg) => {
+        Box::new(SoftmaxKLLossLayer::new(batch_size, cfg, prev_layer, ctx))
+      }
       _ => unimplemented!(),
     }
   }
@@ -182,6 +213,10 @@ impl Layer for Data3dLayer {
 }
 
 impl InputLayer for Data3dLayer {
+  fn downcast(&self) -> &Layer {
+    self
+  }
+
   fn expose_host_frame_buf(&mut self, batch_idx: usize) -> &mut [u8] {
     assert!(batch_idx < self.batch_limit);
     let length = self.config.dims.len();
@@ -626,6 +661,10 @@ impl Layer for SoftmaxKLLossLayer {
 }
 
 impl LossLayer for SoftmaxKLLossLayer {
+  fn downcast(&self) -> &Layer {
+    self
+  }
+
   fn preload_label(&mut self, batch_idx: usize, label: &SampleLabel, ctx: &DeviceCtxRef) {
     unimplemented!();
   }
@@ -703,6 +742,10 @@ impl Layer for MultiSoftmaxKLLossLayer {
 }
 
 impl LossLayer for MultiSoftmaxKLLossLayer {
+  fn downcast(&self) -> &Layer {
+    self
+  }
+
   fn preload_label(&mut self, batch_idx: usize, label: &SampleLabel, ctx: &DeviceCtxRef) {
     unimplemented!();
   }
