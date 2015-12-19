@@ -2,6 +2,9 @@
 #![feature(slice_bytes)]
 
 extern crate array;
+extern crate array_cuda;
+extern crate array_dist;
+extern crate array_new;
 extern crate arraydb;
 extern crate async;
 extern crate async_cuda;
@@ -26,3 +29,7 @@ pub mod graph;
 pub mod layer;
 pub mod net;
 pub mod opt;
+
+pub mod arch_new;
+pub mod layer_new;
+pub mod opt_new;

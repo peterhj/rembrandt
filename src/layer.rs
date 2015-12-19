@@ -506,8 +506,8 @@ pub struct FullyConnLayer {
 impl FullyConnLayer {
   pub fn new(layer_id: usize, config: FullyConnLayerConfig, batch_size: usize, prev_layer: Option<&Layer>) -> FullyConnLayer {
     FullyConnLayer{
-      in_act:       prev_layer.unwrap().output_activation(-1).unwrap(),
-      in_delta:     prev_layer.unwrap().output_delta(-1),
+      in_act:       prev_layer.unwrap().output_activation(0xffff_ffff_ffff_ffff).unwrap(),
+      in_delta:     prev_layer.unwrap().output_delta(0xffff_ffff_ffff_ffff),
       out_act:      Rc::new(RefCell::new(DeviceBuf::with_zeros(config.out_channels))),
       out_delta:    Rc::new(RefCell::new(DeviceBuf::with_zeros(config.out_channels))),
       weights:      DeviceArray2d::with_zeros((config.in_channels, config.out_channels)),
@@ -852,8 +852,8 @@ pub struct MimicAffineLayer {
 impl MimicAffineLayer {
   pub fn new(layer_id: usize, config: MimicAffineLayerConfig, batch_size: usize, prev_layer: Option<&Layer>) -> MimicAffineLayer {
     MimicAffineLayer{
-      in_act:       prev_layer.unwrap().output_activation(-1).unwrap(),
-      in_delta:     prev_layer.unwrap().output_delta(-1),
+      in_act:       prev_layer.unwrap().output_activation(0xffff_ffff_ffff_ffff).unwrap(),
+      in_delta:     prev_layer.unwrap().output_delta(0xffff_ffff_ffff_ffff),
       out_act:      Rc::new(RefCell::new(DeviceBuf::with_zeros(config.out_channels * batch_size))),
       out_delta:    Rc::new(RefCell::new(DeviceBuf::with_zeros(config.out_channels * batch_size))),
 
@@ -1268,8 +1268,8 @@ impl Conv2dLayer {
     };
 
     Conv2dLayer{
-      in_act:       prev_layer.unwrap().output_activation(-1).unwrap(),
-      in_delta:     prev_layer.unwrap().output_delta(-1),
+      in_act:       prev_layer.unwrap().output_activation(0xffff_ffff_ffff_ffff).unwrap(),
+      in_delta:     prev_layer.unwrap().output_delta(0xffff_ffff_ffff_ffff),
       out_act:      Rc::new(RefCell::new(DeviceBuf::with_zeros(out_length * batch_size))),
       out_delta:    Rc::new(RefCell::new(DeviceBuf::with_zeros(out_length * batch_size))),
       weights:      DeviceArray2d::with_zeros((conv_size * conv_size * in_channels, out_channels)),
@@ -1760,8 +1760,8 @@ impl PoolLayer {
     let in_length = in_width * in_height * channels;
     let out_length = out_width * out_height * channels;
     PoolLayer{
-      in_act:     prev_layer.unwrap().output_activation(-1).unwrap(),
-      in_delta:   prev_layer.unwrap().output_delta(-1).unwrap(),
+      in_act:     prev_layer.unwrap().output_activation(0xffff_ffff_ffff_ffff).unwrap(),
+      in_delta:   prev_layer.unwrap().output_delta(0xffff_ffff_ffff_ffff).unwrap(),
       in_mask:    DeviceBuf::with_zeros(in_length),
       out_act:    Rc::new(RefCell::new(DeviceBuf::with_zeros(out_length))),
       out_delta:  Rc::new(RefCell::new(DeviceBuf::with_zeros(out_length))),
@@ -1924,8 +1924,8 @@ pub struct DropoutLayer {
 
 impl DropoutLayer {
   pub fn new(layer_id: usize, config: DropoutLayerConfig, batch_size: usize, prev_layer: Option<&Layer>) -> DropoutLayer {
-    let in_act = prev_layer.unwrap().output_activation(-1).unwrap();
-    let in_delta = prev_layer.unwrap().output_delta(-1).unwrap();
+    let in_act = prev_layer.unwrap().output_activation(0xffff_ffff_ffff_ffff).unwrap();
+    let in_delta = prev_layer.unwrap().output_delta(0xffff_ffff_ffff_ffff).unwrap();
     let act_length = in_act.borrow().as_view().len();
     DropoutLayer{
       in_act:     in_act,
@@ -2049,8 +2049,8 @@ impl SoftmaxLossLayer {
         CudnnTensorDesc::<f32>::create_4d(1, 1, config.num_categories, batch_size).unwrap(),
     );
     SoftmaxLossLayer{
-      in_act:         prev_layer.unwrap().output_activation(-1).unwrap(),
-      in_delta:       prev_layer.unwrap().output_delta(-1).unwrap(),
+      in_act:         prev_layer.unwrap().output_activation(0xffff_ffff_ffff_ffff).unwrap(),
+      in_delta:       prev_layer.unwrap().output_delta(0xffff_ffff_ffff_ffff).unwrap(),
       probabilities:  DeviceArray2d::with_zeros((config.num_categories, batch_size)),
       loss_accum:     DeviceArray2d::with_zeros((1, batch_size)),
       loss:           DeviceArray2d::with_zeros((1, 1)),
@@ -2547,8 +2547,8 @@ impl MultiSoftmaxKLLossLayer {
     );
 
     MultiSoftmaxKLLossLayer{
-      in_act:           prev_layer.unwrap().output_activation(-1).unwrap(),
-      in_delta:         prev_layer.unwrap().output_delta(-1).unwrap(),
+      in_act:           prev_layer.unwrap().output_activation(0xffff_ffff_ffff_ffff).unwrap(),
+      in_delta:         prev_layer.unwrap().output_delta(0xffff_ffff_ffff_ffff).unwrap(),
       probabilities:    DeviceArray2d::with_zeros((config.num_categories * config.num_train_labels, batch_size)),
       /*loss_accum:       DeviceArray2d::with_zeros((1, batch_size)),
       loss:             DeviceArray2d::with_zeros((1, 1)),
@@ -2804,8 +2804,8 @@ pub struct BinaryLogisticKLLossLayer {
 impl BinaryLogisticKLLossLayer {
   pub fn new(layer_id: usize, config: BinaryLogisticKLLossLayerConfig, batch_size: usize, prev_layer: Option<&Layer>) -> BinaryLogisticKLLossLayer {
     BinaryLogisticKLLossLayer{
-      in_act:       prev_layer.unwrap().output_activation(-1).unwrap(),
-      in_delta:     prev_layer.unwrap().output_delta(-1).unwrap(),
+      in_act:       prev_layer.unwrap().output_activation(0xffff_ffff_ffff_ffff).unwrap(),
+      in_delta:     prev_layer.unwrap().output_delta(0xffff_ffff_ffff_ffff).unwrap(),
       probs:        DeviceBuf::with_zeros(config.num_categories * batch_size),
       /*loss_accum:     DeviceArray2d::with_zeros((1, batch_size)),
       loss:           DeviceArray2d::with_zeros((1, 1)),
@@ -2975,8 +2975,8 @@ impl L2LossLayer {
         CudnnTensorDesc::<f32>::create_4d(1, 1, config.num_channels, batch_size).unwrap(),
     );
     L2LossLayer{
-      in_act:         prev_layer.unwrap().output_activation(-1).unwrap(),
-      in_delta:       prev_layer.unwrap().output_delta(-1).unwrap(),
+      in_act:         prev_layer.unwrap().output_activation(0xffff_ffff_ffff_ffff).unwrap(),
+      in_delta:       prev_layer.unwrap().output_delta(0xffff_ffff_ffff_ffff).unwrap(),
 
       probs:          DeviceArray2d::with_zeros((config.num_channels, batch_size)),
       target_act:     DeviceArray2d::with_zeros((config.num_channels, batch_size)),

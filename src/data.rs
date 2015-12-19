@@ -182,7 +182,7 @@ impl EpisoDbDataSource {
       frames_db:  frames_db,
       labels_db:  labels_db,
       labels2_db: None,
-      tmp_ep:         -1,
+      tmp_ep:         0xffff_ffff_ffff_ffff,
       tmp_categories: vec![],
     }
   }
