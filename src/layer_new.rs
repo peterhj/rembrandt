@@ -1,4 +1,4 @@
-use data::{SampleLabel};
+use data_new::{SampleDatum, SampleLabel};
 
 use array_new::{
   Shape, Array, AsyncArray, ArrayView, ArrayViewMut, ArrayZeroExt,
@@ -48,8 +48,8 @@ pub trait Layer {
 
   // The core layer functionality.
   fn forward(&mut self, batch_size: usize, phase: Phase, ctx: &DeviceCtxRef) {}
-  fn backward(&mut self, batch_size: usize, ctx: &DeviceCtxRef) {}
-  fn descend(&mut self, learning_rate: f32, minibatch_size: f32, l2_reg_coef: f32, ctx: &DeviceCtxRef) {}
+  fn backward(&mut self, batch_size: usize, scale: f32, ctx: &DeviceCtxRef) {}
+  fn descend(&mut self, scale: f32, l2_reg_coef: f32, ctx: &DeviceCtxRef) {}
   fn reset_gradients(&mut self, momentum: f32, ctx: &DeviceCtxRef) {}
   //fn reset_loss(&mut self, ctx: &DeviceCtxRef) {}
 
@@ -60,9 +60,10 @@ pub trait Layer {
 
 pub trait InputLayer: Layer {
   fn downcast(&self) -> &Layer;
-
-  fn expose_host_frame_buf(&mut self, batch_idx: usize) -> &mut [u8] { unimplemented!(); }
-  fn load_frames(&mut self, batch_size: usize, ctx: &DeviceCtxRef) { unimplemented!(); }
+  fn preload_frame(&mut self, batch_idx: usize, frame: &SampleDatum, ctx: &DeviceCtxRef);
+  //fn preload_frame(&mut self, batch_idx: usize, frame: &Array3d<u8>, ctx: &DeviceCtxRef);
+  fn expose_host_frame_buf(&mut self, batch_idx: usize) -> &mut [u8];
+  fn load_frames(&mut self, batch_size: usize, ctx: &DeviceCtxRef);
 }
 
 pub trait LossLayer: Layer {
@@ -110,8 +111,8 @@ pub enum ActivationFunction {
 pub enum LayerConfig {
   Data3d(Data3dLayerConfig),
   Conv2d(Conv2dLayerConfig),
-  SoftmaxKL(CategoricalLossLayerConfig),
-  MultiSoftmaxKL(MultiCategoricalLossLayerConfig),
+  SoftmaxKLLoss(CategoricalLossLayerConfig),
+  MultiSoftmaxKLLoss(MultiCategoricalLossLayerConfig),
 }
 
 impl LayerConfig {
@@ -142,7 +143,7 @@ impl LayerConfig {
 
   pub fn build_loss_layer(&self, batch_size: usize, prev_layer: Option<&Layer>, ctx: &DeviceCtxRef) -> Box<LossLayer> {
     match *self {
-      LayerConfig::SoftmaxKL(cfg) => {
+      LayerConfig::SoftmaxKLLoss(cfg) => {
         Box::new(SoftmaxKLLossLayer::new(batch_size, cfg, prev_layer, ctx))
       }
       _ => unimplemented!(),
@@ -217,6 +218,16 @@ impl InputLayer for Data3dLayer {
     self
   }
 
+  fn preload_frame(&mut self, batch_idx: usize, frame: &SampleDatum, ctx: &DeviceCtxRef) {
+    match frame {
+      &SampleDatum::RowMajorBytes(ref frame_bytes) => {
+        // TODO(20151220)
+        unimplemented!();
+      }
+      //_ => unimplemented!(),
+    }
+  }
+
   fn expose_host_frame_buf(&mut self, batch_idx: usize) -> &mut [u8] {
     assert!(batch_idx < self.batch_limit);
     let length = self.config.dims.len();
@@ -235,14 +246,12 @@ impl InputLayer for Data3dLayer {
 
 #[derive(Clone, Copy)]
 pub struct Conv2dLayerConfig {
-  pub in_width:     usize,
-  pub in_height:    usize,
-  pub in_channels:  usize,
+  pub in_dims:      (usize, usize, usize),
   pub conv_size:    usize,
   pub conv_stride:  usize,
   pub conv_pad:     usize,
   pub out_channels: usize,
-  pub act_fun:      ActivationFunction,
+  pub act_func:     ActivationFunction,
   pub init_weights: ParamsInitialization,
 }
 
@@ -251,14 +260,16 @@ pub struct Conv2dLayerConfig {
 
 impl Conv2dLayerConfig {
   fn get_in_dims(&self) -> (usize, usize, usize) {
-    (self.in_width, self.in_height, self.in_channels)
+    //(self.in_width, self.in_height, self.in_channels)
+    self.in_dims
   }
 
   fn get_out_dims(&self) -> (usize, usize, usize) {
     // XXX(20150926): Note that pool layer uses ceil((L+2*pad-size)/stride)
     // whereas conv layer uses floor((L+2*pad-size)/stride).
-    let out_width = max(0, (self.in_width + 2 * self.conv_pad - self.conv_size) as isize) as usize / self.conv_stride + 1;
-    let out_height = max(0, (self.in_height + 2 * self.conv_pad - self.conv_size) as isize) as usize / self.conv_stride + 1;
+    let (in_width, in_height, _) = self.in_dims;
+    let out_width = max(0, (in_width + 2 * self.conv_pad - self.conv_size) as isize) as usize / self.conv_stride + 1;
+    let out_height = max(0, (in_height + 2 * self.conv_pad - self.conv_size) as isize) as usize / self.conv_stride + 1;
     (out_width, out_height, self.out_channels)
   }
 
@@ -291,9 +302,9 @@ pub struct Conv2dLayer {
 impl Conv2dLayer {
   pub fn new(batch_size: usize, config: Conv2dLayerConfig, prev_layer: Option<&Layer>, ctx: &DeviceCtxRef) -> Conv2dLayer {
     let Conv2dLayerConfig{
-      in_width, in_height, in_channels,
-      conv_size, conv_stride, conv_pad,
-      ..} = config;
+      in_dims, conv_size, conv_stride, conv_pad,
+      .. } = config;
+    let (in_width, in_height, in_channels) = in_dims;
     let out_dims = config.get_out_dims();
     let (out_width, out_height, out_channels) = out_dims;
     let out_length = out_dims.len();
@@ -366,7 +377,8 @@ impl Layer for Conv2dLayer {
   }
 
   fn initialize_params(&mut self, ctx: &DeviceCtxRef) {
-    let Conv2dLayerConfig{in_channels, conv_size, out_channels, ..} = self.config;
+    let Conv2dLayerConfig{in_dims, conv_size, out_channels, ..} = self.config;
+    let (_, _, in_channels) = in_dims;
     let mut rng = thread_rng();
     let mut init_weights = Array2d::zeros((conv_size * conv_size * in_channels, out_channels));
     match self.config.init_weights {
@@ -398,7 +410,8 @@ impl Layer for Conv2dLayer {
   }
 
   fn load_params(&mut self, blob: &[u8], ctx: &DeviceCtxRef) -> usize {
-    let Conv2dLayerConfig{in_channels, conv_size, out_channels, ..} = self.config;
+    let Conv2dLayerConfig{in_dims, conv_size, out_channels, ..} = self.config;
+    let (_, _, in_channels) = in_dims;
     let mut reader = Cursor::new(blob);
     let load_weights = Array2d::deserialize(&mut reader)
       .ok().expect("Conv2dLayer failed to deserialize weights!");
@@ -427,9 +440,9 @@ impl Layer for Conv2dLayer {
   fn forward(&mut self, batch_size: usize, phase: Phase, ctx: &DeviceCtxRef) {
     assert!(batch_size <= self.batch_limit);
     let Conv2dLayerConfig{
-      in_width, in_height, in_channels,
-      conv_size, conv_stride, conv_pad,
-      ..} = self.config;
+      in_dims, conv_size, conv_stride, conv_pad,
+      .. } = self.config;
+    let (in_width, in_height, in_channels) = in_dims;
     let out_dims = self.config.get_out_dims();
     let (out_width, out_height, out_channels) = out_dims;
     let in_length = in_width * in_height * in_channels;
@@ -457,7 +470,7 @@ impl Layer for Conv2dLayer {
         &ctx.dnn,
     ).unwrap() };
 
-    match self.config.act_fun {
+    match self.config.act_func {
       ActivationFunction::Identity => {}
       ActivationFunction::Rect => {
         unsafe { rembrandt_kernel_batch_map_rect_inplace(
@@ -471,12 +484,12 @@ impl Layer for Conv2dLayer {
     }
   }
 
-  fn backward(&mut self, batch_size: usize, ctx: &DeviceCtxRef) {
+  fn backward(&mut self, batch_size: usize, scale: f32, ctx: &DeviceCtxRef) {
     assert!(batch_size <= self.batch_limit);
     let Conv2dLayerConfig{
-      in_width, in_height, in_channels,
-      conv_size, conv_stride, conv_pad,
-      ..} = self.config;
+      in_dims, conv_size, conv_stride, conv_pad,
+      .. } = self.config;
+    let (in_width, in_height, in_channels) = in_dims;
     let out_dims = self.config.get_out_dims();
     let (out_width, out_height, out_channels) = out_dims;
     let in_length = in_width * in_height * in_channels;
@@ -495,7 +508,7 @@ impl Layer for Conv2dLayer {
     let mut out_delta = out_delta.borrow_mut().borrow_mut(ctx);
     let mut work_space = work_space.borrow_mut(ctx);
 
-    match self.config.act_fun {
+    match self.config.act_func {
       ActivationFunction::Identity => {}
       ActivationFunction::Rect => {
         unsafe { rembrandt_kernel_batch_map_rect_backprop_inplace(
@@ -535,8 +548,9 @@ impl Layer for Conv2dLayer {
     }
   }
 
-  fn descend(&mut self, learning_rate: f32, minibatch_size: f32, l2_reg_coef: f32, ctx: &DeviceCtxRef) {
-    {
+  fn descend(&mut self, scale: f32, l2_reg_coef: f32, ctx: &DeviceCtxRef) {
+    assert!(l2_reg_coef >= 0.0);
+    if l2_reg_coef > 0.0 {
       self.grad_weights.as_view_mut(ctx)
         .matrix_sum(l2_reg_coef, &self.weights.as_view(ctx));
       self.grad_bias.as_view_mut(ctx)
@@ -544,9 +558,9 @@ impl Layer for Conv2dLayer {
     }
     {
       self.weights.as_view_mut(ctx)
-        .matrix_sum(-learning_rate / minibatch_size, &self.grad_weights.as_view(ctx));
+        .matrix_sum(-scale, &self.grad_weights.as_view(ctx));
       self.bias.as_view_mut(ctx)
-        .row_vector_sum(-learning_rate / minibatch_size, &self.grad_bias.as_view(ctx));
+        .row_vector_sum(-scale, &self.grad_bias.as_view(ctx));
     }
   }
 
@@ -636,7 +650,7 @@ impl Layer for SoftmaxKLLossLayer {
   fn forward(&mut self, batch_size: usize, phase: Phase, ctx: &DeviceCtxRef) {
     assert!(batch_size <= self.batch_limit);
     // FIXME(20151218)
-    //self.softmax.set_batch_size(batch_size);
+    self.softmax.set_batch_size(batch_size);
     unsafe { self.softmax.forward(
         self.in_act.borrow_mut().borrow(ctx).as_ptr(),
         self.out_probs.as_view_mut(ctx).as_mut_ptr(),
@@ -644,7 +658,7 @@ impl Layer for SoftmaxKLLossLayer {
     ) }.unwrap();
   }
 
-  fn backward(&mut self, batch_size: usize, ctx: &DeviceCtxRef) {
+  fn backward(&mut self, batch_size: usize, scale: f32, ctx: &DeviceCtxRef) {
     assert!(batch_size <= self.batch_limit);
     unsafe { rembrandt_kernel_batch_map_softmax_cross_entropy_loss_backprop(
         self.out_probs.as_view(ctx).as_ptr(),
@@ -666,11 +680,18 @@ impl LossLayer for SoftmaxKLLossLayer {
   }
 
   fn preload_label(&mut self, batch_idx: usize, label: &SampleLabel, ctx: &DeviceCtxRef) {
-    unimplemented!();
+    match label {
+      &SampleLabel::Category{category} => {
+        self.true_cats_h.as_mut_slice()[batch_idx] = category;
+      }
+      _ => unimplemented!(),
+    }
   }
 
   fn load_labels(&mut self, batch_size: usize, ctx: &DeviceCtxRef) {
-    unimplemented!();
+    assert!(batch_size <= self.batch_limit);
+    self.true_cats.as_view_mut(ctx)
+      .sync_load(&self.true_cats_h.as_view());
   }
 
   fn store_labels(&mut self, batch_size: usize, ctx: &DeviceCtxRef) {
@@ -693,7 +714,14 @@ impl LossLayer for SoftmaxKLLossLayer {
   }
 
   fn count_accuracy(&mut self, batch_size: usize) -> usize {
-    unimplemented!();
+    assert!(batch_size <= self.batch_limit);
+    let mut num_correct = 0;
+    for (&y_truth, &y_hat) in self.true_cats_h.as_slice().iter().zip(self.pred_cats_h.as_slice().iter()).take(batch_size) {
+      if y_truth == y_hat {
+        num_correct += 1;
+      }
+    }
+    num_correct
   }
 
   fn store_probs(&mut self, batch_size: usize, ctx: &DeviceCtxRef) {
@@ -737,7 +765,7 @@ impl Layer for MultiSoftmaxKLLossLayer {
   fn forward(&mut self, batch_size: usize, phase: Phase, ctx: &DeviceCtxRef) {
   }
 
-  fn backward(&mut self, batch_size: usize, ctx: &DeviceCtxRef) {
+  fn backward(&mut self, batch_size: usize, scale: f32, ctx: &DeviceCtxRef) {
   }
 }
 

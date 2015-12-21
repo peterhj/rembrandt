@@ -34,7 +34,15 @@ pub enum SampleLabel {
 
 pub trait DataIterator {
   fn max_num_samples(&self) -> usize;
-  fn each_sample(&mut self, label_cfg: SampleLabelConfig, f: &mut FnMut(usize, &SampleDatum, Option<&SampleLabel>));
+  fn each_sample(&mut self, label_cfg: SampleLabelConfig, /*filter: &Fn(usize) -> bool,*/ f: &mut FnMut(usize, &SampleDatum, Option<&SampleLabel>));
+
+  /*fn get_episode_indices(&mut self, ep_idx: usize) -> Option<(usize, usize)> {
+    unimplemented!();
+  }
+
+  fn get_episode_sample(&mut self, label_cfg: SampleLabelConfig, ep_idx: usize, sample_idx: usize) -> Option<(SampleDatum, Option<SampleLabel>)> {
+    unimplemented!();
+  }*/
 }
 
 pub struct SequentialIterator {
@@ -52,10 +60,11 @@ impl DataIterator for SequentialIterator {
     self.data.num_samples()
   }
 
-  fn each_sample(&mut self, label_cfg: SampleLabelConfig, f: &mut FnMut(usize, &SampleDatum, Option<&SampleLabel>)) {
+  fn each_sample(&mut self, label_cfg: SampleLabelConfig, /*filter: &Fn(usize) -> bool,*/ f: &mut FnMut(usize, &SampleDatum, Option<&SampleLabel>)) {
     let mut epoch_idx = 0;
-    for ep_idx in (0 .. self.data.num_episodes()) {
-      let (start_idx, end_idx) = self.data.get_episode_range(ep_idx);
+    let (ep_idx_start, ep_idx_end) = self.data.get_episodes_range();
+    for ep_idx in (ep_idx_start .. ep_idx_end) {
+      let (start_idx, end_idx) = self.data.get_episode_indices(ep_idx).unwrap();
       for sample_idx in (start_idx .. end_idx) {
         if let Some((datum, maybe_label)) = self.data.get_episode_sample(label_cfg, ep_idx, sample_idx) {
           f(epoch_idx, &datum, maybe_label.as_ref());
@@ -87,12 +96,11 @@ impl DataIterator for RandomEpisodeIterator {
 
   fn each_sample(&mut self, label_cfg: SampleLabelConfig, f: &mut FnMut(usize, &SampleDatum, Option<&SampleLabel>)) {
     let mut epoch_idx = 0;
-    let ep_idx_range = Range::new(0, self.data.num_episodes());
+    let (ep_idx_start, ep_idx_end) = self.data.get_episodes_range();
+    let ep_idx_range = Range::new(ep_idx_start, ep_idx_end);
     for _ in (0 .. self.data.num_samples()) {
-      //let ep_idx = ep_idx_range.ind_sample(&mut self.rng);
       let ep_idx = ep_idx_range.ind_sample(&mut thread_rng());
-      let (start_idx, end_idx) = self.data.get_episode_range(ep_idx);
-      //let sample_idx = self.rng.gen_range(start_idx, end_idx);
+      let (start_idx, end_idx) = self.data.get_episode_indices(ep_idx).unwrap();
       let sample_idx = thread_rng().gen_range(start_idx, end_idx);
       if let Some((datum, maybe_label)) = self.data.get_episode_sample(label_cfg, ep_idx, sample_idx) {
         f(epoch_idx, &datum, maybe_label.as_ref());
@@ -160,13 +168,94 @@ impl DatasetConfig {
 
     DatasetConfig{datasets: datasets}
   }
+
+  pub fn build(&self, key: &str) -> Box<DataSource> {
+    match self.datasets.get(key) {
+      Some(&(ref src_name, ref data_cfg)) => {
+        match src_name as &str {
+          "episodb" => Box::new(EpisoDbDataSource::open(data_cfg.clone())),
+          _ => panic!("unknown data source: '{}'", src_name),
+        }
+      }
+      None => panic!("dataset missing key: '{}'", key),
+    }
+  }
 }
 
 pub trait DataSource {
   fn num_samples(&self) -> usize;
+  fn count_prefix_samples(&self, ep_idx: usize) -> usize;
+  fn count_suffix_samples(&self, ep_idx: usize) -> usize;
   fn num_episodes(&self) -> usize;
-  fn get_episode_range(&mut self, ep_idx: usize) -> (usize, usize);
+
+  fn get_episodes_range(&self) -> (usize, usize);
+  fn get_episode_indices(&mut self, ep_idx: usize) -> Option<(usize, usize)>;
   fn get_episode_sample(&mut self, label_cfg: SampleLabelConfig, ep_idx: usize, sample_idx: usize) -> Option<(SampleDatum, Option<SampleLabel>)>;
+}
+
+pub struct PartitionDataSource {
+  part_idx:     usize,
+  parts:        usize,
+  ep_idx_start: usize,
+  ep_idx_end:   usize,
+  data: Box<DataSource>,
+}
+
+impl PartitionDataSource {
+  pub fn new(part_idx: usize, parts: usize, data: Box<DataSource>) -> PartitionDataSource {
+    assert!(part_idx < parts);
+    let (src_ep_idx_start, src_ep_idx_end) = data.get_episodes_range();
+    let num_eps_per_part = (src_ep_idx_end - src_ep_idx_start) / parts;
+    let part_ep_idx_start = src_ep_idx_start + part_idx * num_eps_per_part;
+    let part_ep_idx_end = src_ep_idx_start + (part_idx + 1) * num_eps_per_part;
+    PartitionDataSource{
+      part_idx:     part_idx,
+      parts:        parts,
+      ep_idx_start: part_ep_idx_start,
+      ep_idx_end:   part_ep_idx_end,
+      data: data,
+    }
+  }
+}
+
+impl DataSource for PartitionDataSource {
+  fn num_samples(&self) -> usize {
+    let start_count = self.data.count_prefix_samples(self.ep_idx_start);
+    let end_count = self.data.count_suffix_samples(self.ep_idx_end);
+    end_count - start_count
+  }
+
+  fn count_prefix_samples(&self, ep_idx: usize) -> usize {
+    unimplemented!();
+  }
+
+  fn count_suffix_samples(&self, ep_idx: usize) -> usize {
+    unimplemented!();
+  }
+
+  fn num_episodes(&self) -> usize {
+    self.ep_idx_end - self.ep_idx_start
+  }
+
+  fn get_episodes_range(&self) -> (usize, usize) {
+    (self.ep_idx_start, self.ep_idx_end)
+  }
+
+  fn get_episode_indices(&mut self, ep_idx: usize) -> Option<(usize, usize)> {
+    if ep_idx >= self.ep_idx_start && ep_idx < self.ep_idx_end {
+      self.data.get_episode_indices(ep_idx)
+    } else {
+      None
+    }
+  }
+
+  fn get_episode_sample(&mut self, label_cfg: SampleLabelConfig, ep_idx: usize, sample_idx: usize) -> Option<(SampleDatum, Option<SampleLabel>)> {
+    if ep_idx >= self.ep_idx_start && ep_idx < self.ep_idx_end {
+      self.data.get_episode_sample(label_cfg, ep_idx, sample_idx)
+    } else {
+      None
+    }
+  }
 }
 
 pub struct EpisoDbDataSource {
@@ -197,13 +286,25 @@ impl DataSource for EpisoDbDataSource {
     self.data_db.num_frames()
   }
 
+  fn count_prefix_samples(&self, ep_idx: usize) -> usize {
+    self.data_db.get_prefix_frame_count(ep_idx).unwrap()
+  }
+
+  fn count_suffix_samples(&self, ep_idx: usize) -> usize {
+    self.data_db.get_suffix_frame_count(ep_idx).unwrap()
+  }
+
   fn num_episodes(&self) -> usize {
     self.data_db.num_episodes()
   }
 
-  fn get_episode_range(&mut self, ep_idx: usize) -> (usize, usize) {
+  fn get_episodes_range(&self) -> (usize, usize) {
+    (0, self.data_db.num_episodes())
+  }
+
+  fn get_episode_indices(&mut self, ep_idx: usize) -> Option<(usize, usize)> {
     let (start_idx, end_idx) = self.data_db.get_episode(ep_idx).unwrap();
-    (start_idx, end_idx)
+    Some((start_idx, end_idx))
   }
 
   fn get_episode_sample(&mut self, label_cfg: SampleLabelConfig, ep_idx: usize, sample_idx: usize) -> Option<(SampleDatum, Option<SampleLabel>)> {

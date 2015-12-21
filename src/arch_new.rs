@@ -1,6 +1,9 @@
 use layer_new::{
   Layer, InputLayer, LossLayer,
   LayerConfig, Phase,
+  Data3dLayerConfig,
+  Conv2dLayerConfig,
+  CategoricalLossLayerConfig,
 };
 
 use array_cuda::device::{
@@ -17,22 +20,74 @@ use std::os::unix::fs::{symlink};
 use std::path::{PathBuf};
 use std::sync::{Arc};
 
-pub trait ArchWorker {
+pub trait AtomicData {
+  fn reset(&self);
+  fn update(&self, batch_size: usize, loss_layer: &mut LossLayer, ctx: &DeviceCtxRef);
+}
+
+impl AtomicData for () {
+  #[inline]
+  fn reset(&self) {
+  }
+
+  #[inline]
+  fn update(&self, batch_size: usize, loss_layer: &mut LossLayer, ctx: &DeviceCtxRef) {
+  }
+}
+
+pub trait Worker {
+  fn tid(&self) -> usize;
+  fn num_workers(&self) -> usize;
+  fn sync_workers(&self);
+}
+
+pub trait ArchWorker<A>: Worker where A: AtomicData {
+  fn batch_size(&self) -> usize;
   fn initialize_layer_params(&mut self, ctx: &DeviceCtxRef);
   fn load_layer_params(&mut self, maybe_t: Option<usize>, ctx: &DeviceCtxRef);
   fn save_layer_params(&mut self, t: usize, ctx: &DeviceCtxRef);
-  fn input_layer(&mut self, ctx: &DeviceCtxRef) -> &mut InputLayer;
-  fn loss_layer(&mut self, ctx: &DeviceCtxRef) -> &mut LossLayer;
+  fn input_layer(&mut self) -> &mut InputLayer;
+  fn loss_layer(&mut self) -> &mut LossLayer;
   fn forward(&mut self, batch_size: usize, phase: Phase, ctx: &DeviceCtxRef);
-  fn backward(&mut self, batch_size: usize, ctx: &DeviceCtxRef);
-  fn descend(&mut self, learning_rate: f32, minibatch_size: f32, l2_reg_coef: f32, ctx: &DeviceCtxRef);
+  fn backward(&mut self, batch_size: usize, scale: f32, ctx: &DeviceCtxRef);
+  fn allreduce_gradients(&mut self, ctx: &DeviceCtxRef);
+  fn descend(&mut self, scale: f32, l2_reg_coef: f32, ctx: &DeviceCtxRef);
+  fn reset_gradients(&mut self, momentum: f32, ctx: &DeviceCtxRef);
+  fn get_atomic_data(&self) -> &A;
+  fn reset_atomic_data(&self);
+  fn update_atomic_data(&mut self, batch_size: usize, ctx: &DeviceCtxRef);
 }
 
 #[derive(Clone)]
 pub struct PipelineArchConfig {
-  pub input:    LayerConfig,
+  pub input:    Option<LayerConfig>,
   pub hidden:   Vec<LayerConfig>,
-  pub loss:     LayerConfig,
+  pub loss:     Option<LayerConfig>,
+}
+
+impl PipelineArchConfig {
+  pub fn new() -> PipelineArchConfig {
+    PipelineArchConfig{
+      input:    None,
+      hidden:   vec![],
+      loss:     None,
+    }
+  }
+
+  pub fn data3d(&mut self, layer_cfg: Data3dLayerConfig) -> &mut PipelineArchConfig {
+    self.input = Some(LayerConfig::Data3d(layer_cfg));
+    self
+  }
+
+  pub fn conv2d(&mut self, layer_cfg: Conv2dLayerConfig) -> &mut PipelineArchConfig {
+    self.hidden.push(LayerConfig::Conv2d(layer_cfg));
+    self
+  }
+
+  pub fn softmax_kl_loss(&mut self, layer_cfg: CategoricalLossLayerConfig) -> &mut PipelineArchConfig {
+    self.loss = Some(LayerConfig::SoftmaxKLLoss(layer_cfg));
+    self
+  }
 }
 
 pub struct PipelineArchSharedData {
@@ -53,7 +108,7 @@ impl PipelineArchSharedData {
   }
 }
 
-pub struct PipelineArchWorker {
+pub struct PipelineArchWorker<A> where A: AtomicData {
   batch_size:       usize,
   params_dir:       PathBuf,
 
@@ -61,20 +116,25 @@ pub struct PipelineArchWorker {
   hidden_layers:    Vec<Box<Layer>>,
   loss_layer:       Box<LossLayer>,
 
+  local_tid:        usize,
   dev_allreduce:    DeviceAllReduceWorker<f32>,
+  atomic_data:      Arc<A>,
 }
 
-impl PipelineArchWorker {
+impl<A> PipelineArchWorker<A> where A: AtomicData {
   pub fn new(
       batch_size:       usize,
       config:           PipelineArchConfig,
       params_dir:       PathBuf,
       local_tid:        usize,
       shared_data:      &PipelineArchSharedData,
+      atomic_data:      Arc<A>,
       ctx:              &DeviceCtxRef)
-      -> PipelineArchWorker
+      -> PipelineArchWorker<A>
   {
-    let input_layer = config.input.build_input_layer(batch_size, ctx);
+    assert!(config.input.is_some());
+    assert!(config.loss.is_some());
+    let input_layer = config.input.unwrap().build_input_layer(batch_size, ctx);
     let mut hidden_layers = vec![];
     for (i, layer) in config.hidden.iter().enumerate() {
       if i == 0 {
@@ -85,7 +145,7 @@ impl PipelineArchWorker {
         hidden_layers.push(layer);
       }
     }
-    let loss_layer = config.loss.build_loss_layer(batch_size, Some(&*hidden_layers[hidden_layers.len()-1]), ctx);
+    let loss_layer = config.loss.unwrap().build_loss_layer(batch_size, Some(&*hidden_layers[hidden_layers.len()-1]), ctx);
 
     PipelineArchWorker{
       batch_size:       batch_size,
@@ -93,12 +153,32 @@ impl PipelineArchWorker {
       input_layer:      input_layer,
       hidden_layers:    hidden_layers,
       loss_layer:       loss_layer,
+      local_tid:        local_tid,
       dev_allreduce:    DeviceAllReduceWorker::new(local_tid, &shared_data.dev_allreduce, ctx),
+      atomic_data:      atomic_data,
     }
   }
 }
 
-impl ArchWorker for PipelineArchWorker {
+impl<A> Worker for PipelineArchWorker<A> where A: AtomicData {
+  fn tid(&self) -> usize {
+    self.local_tid
+  }
+
+  fn num_workers(&self) -> usize {
+    self.dev_allreduce.num_workers()
+  }
+
+  fn sync_workers(&self) {
+    self.dev_allreduce.barrier.wait();
+  }
+}
+
+impl<A> ArchWorker<A> for PipelineArchWorker<A> where A: AtomicData {
+  fn batch_size(&self) -> usize {
+    self.batch_size
+  }
+
   fn initialize_layer_params(&mut self, ctx: &DeviceCtxRef) {
     for layer in self.hidden_layers.iter_mut() {
       layer.initialize_params(ctx);
@@ -166,11 +246,11 @@ impl ArchWorker for PipelineArchWorker {
       .ok().expect("failed to symlink latest blob!");
   }
 
-  fn input_layer(&mut self, ctx: &DeviceCtxRef) -> &mut InputLayer {
+  fn input_layer(&mut self) -> &mut InputLayer {
     &mut *self.input_layer
   }
 
-  fn loss_layer(&mut self, ctx: &DeviceCtxRef) -> &mut LossLayer {
+  fn loss_layer(&mut self) -> &mut LossLayer {
     &mut *self.loss_layer
   }
 
@@ -181,16 +261,40 @@ impl ArchWorker for PipelineArchWorker {
     }
   }
 
-  fn backward(&mut self, batch_size: usize, ctx: &DeviceCtxRef) {
-    self.loss_layer.backward(batch_size, ctx);
+  fn backward(&mut self, batch_size: usize, scale: f32, ctx: &DeviceCtxRef) {
+    self.loss_layer.backward(batch_size, scale, ctx);
     for layer in self.hidden_layers.iter_mut().rev() {
-      layer.backward(batch_size, ctx);
+      layer.backward(batch_size, scale, ctx);
     }
   }
 
-  fn descend(&mut self, learning_rate: f32, minibatch_size: f32, l2_reg_coef: f32, ctx: &DeviceCtxRef) {
+  fn allreduce_gradients(&mut self, ctx: &DeviceCtxRef) {
+    // TODO(20151220)
+  }
+
+  fn descend(&mut self, scale: f32, l2_reg_coef: f32, ctx: &DeviceCtxRef) {
     for layer in self.hidden_layers.iter_mut() {
-      layer.descend(learning_rate, minibatch_size, l2_reg_coef, ctx);
+      layer.descend(scale, l2_reg_coef, ctx);
     }
+  }
+
+  fn reset_gradients(&mut self, momentum: f32, ctx: &DeviceCtxRef) {
+    for layer in self.hidden_layers.iter_mut() {
+      layer.reset_gradients(momentum, ctx);
+    }
+  }
+
+  fn get_atomic_data(&self) -> &A {
+    &*self.atomic_data
+  }
+
+  fn reset_atomic_data(&self) {
+    self.atomic_data.reset();
+  }
+
+  fn update_atomic_data(&mut self, batch_size: usize, ctx: &DeviceCtxRef) {
+    let &mut PipelineArchWorker{
+      ref atomic_data, ref mut loss_layer, .. } = self;
+    atomic_data.update(batch_size, &mut **loss_layer, ctx);
   }
 }
