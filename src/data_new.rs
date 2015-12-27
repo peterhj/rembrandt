@@ -1,4 +1,4 @@
-use array_new::{Array3d};
+use array_new::{NdArraySerialize, Array3d};
 use byteorder::{LittleEndian, ReadBytesExt};
 use episodb::{EpisoDb};
 //use random::{XorShift128Plus};

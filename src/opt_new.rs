@@ -147,9 +147,6 @@ pub struct SgdOptimization;
 
 impl SgdOptimization {
   pub fn train(&self, sgd_opt_cfg: SgdOptConfig, label_cfg: SampleLabelConfig, arch: &mut ArchWorker<SupervisedData>, train_data: &mut DataIterator, valid_data: &mut DataIterator, ctx: &DeviceCtxRef) {
-    // TODO(20151218)
-    //unimplemented!();
-
     let epoch_size = (train_data.max_num_samples() / sgd_opt_cfg.minibatch_size) * sgd_opt_cfg.minibatch_size;
     let batch_size = arch.batch_size();
     assert!(sgd_opt_cfg.minibatch_size >= batch_size);
@@ -159,6 +156,7 @@ impl SgdOptimization {
 
     let mut start_time = get_time();
 
+    arch.initialize_layer_params(ctx);
     arch.reset_gradients(0.0, ctx);
     arch.reset_atomic_data();
 
@@ -171,32 +169,35 @@ impl SgdOptimization {
         if epoch_idx >= epoch_size {
           return;
         }
-        if idx % tid == 0 {
-          arch.input_layer().preload_frame(batch_idx, datum, ctx);
-          arch.loss_layer().preload_label(batch_idx, maybe_label.unwrap(), ctx);
-          batch_idx += 1;
-        }
+        arch.input_layer().preload_frame(batch_idx, datum, ctx);
+        arch.loss_layer().preload_label(batch_idx, maybe_label.unwrap(), ctx);
+        batch_idx += 1;
         idx += 1;
         if batch_idx == batch_size {
           arch.input_layer().load_frames(batch_size, ctx);
           arch.loss_layer().load_labels(batch_size, ctx);
           arch.forward(batch_size, Phase::Training, ctx);
+          arch.backward(batch_size, 1.0, ctx);
           arch.loss_layer().store_labels(batch_size, ctx);
           arch.update_atomic_data(batch_size, ctx);
-          arch.backward(batch_size, 1.0, ctx);
           batch_idx = 0;
         }
         if idx % sgd_opt_cfg.minibatch_size == 0 {
-          arch.allreduce_gradients(ctx);
-          arch.descend(sgd_opt_cfg.learning_rate.at_iter(t) / (sgd_opt_cfg.minibatch_size as f32), sgd_opt_cfg.l2_reg_coef, ctx);
           // TODO(20151220): reduce gradients.
+          arch.allreduce_gradients(ctx);
+          let descent_scale = sgd_opt_cfg.learning_rate.at_iter(t) / (sgd_opt_cfg.minibatch_size as f32);
+          //println!("DEBUG: descend: scale {:.6}", descent_scale);
+          arch.descend(descent_scale, sgd_opt_cfg.l2_reg_coef, ctx);
           arch.reset_gradients(sgd_opt_cfg.momentum, ctx);
           t += 1;
           if t % sgd_opt_cfg.display_iters == 0 {
             if tid == 0 {
+              let lap_time = get_time();
+              let elapsed_ms = (lap_time - start_time).num_milliseconds();
+              start_time = lap_time;
               let supervised_data = arch.get_atomic_data();
               let accuracy = supervised_data.read_accuracy();
-              println!("DEBUG: iter: {} accuracy: {:.03}", t, accuracy);
+              println!("DEBUG: iter: {} accuracy: {:.03} elapsed: {:.3} s", t, accuracy, elapsed_ms as f32 * 0.001);
               arch.reset_atomic_data();
             }
           }

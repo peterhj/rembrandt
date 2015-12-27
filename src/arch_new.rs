@@ -259,6 +259,7 @@ impl<A> ArchWorker<A> for PipelineArchWorker<A> where A: AtomicData {
     for layer in self.hidden_layers.iter_mut() {
       layer.forward(batch_size, phase, ctx);
     }
+    self.loss_layer.forward(batch_size, phase, ctx);
   }
 
   fn backward(&mut self, batch_size: usize, scale: f32, ctx: &DeviceCtxRef) {

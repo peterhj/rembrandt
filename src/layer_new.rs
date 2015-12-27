@@ -1,7 +1,8 @@
 use data_new::{SampleDatum, SampleLabel};
 
 use array_new::{
-  Shape, Array, AsyncArray, ArrayView, ArrayViewMut, ArrayZeroExt,
+  Shape, Array, AsyncArray, ArrayView, ArrayViewMut,
+  ArrayZeroExt, NdArraySerialize,
   Array2d, Array3d,
 };
 use array_cuda::device::{
@@ -28,6 +29,7 @@ use std::cmp::{max};
 use std::io::{Read, Write, Cursor};
 use std::iter::{repeat};
 use std::rc::{Rc};
+use std::slice::bytes::{copy_memory};
 
 /*pub trait LayerConfig {
   fn get_in_dims(&self) -> (usize, usize, usize);
@@ -172,9 +174,9 @@ impl Data3dLayer {
     Data3dLayer{
       batch_limit:  batch_size,
       config:       config,
-      in_buf_h:     repeat(0).take(length).collect(),
-      in_buf:       DeviceBuffer::<u8>::zeros(length, ctx),
-      out_buf:      Rc::new(RefCell::new(DeviceBuffer::<f32>::zeros(length, ctx))),
+      in_buf_h:     repeat(0).take(length * batch_size).collect(),
+      in_buf:       DeviceBuffer::<u8>::zeros(length * batch_size, ctx),
+      out_buf:      Rc::new(RefCell::new(DeviceBuffer::<f32>::zeros(length * batch_size, ctx))),
     }
   }
 }
@@ -191,9 +193,9 @@ impl Layer for Data3dLayer {
   fn forward(&mut self, batch_size: usize, phase: Phase, ctx: &DeviceCtxRef) {
     assert!(batch_size <= self.batch_limit);
     let length = self.config.dims.len();
+    let in_buf = self.in_buf.borrow(ctx);
+    let mut out_buf = self.out_buf.borrow_mut().borrow_mut(ctx);
     if self.config.normalize {
-      let in_buf = self.in_buf.borrow(ctx);
-      let mut out_buf = self.out_buf.borrow_mut().borrow_mut(ctx);
       unsafe { rembrandt_kernel_map_cast_byte_to_float_normalized(
           in_buf.as_ptr(),
           (length * batch_size) as i32,
@@ -201,8 +203,6 @@ impl Layer for Data3dLayer {
           ctx.stream.ptr,
       ) };
     } else {
-      let in_buf = self.in_buf.borrow(ctx);
-      let mut out_buf = self.out_buf.borrow_mut().borrow_mut(ctx);
       unsafe { rembrandt_kernel_map_cast_byte_to_float(
           in_buf.as_ptr(),
           (length * batch_size) as i32,
@@ -221,8 +221,7 @@ impl InputLayer for Data3dLayer {
   fn preload_frame(&mut self, batch_idx: usize, frame: &SampleDatum, ctx: &DeviceCtxRef) {
     match frame {
       &SampleDatum::RowMajorBytes(ref frame_bytes) => {
-        // TODO(20151220)
-        unimplemented!();
+        copy_memory(frame_bytes.as_slice(), self.expose_host_frame_buf(batch_idx));
       }
       //_ => unimplemented!(),
     }
@@ -445,7 +444,7 @@ impl Layer for Conv2dLayer {
     let (in_width, in_height, in_channels) = in_dims;
     let out_dims = self.config.get_out_dims();
     let (out_width, out_height, out_channels) = out_dims;
-    let in_length = in_width * in_height * in_channels;
+    let in_length = in_dims.len(); //in_width * in_height * in_channels;
     let out_length = out_dims.len();
 
     let &mut Conv2dLayer{
@@ -464,6 +463,8 @@ impl Layer for Conv2dLayer {
         work_space.borrow_mut(ctx).as_mut_ptr(),
         &ctx.dnn,
     ).unwrap() };
+    // FIXME(20151227)
+    //self.add_bias.set_batch_size(batch_size).unwrap();
     unsafe { self.add_bias.forward(
         bias.as_view(ctx).as_ptr(),
         out_act.as_mut_ptr(),
@@ -523,7 +524,6 @@ impl Layer for Conv2dLayer {
     }
 
     self.conv_bwd_w.set_batch_size(batch_size);
-    self.conv_bwd_d.set_batch_size(batch_size);
     unsafe { self.conv_bwd_w.backward_filter(
         in_act.as_ptr(),
         out_delta.as_ptr(),
@@ -537,6 +537,7 @@ impl Layer for Conv2dLayer {
         &ctx.dnn,
     ).unwrap() };
     if let &mut Some(ref mut in_delta) = in_delta {
+      self.conv_bwd_d.set_batch_size(batch_size);
       let mut in_delta = in_delta.borrow_mut().borrow_mut(ctx);
       unsafe { self.conv_bwd_d.backward_data(
           weights.as_view(ctx).as_ptr(),
@@ -574,9 +575,11 @@ impl Layer for Conv2dLayer {
   //fn reset_loss(&mut self, ctx: &DeviceCtxRef) {}
 
   fn local_allreduce_gradients(&mut self, worker: &mut DeviceAllReduceWorker<f32>, ctx: &DeviceCtxRef) {
+    // TODO(20151227)
   }
 
   fn global_allreduce_gradients(&mut self, worker: &mut DistAllReduceWorker<f32>, ctx: &DeviceCtxRef) {
+    // TODO(20151227)
   }
 }
 
@@ -721,6 +724,8 @@ impl LossLayer for SoftmaxKLLossLayer {
         num_correct += 1;
       }
     }
+    //println!("DEBUG: count accuracy ({}): true: {:?}", batch_size, self.true_cats_h.as_slice());
+    //println!("DEBUG: count accuracy ({}): pred: {:?}", batch_size, self.pred_cats_h.as_slice());
     num_correct
   }
 
