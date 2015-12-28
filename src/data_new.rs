@@ -45,17 +45,17 @@ pub trait DataIterator {
   }*/
 }
 
-pub struct SequentialIterator {
+pub struct SampleIterator {
   data: Box<DataSource>,
 }
 
-impl SequentialIterator {
-  pub fn new(data: Box<DataSource>) -> SequentialIterator {
-    SequentialIterator{data: data}
+impl SampleIterator {
+  pub fn new(data: Box<DataSource>) -> SampleIterator {
+    SampleIterator{data: data}
   }
 }
 
-impl DataIterator for SequentialIterator {
+impl DataIterator for SampleIterator {
   fn max_num_samples(&self) -> usize {
     self.data.num_samples()
   }
@@ -105,6 +105,47 @@ impl DataIterator for RandomEpisodeIterator {
       if let Some((datum, maybe_label)) = self.data.get_episode_sample(label_cfg, ep_idx, sample_idx) {
         f(epoch_idx, &datum, maybe_label.as_ref());
         epoch_idx += 1;
+      }
+    }
+  }
+}
+
+pub struct CyclicEpisodeIterator {
+  //rng:  XorShift128PlusRng,
+  data: Box<DataSource>,
+}
+
+impl CyclicEpisodeIterator {
+  pub fn new(data: Box<DataSource>) -> CyclicEpisodeIterator {
+    CyclicEpisodeIterator{
+      //rng:  XorShift128PlusRng::from_seed([thread_rng().gen(), thread_rng().gen()]),
+      data: data,
+    }
+  }
+}
+
+impl DataIterator for CyclicEpisodeIterator {
+  fn max_num_samples(&self) -> usize {
+    self.data.num_samples()
+  }
+
+  fn each_sample(&mut self, label_cfg: SampleLabelConfig, f: &mut FnMut(usize, &SampleDatum, Option<&SampleLabel>)) {
+    let limit = self.data.num_samples();
+    let mut counter = 0;
+    let mut epoch_idx = 0;
+    let (ep_idx_start, ep_idx_end) = self.data.get_episodes_range();
+    loop {
+      for ep_idx in ep_idx_start .. ep_idx_end {
+        let (start_idx, end_idx) = self.data.get_episode_indices(ep_idx).unwrap();
+        let sample_idx = thread_rng().gen_range(start_idx, end_idx);
+        if let Some((datum, maybe_label)) = self.data.get_episode_sample(label_cfg, ep_idx, sample_idx) {
+          f(epoch_idx, &datum, maybe_label.as_ref());
+          epoch_idx += 1;
+        }
+        counter += 1;
+        if counter >= limit {
+          return;
+        }
       }
     }
   }

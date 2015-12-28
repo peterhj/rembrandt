@@ -9,7 +9,7 @@ use array_cuda::device::{
   DeviceCtxRef, DeviceArray2d, DeviceArray3d, DeviceBuffer,
 };
 use array_cuda::device::comm::{DeviceAllReduceWorker};
-use array_cuda::device::ext::{DeviceNumExt};
+use array_cuda::device::ext::{DeviceCastBytesExt, DeviceNumExt};
 use array_cuda::device::linalg::{BlasVectorExt, BlasMatrixExt};
 use array_cuda::device::memory::{DeviceZeroExt};
 use array_dist::comm::{DistAllReduceWorker};
@@ -71,17 +71,16 @@ pub trait InputLayer: Layer {
 pub trait LossLayer: Layer {
   fn downcast(&self) -> &Layer;
 
-  fn preload_label(&mut self, batch_idx: usize, label: &SampleLabel, ctx: &DeviceCtxRef) { unimplemented!(); }
-  fn load_labels(&mut self, batch_size: usize, ctx: &DeviceCtxRef) { unimplemented!(); }
+  fn preload_label(&mut self, batch_idx: usize, label: &SampleLabel, ctx: &DeviceCtxRef);
+  fn load_labels(&mut self, batch_size: usize, ctx: &DeviceCtxRef);
 
-  fn store_labels(&mut self, batch_idx: usize, ctx: &DeviceCtxRef) { unimplemented!(); }
-  //fn get_labels(&mut self, batch_idx: usize) -> &[i32] { unimplemented!(); }
-  fn get_labels(&mut self, batch_size: usize) -> &Array2d<i32> { unimplemented!(); }
-  fn count_accuracy(&mut self, batch_usize: usize) -> usize { unimplemented!(); }
+  fn store_labels(&mut self, batch_idx: usize, ctx: &DeviceCtxRef);
+  fn get_labels(&mut self, batch_size: usize) -> &Array2d<i32>;
+  fn count_accuracy(&mut self, batch_usize: usize) -> usize;
   //fn store_ranked_labels(&mut self, batch_usize: usize, ctx: &DeviceCtxRef) { unimplemented!(); }
   //fn get_ranked_labels(&mut self, batch_usize: usize) -> &Array2d<f32> { unimplemented!(); }
-  fn store_probs(&mut self, batch_usize: usize, ctx: &DeviceCtxRef) { unimplemented!(); }
-  fn get_probs(&mut self, batch_usize: usize) -> &Array2d<f32> { unimplemented!(); }
+  fn store_probs(&mut self, batch_usize: usize, ctx: &DeviceCtxRef);
+  fn get_probs(&mut self, batch_usize: usize) -> &Array2d<f32>;
 }
 
 pub type SharedDeviceBuf<T> = Rc<RefCell<DeviceBuffer<T>>>;
@@ -193,22 +192,24 @@ impl Layer for Data3dLayer {
   fn forward(&mut self, batch_size: usize, phase: Phase, ctx: &DeviceCtxRef) {
     assert!(batch_size <= self.batch_limit);
     let length = self.config.dims.len();
-    let in_buf = self.in_buf.borrow(ctx);
-    let mut out_buf = self.out_buf.borrow_mut().borrow_mut(ctx);
+    let in_buf = self.in_buf.as_ref(ctx);
+    let mut out_buf = self.out_buf.borrow_mut().as_ref_mut(ctx);
     if self.config.normalize {
-      unsafe { rembrandt_kernel_map_cast_byte_to_float_normalized(
+      /*unsafe { rembrandt_kernel_map_cast_byte_to_float_normalized(
           in_buf.as_ptr(),
           (length * batch_size) as i32,
           out_buf.as_mut_ptr(),
           ctx.stream.ptr,
-      ) };
+      ) };*/
+      in_buf.cast_bytes_normalized(&mut out_buf);
     } else {
-      unsafe { rembrandt_kernel_map_cast_byte_to_float(
+      /*unsafe { rembrandt_kernel_map_cast_byte_to_float(
           in_buf.as_ptr(),
           (length * batch_size) as i32,
           out_buf.as_mut_ptr(),
           ctx.stream.ptr,
-      ) };
+      ) };*/
+      in_buf.cast_bytes(&mut out_buf);
     }
   }
 }
@@ -237,7 +238,7 @@ impl InputLayer for Data3dLayer {
     assert!(batch_size <= self.batch_limit);
     {
       let in_buf_h = &self.in_buf_h;
-      let mut in_buf = self.in_buf.borrow_mut(ctx);
+      let mut in_buf = self.in_buf.as_ref_mut(ctx);
       in_buf.sync_load(in_buf_h);
     }
   }
@@ -453,14 +454,14 @@ impl Layer for Conv2dLayer {
       ref mut weights, ref mut bias,
       .. } = self;
 
-    let mut out_act = out_act.borrow_mut().borrow_mut(ctx);
+    let mut out_act = out_act.borrow_mut().as_ref_mut(ctx);
 
     self.conv_fwd.set_batch_size(batch_size);
     unsafe { self.conv_fwd.forward(
-        in_act.borrow_mut().borrow(ctx).as_ptr(),
+        in_act.borrow_mut().as_ref(ctx).as_ptr(),
         weights.as_view(ctx).as_ptr(),
         out_act.as_mut_ptr(),
-        work_space.borrow_mut(ctx).as_mut_ptr(),
+        work_space.as_ref_mut(ctx).as_mut_ptr(),
         &*ctx.get_dnn(),
     ).unwrap() };
     // FIXME(20151227)
@@ -504,10 +505,10 @@ impl Layer for Conv2dLayer {
       ref mut work_space,
       .. } = self;
 
-    let mut in_act = in_act.borrow_mut().borrow(ctx);
-    let mut out_act = out_act.borrow_mut().borrow(ctx);
-    let mut out_delta = out_delta.borrow_mut().borrow_mut(ctx);
-    let mut work_space = work_space.borrow_mut(ctx);
+    let mut in_act = in_act.borrow_mut().as_ref(ctx);
+    let mut out_act = out_act.borrow_mut().as_ref(ctx);
+    let mut out_delta = out_delta.borrow_mut().as_ref_mut(ctx);
+    let mut work_space = work_space.as_ref_mut(ctx);
 
     match self.config.act_func {
       ActivationFunction::Identity => {}
@@ -538,7 +539,7 @@ impl Layer for Conv2dLayer {
     ).unwrap() };
     if let &mut Some(ref mut in_delta) = in_delta {
       self.conv_bwd_d.set_batch_size(batch_size);
-      let mut in_delta = in_delta.borrow_mut().borrow_mut(ctx);
+      let mut in_delta = in_delta.borrow_mut().as_ref_mut(ctx);
       unsafe { self.conv_bwd_d.backward_data(
           weights.as_view(ctx).as_ptr(),
           out_delta.as_ptr(),
@@ -655,7 +656,7 @@ impl Layer for SoftmaxKLLossLayer {
     // FIXME(20151218)
     self.softmax.set_batch_size(batch_size);
     unsafe { self.softmax.forward(
-        self.in_act.borrow_mut().borrow(ctx).as_ptr(),
+        self.in_act.borrow_mut().as_ref(ctx).as_ptr(),
         self.out_probs.as_view_mut(ctx).as_mut_ptr(),
         &*ctx.get_dnn(),
     ) }.unwrap();
@@ -668,7 +669,7 @@ impl Layer for SoftmaxKLLossLayer {
         self.config.num_categories as i32,
         batch_size as i32,
         self.true_cats.as_view(ctx).as_ptr(),
-        self.in_delta.borrow_mut().borrow_mut(ctx).as_mut_ptr(),
+        self.in_delta.borrow_mut().as_ref_mut(ctx).as_mut_ptr(),
         // XXX(20151218): the minibatch size is now applied during
         // parameter descent.
         1.0,
