@@ -314,26 +314,26 @@ impl Conv2dLayer {
         CudnnFilterDesc::<f32>::create_4d(conv_size, conv_size, in_channels, out_channels).unwrap(),
         CudnnConvDesc::create_2d_symmetric(conv_stride, conv_pad).unwrap(),
         CudnnTensorDesc::<f32>::create_4d(out_width, out_height, out_channels, batch_size).unwrap(),
-        &ctx.dnn,
+        &*ctx.get_dnn(),
     ).unwrap();
     work_size = max(work_size, conv_fwd.work_size);
-    let conv_bwd_w = CudnnConvBwdFilterOp::create_fastest(
     //let conv_bwd_w = CudnnConvBwdFilterOp::create_deterministic(
+    let conv_bwd_w = CudnnConvBwdFilterOp::create_fastest(
         CudnnTensorDesc::<f32>::create_4d(in_width, in_height, in_channels, batch_size).unwrap(),
         CudnnTensorDesc::<f32>::create_4d(out_width, out_height, out_channels, batch_size).unwrap(),
         CudnnConvDesc::create_2d_symmetric(conv_stride, conv_pad).unwrap(),
         CudnnFilterDesc::<f32>::create_4d(conv_size, conv_size, in_channels, out_channels).unwrap(),
         CudnnTensorDesc::<f32>::create_4d(1, 1, out_channels, 1).unwrap(),
-        &ctx.dnn,
+        &*ctx.get_dnn(),
     ).unwrap();
     work_size = max(work_size, conv_bwd_w.work_size);
-    let conv_bwd_d = CudnnConvBwdDataOp::create_fastest(
     //let conv_bwd_d = CudnnConvBwdDataOp::create_deterministic(
+    let conv_bwd_d = CudnnConvBwdDataOp::create_fastest(
         CudnnFilterDesc::<f32>::create_4d(conv_size, conv_size, in_channels, out_channels).unwrap(),
         CudnnTensorDesc::<f32>::create_4d(out_width, out_height, out_channels, batch_size).unwrap(),
         CudnnConvDesc::create_2d_symmetric(conv_stride, conv_pad).unwrap(),
         CudnnTensorDesc::<f32>::create_4d(in_width, in_height, in_channels, batch_size).unwrap(),
-        &ctx.dnn,
+        &*ctx.get_dnn(),
     ).unwrap();
     work_size = max(work_size, conv_bwd_d.work_size);
 
@@ -432,8 +432,8 @@ impl Layer for Conv2dLayer {
     let mut save_bias = Array2d::zeros(bias.bound());
     weights.sync_store(&mut save_weights.as_view_mut());
     bias.sync_store(&mut save_bias.as_view_mut());
-    save_weights.serialize(blob);
-    save_bias.serialize(blob);
+    save_weights.serialize(blob).unwrap();
+    save_bias.serialize(blob).unwrap();
   }
 
   fn forward(&mut self, batch_size: usize, phase: Phase, ctx: &DeviceCtxRef) {
@@ -461,14 +461,14 @@ impl Layer for Conv2dLayer {
         weights.as_view(ctx).as_ptr(),
         out_act.as_mut_ptr(),
         work_space.borrow_mut(ctx).as_mut_ptr(),
-        &ctx.dnn,
+        &*ctx.get_dnn(),
     ).unwrap() };
     // FIXME(20151227)
     //self.add_bias.set_batch_size(batch_size).unwrap();
     unsafe { self.add_bias.forward(
         bias.as_view(ctx).as_ptr(),
         out_act.as_mut_ptr(),
-        &ctx.dnn,
+        &*ctx.get_dnn(),
     ).unwrap() };
 
     match self.config.act_func {
@@ -529,12 +529,12 @@ impl Layer for Conv2dLayer {
         out_delta.as_ptr(),
         grad_weights.as_view_mut(ctx).as_mut_ptr(),
         work_space.as_mut_ptr(),
-        &ctx.dnn,
+        &*ctx.get_dnn(),
     ).unwrap() };
     unsafe { self.conv_bwd_w.backward_bias(
         out_delta.as_ptr(),
         grad_bias.as_view_mut(ctx).as_mut_ptr(),
-        &ctx.dnn,
+        &*ctx.get_dnn(),
     ).unwrap() };
     if let &mut Some(ref mut in_delta) = in_delta {
       self.conv_bwd_d.set_batch_size(batch_size);
@@ -544,7 +544,7 @@ impl Layer for Conv2dLayer {
           out_delta.as_ptr(),
           in_delta.as_mut_ptr(),
           work_space.as_mut_ptr(),
-          &ctx.dnn,
+          &*ctx.get_dnn(),
       ).unwrap() };
     }
   }
@@ -657,7 +657,7 @@ impl Layer for SoftmaxKLLossLayer {
     unsafe { self.softmax.forward(
         self.in_act.borrow_mut().borrow(ctx).as_ptr(),
         self.out_probs.as_view_mut(ctx).as_mut_ptr(),
-        &ctx.dnn,
+        &*ctx.get_dnn(),
     ) }.unwrap();
   }
 
