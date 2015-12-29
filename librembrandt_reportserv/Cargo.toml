@@ -1,0 +1,20 @@
+[package]
+name = "rembrandt_reportserv"
+version = "0.0.1"
+authors = ["Peter Jin <peterhaijin@gmail.com>"]
+
+[lib]
+name = "rembrandt_reportserv"
+path = "src/lib.rs"
+
+[[bin]]
+name = "test"
+path = "tools/test.rs"
+
+[dependencies]
+lazy_static = "*"
+# Iron and associated packages.
+iron = "*"
+mount = "*"
+#persistent = "*"
+#staticfile = "*"

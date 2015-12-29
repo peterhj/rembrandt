@@ -8,14 +8,15 @@ extern crate array_new;
 extern crate arraydb;
 extern crate async;
 extern crate async_cuda;
-extern crate byteorder;
 extern crate cuda_dnn;
 extern crate episodb;
 extern crate linalg;
 extern crate lmdb;
 extern crate protobuf;
-extern crate rand;
 extern crate rembrandt_kernels;
+
+extern crate byteorder;
+extern crate rand;
 extern crate time;
 extern crate toml;
 

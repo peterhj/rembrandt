@@ -75,5 +75,8 @@ path = "../rust-protobuf"
 [dependencies.rembrandt_kernels]
 path = "../rembrandt_kernels"
 
+[dependencies.rembrandt_reportserv]
+path = "librembrandt_reportserv"
+
 [dependencies.toml]
 path = "../third_party/toml-rs"
