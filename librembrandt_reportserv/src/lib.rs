@@ -15,16 +15,16 @@ use std::thread::{JoinHandle, spawn};
 
 lazy_static! {
   static ref ASSET_HTML_INDEX:  &'static [u8] = include_bytes!("../assets/html/index.html");
-  //static ref ASSET_CSS_BOOT:    &'static [u8] = include_bytes!("../assets/css/bootstrap.min.v3.3.6.css");
+  /*//static ref ASSET_CSS_BOOT:    &'static [u8] = include_bytes!("../assets/css/bootstrap.min.v3.3.6.css");
   static ref ASSET_CSS_MG:      &'static [u8] = include_bytes!("../assets/css/mg.v2.7.0.css");
   static ref ASSET_JS_JQUERY:   &'static [u8] = include_bytes!("../assets/js/jquery.min.v2.1.4.js");
   //static ref ASSET_JS_BOOT:     &'static [u8] = include_bytes!("../assets/js/bootstrap.min.v3.3.6.js");
   static ref ASSET_JS_D3:       &'static [u8] = include_bytes!("../assets/js/d3.min.v3.5.12.js");
-  static ref ASSET_JS_MG:       &'static [u8] = include_bytes!("../assets/js/mg.min.v2.7.0.js");
+  static ref ASSET_JS_MG:       &'static [u8] = include_bytes!("../assets/js/mg.min.v2.7.0.js");*/
 
   static ref MIME_HTML: Mime = "text/html".parse().unwrap();
-  static ref MIME_CSS:  Mime = "text/css".parse().unwrap();
-  static ref MIME_JS:   Mime = "application/javascript".parse().unwrap();
+  /*static ref MIME_CSS:  Mime = "text/css".parse().unwrap();
+  static ref MIME_JS:   Mime = "application/javascript".parse().unwrap();*/
   static ref MIME_JSON: Mime = "application/json".parse().unwrap();
 }
 
@@ -32,7 +32,7 @@ fn index_h(_: &mut Request) -> IronResult<Response> {
   Ok(Response::with((status::Ok, MIME_HTML.clone(), *ASSET_HTML_INDEX)))
 }
 
-fn css_mg_h(_: &mut Request) -> IronResult<Response> {
+/*fn css_mg_h(_: &mut Request) -> IronResult<Response> {
   Ok(Response::with((status::Ok, MIME_CSS.clone(), *ASSET_CSS_MG)))
 }
 
@@ -46,19 +46,21 @@ fn js_d3_h(_: &mut Request) -> IronResult<Response> {
 
 fn js_mg_h(_: &mut Request) -> IronResult<Response> {
   Ok(Response::with((status::Ok, MIME_JS.clone(), *ASSET_JS_MG)))
-}
+}*/
 
 fn api_v0_train_loss_json_h(req: &mut Request) -> IronResult<Response> {
   let key = req.extensions.get::<ReportServerStateKey>().unwrap();
   let inner_state = key.state.inner.read().unwrap();
   // TODO(20151229)
-  Ok(Response::with((status::Ok, MIME_JSON.clone(), "[{\"x\": 1, \"y\": 1}, {\"x\": 2, \"y\": 2}]")))
+  Ok(Response::with((status::Ok, MIME_JSON.clone(), "[{\"t\": 0, \"value\": 10.0}, {\"t\": 20, \"value\": 9.3}, {\"t\": 40, \"value\": 9.0}]")))
 }
 
 #[derive(Clone, Copy)]
 pub enum ReportServerUpdate {
   TrainingIteration{t: i32, loss: f32, acc: f32},
   ValidationRun{t: i32, loss: f32, acc: f32},
+  EpochCrossing{t: i32, epoch: i32},
+  LearningRateStep{t: i32, lr: f32},
 }
 
 struct ReportServerInnerState {
@@ -100,6 +102,7 @@ impl ReportServerState {
         inner.valid_loss_series.push((t, loss));
         inner.valid_acc_series.push((t, acc));
       }
+      _ => unimplemented!(),
     }
   }
 }
@@ -146,11 +149,11 @@ impl ReportServer {
       let mut mount = Mount::new();
       mount.mount("/", index_h);
       //mount.mount("/css/bootstrap.min.css", css_bootstrap_h);
-      mount.mount("/css/mg.css", css_mg_h);
+      /*mount.mount("/css/mg.css", css_mg_h);
       mount.mount("/js/jquery.min.js", js_jquery_h);
       //mount.mount("/js/bootstrap.min.js", js_bootstrap_h);
       mount.mount("/js/d3.min.js", js_d3_h);
-      mount.mount("/js/mg.min.js", js_mg_h);
+      mount.mount("/js/mg.min.js", js_mg_h);*/
       mount.mount("/api/v0/train_loss.json", state_key.chain(api_v0_train_loss_json_h));
       Iron::new(mount).http("127.0.0.1:8080").unwrap();
     });

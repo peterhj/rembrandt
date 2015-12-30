@@ -2,38 +2,67 @@
 <html lang="en">
   <head>
     <meta content="text/html; charset=utf-8" http-equiv="Content-Type">
+    <link href="https://fonts.googleapis.com/css?family=Raleway:400,300,600" rel="stylesheet" type="text/css">
     <link href="https://netdna.bootstrapcdn.com/font-awesome/4.2.0/css/font-awesome.css" rel="stylesheet" type="text/css">
-    <link href="/css/mg.css" rel="stylesheet" type="text/css">
+    <!--<link href="https://cdnjs.cloudflare.com/ajax/libs/normalize/3.0.3/normalize.min.css" rel="stylesheet" type="text/css">-->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/skeleton/2.0.4/skeleton.min.css" rel="stylesheet" type="text/css">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/metrics-graphics/2.7.0/metricsgraphics.min.css" rel="stylesheet" type="text/css">
     <style>
+      html {
+        font-size: 93.75%; /*15px;*/
+      }
     </style>
     <title>Rembrandt Report</title>
   </head>
   <body>
-    <div>
-      Hello, world!
+    <div class="container">
+      <div class="row">
+        <div class="six columns">
+          <div id="rr_train_loss" class="rr_chart">
+          </div>
+        </div>
+        <div class="six columns">
+          <div id="rr_train_acc" class="rr_chart">
+          </div>
+        </div>
+      </div>
     </div>
-    <div id="rembrandt_train_loss">
-    </div>
-    <script src="/js/jquery.min.js"></script>
-    <script src="/js/d3.min.js"></script>
-    <script src="/js/mg.min.js"></script>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/2.1.4/jquery.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/3.5.12/d3.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/metrics-graphics/2.7.0/metricsgraphics.min.js"></script>
     <script>
-      /*d3.xhr('/api/v0/train_loss.json', 'application/json', function (e, res) {
-        console.log(res);
-        var data = JSON.parse(res.responseText);*/
+      var dummy_markers = [{ "t": 30, "label": "Epoch 0" }];
       d3.json('/api/v0/train_loss.json', function (data) {
         MG.data_graphic({
           title: 'Training Loss Curve',
-          /*description: 'asdf',*/
+          data: data,
+          area: false,
+          y_scale_type: 'log',
+          width: 480,
+          height: 480,
+          bottom: 60,
+          markers: dummy_markers,
+          target: '#rr_train_loss',
+          x_accessor: 't',
+          y_accessor: 'value',
+          x_label: 'iteration',
+          y_label: 'loss',
+        });
+      });
+      d3.json('/api/v0/train_loss.json', function (data) {
+        MG.data_graphic({
+          title: 'Training Accuracy Curve',
           data: data,
           area: false,
           width: 480,
           height: 480,
-          target: '#rembrandt_train_loss',
-          x_accessor: 'x',
-          y_accessor: 'y',
+          bottom: 60,
+          target: '#rr_train_acc',
+          x_accessor: 't',
+          y_accessor: 'value',
           x_label: 'iteration',
-          y_label: 'loss',
+          y_label: 'accuracy',
         });
       });
     </script>
