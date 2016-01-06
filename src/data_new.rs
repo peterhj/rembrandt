@@ -16,7 +16,7 @@ pub enum SampleDatum {
   RowMajorBytes(Array3d<u8>),
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum SampleLabelConfig {
   Category,
   //Category2,
@@ -24,7 +24,7 @@ pub enum SampleLabelConfig {
   //Lookahead2{lookahead: usize},
 }
 
-#[derive(Clone)]
+//#[derive(Clone)]
 pub enum SampleLabel {
   Category{category: i32},
   //Category2{category: i32, category2: i32},

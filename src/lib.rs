@@ -15,14 +15,16 @@ extern crate lmdb;
 extern crate protobuf;
 extern crate rembrandt_kernels;
 
+#[macro_use]
+extern crate log;
 extern crate byteorder;
+extern crate env_logger;
 extern crate rand;
 extern crate time;
 extern crate toml;
 
 #[macro_use]
 pub mod util;
-
 pub mod caffe_proto;
 pub mod config;
 pub mod data;

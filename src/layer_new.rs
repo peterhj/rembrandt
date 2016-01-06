@@ -8,7 +8,7 @@ use array_new::{
 use array_cuda::device::{
   DeviceCtxRef, DeviceArray2d, DeviceArray3d, DeviceBuffer,
 };
-use array_cuda::device::comm::{DeviceAllReduceWorker};
+use array_cuda::device::comm::allreduce::{DeviceAllReduceWorker};
 use array_cuda::device::ext::{DeviceCastBytesExt, DeviceNumExt};
 use array_cuda::device::linalg::{BlasVectorExt, BlasMatrixExt};
 use array_cuda::device::memory::{DeviceZeroExt};
@@ -53,7 +53,6 @@ pub trait Layer {
   fn backward(&mut self, batch_size: usize, scale: f32, ctx: &DeviceCtxRef) {}
   fn descend(&mut self, scale: f32, l2_reg_coef: f32, ctx: &DeviceCtxRef) {}
   fn reset_gradients(&mut self, momentum: f32, ctx: &DeviceCtxRef) {}
-  //fn reset_loss(&mut self, ctx: &DeviceCtxRef) {}
 
   // Synchronous parallelism.
   fn local_allreduce_gradients(&mut self, worker: &mut DeviceAllReduceWorker<f32>, ctx: &DeviceCtxRef) {}
@@ -75,12 +74,18 @@ pub trait LossLayer: Layer {
   fn load_labels(&mut self, batch_size: usize, ctx: &DeviceCtxRef);
 
   fn store_labels(&mut self, batch_idx: usize, ctx: &DeviceCtxRef);
-  fn get_labels(&mut self, batch_size: usize) -> &Array2d<i32>;
-  fn count_accuracy(&mut self, batch_usize: usize) -> usize;
-  //fn store_ranked_labels(&mut self, batch_usize: usize, ctx: &DeviceCtxRef) { unimplemented!(); }
-  //fn get_ranked_labels(&mut self, batch_usize: usize) -> &Array2d<f32> { unimplemented!(); }
-  fn store_probs(&mut self, batch_usize: usize, ctx: &DeviceCtxRef);
-  fn get_probs(&mut self, batch_usize: usize) -> &Array2d<f32>;
+  fn get_labels(&self, batch_size: usize) -> &Array2d<i32>;
+  fn count_accuracy(&self, batch_size: usize) -> usize;
+  //fn store_ranked_labels(&mut self, batch_size: usize, ctx: &DeviceCtxRef) { unimplemented!(); }
+  //fn get_ranked_labels(&mut self, batch_size: usize) -> &Array2d<f32> { unimplemented!(); }
+
+  fn store_probs(&mut self, batch_size: usize, ctx: &DeviceCtxRef);
+  fn get_probs(&self, batch_size: usize) -> &Array2d<f32>;
+
+  fn reset_loss(&mut self, batch_size: usize, ctx: &DeviceCtxRef);
+  fn accumulate_loss(&mut self, batch_size: usize, ctx: &DeviceCtxRef);
+  fn store_loss(&mut self, ctx: &DeviceCtxRef);
+  fn get_loss(&self) -> f32;
 }
 
 pub type SharedDeviceBuf<T> = Rc<RefCell<DeviceBuffer<T>>>;
@@ -573,8 +578,6 @@ impl Layer for Conv2dLayer {
       .row_vector_scale(momentum);
   }
 
-  //fn reset_loss(&mut self, ctx: &DeviceCtxRef) {}
-
   fn local_allreduce_gradients(&mut self, worker: &mut DeviceAllReduceWorker<f32>, ctx: &DeviceCtxRef) {
     // TODO(20151227)
   }
@@ -607,6 +610,10 @@ pub struct SoftmaxKLLossLayer {
   out_probs:    DeviceArray2d<f32>,
   out_probs_h:  Array2d<f32>,
 
+  out_loss1:    DeviceArray2d<f32>,
+  out_loss:     DeviceBuffer<f32>,
+  out_loss_h:   Vec<f32>,
+
   pred_cats:    DeviceArray2d<i32>,
   pred_cats_h:  Array2d<i32>,
   true_cats:    DeviceArray2d<i32>,
@@ -631,6 +638,10 @@ impl SoftmaxKLLossLayer {
       max_prob:     DeviceArray2d::<f32>::zeros((1, batch_size), ctx),
       out_probs:    DeviceArray2d::<f32>::zeros((config.num_categories, batch_size), ctx),
       out_probs_h:  Array2d::zeros((config.num_categories, batch_size)),
+
+      out_loss1:    DeviceArray2d::<f32>::zeros((1, batch_size), ctx),
+      out_loss:     DeviceBuffer::<f32>::zeros(1, ctx),
+      out_loss_h:   vec![0.0],
 
       pred_cats:    DeviceArray2d::<i32>::zeros((1, batch_size), ctx),
       pred_cats_h:  Array2d::<i32>::zeros((1, batch_size)),
@@ -713,11 +724,11 @@ impl LossLayer for SoftmaxKLLossLayer {
       .sync_store(&mut self.pred_cats_h.as_view_mut());
   }
 
-  fn get_labels(&mut self, batch_size: usize) -> &Array2d<i32> {
+  fn get_labels(&self, batch_size: usize) -> &Array2d<i32> {
     &self.pred_cats_h
   }
 
-  fn count_accuracy(&mut self, batch_size: usize) -> usize {
+  fn count_accuracy(&self, batch_size: usize) -> usize {
     assert!(batch_size <= self.batch_limit);
     let mut num_correct = 0;
     for (&y_truth, &y_hat) in self.true_cats_h.as_slice().iter().zip(self.pred_cats_h.as_slice().iter()).take(batch_size) {
@@ -734,8 +745,46 @@ impl LossLayer for SoftmaxKLLossLayer {
     unimplemented!();
   }
 
-  fn get_probs(&mut self, batch_size: usize) -> &Array2d<f32> {
+  fn get_probs(&self, batch_size: usize) -> &Array2d<f32> {
     unimplemented!();
+  }
+
+  fn reset_loss(&mut self, batch_size: usize, ctx: &DeviceCtxRef) {
+    // TODO(20151230)
+    //self.out_loss
+    //unimplemented!();
+  }
+
+  fn accumulate_loss(&mut self, batch_size: usize, ctx: &DeviceCtxRef) {
+    assert!(batch_size <= self.batch_limit);
+    assert!(batch_size <= 1024);
+    assert!(self.config.num_categories <= 1024);
+    unsafe { rembrandt_kernel_batch_map_softmax_cross_entropy_loss(
+        self.out_probs.as_view(ctx).as_ptr(),
+        self.config.num_categories as i32,
+        batch_size as i32,
+        self.true_cats.as_view(ctx).as_ptr(),
+        self.out_loss1.as_view_mut(ctx).as_mut_ptr(),
+        1.0,
+        ctx.stream.ptr,
+    ) };
+    unsafe { rembrandt_kernel_batch_blockreduce_sum(
+        self.out_loss1.as_view(ctx).as_ptr(),
+        batch_size as i32,
+        1,
+        self.out_loss.as_ref_mut(ctx).as_mut_ptr(),
+        1.0,
+        ctx.stream.ptr,
+    ) };
+  }
+
+  fn store_loss(&mut self, ctx: &DeviceCtxRef) {
+    self.out_loss.as_ref(ctx)
+      .sync_store(&mut self.out_loss_h);
+  }
+
+  fn get_loss(&self) -> f32 {
+    self.out_loss_h[0]
   }
 }
 
@@ -792,11 +841,11 @@ impl LossLayer for MultiSoftmaxKLLossLayer {
     unimplemented!();
   }
 
-  fn get_labels(&mut self, batch_idx: usize) -> &Array2d<i32> {
+  fn get_labels(&self, batch_idx: usize) -> &Array2d<i32> {
     unimplemented!();
   }
 
-  fn count_accuracy(&mut self, batch_idx: usize) -> usize {
+  fn count_accuracy(&self, batch_idx: usize) -> usize {
     unimplemented!();
   }
 
@@ -804,7 +853,23 @@ impl LossLayer for MultiSoftmaxKLLossLayer {
     unimplemented!();
   }
 
-  fn get_probs(&mut self, batch_idx: usize) -> &Array2d<f32> {
+  fn get_probs(&self, batch_idx: usize) -> &Array2d<f32> {
+    unimplemented!();
+  }
+
+  fn reset_loss(&mut self, batch_size: usize, ctx: &DeviceCtxRef) {
+    unimplemented!();
+  }
+
+  fn accumulate_loss(&mut self, batch_size: usize, ctx: &DeviceCtxRef) {
+    unimplemented!();
+  }
+
+  fn store_loss(&mut self, ctx: &DeviceCtxRef) {
+    unimplemented!();
+  }
+
+  fn get_loss(&self) -> f32 {
     unimplemented!();
   }
 }

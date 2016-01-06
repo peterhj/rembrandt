@@ -7,7 +7,7 @@ use array_cuda::device::{DeviceCtxRef};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use time::{get_time};
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct SgdOptConfig {
   pub minibatch_size: usize,
   pub learning_rate:  LearningRateSchedule,
@@ -19,7 +19,7 @@ pub struct SgdOptConfig {
   pub save_iters:     usize,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum LearningRateSchedule {
   Fixed{lr: f32},
   StepOnce{
@@ -70,10 +70,10 @@ impl SupervisedData {
     }
   }
 
-  pub fn read_accuracy(&self) -> f32 {
+  pub fn read_accuracy(&self) -> (f32, usize, usize) {
     let sample_size = self.sample_size.load(Ordering::SeqCst);
     let num_correct = self.num_correct.load(Ordering::SeqCst);
-    num_correct as f32 / sample_size as f32
+    (num_correct as f32 / sample_size as f32, num_correct, sample_size)
   }
 }
 
@@ -122,19 +122,19 @@ impl Validation {
       if batch_idx == batch_size {
         arch.input_layer().load_frames(batch_size, ctx);
         arch.loss_layer().load_labels(batch_size, ctx);
-        arch.forward(batch_size, Phase::Training, ctx);
+        arch.forward(batch_size, Phase::Inference, ctx);
         arch.loss_layer().store_labels(batch_size, ctx);
         arch.update_atomic_data(batch_size, ctx);
-        arch.backward(batch_size, 1.0, ctx);
         batch_idx = 0;
       }
     });
 
-    let supervised_data = arch.get_atomic_data();
     arch.sync_workers();
-    let sample_size = supervised_data.sample_size.load(Ordering::SeqCst);
-    let num_correct = supervised_data.num_correct.load(Ordering::SeqCst);
-    let accuracy = (num_correct as f32) / (sample_size as f32);
+    let supervised_data = arch.get_atomic_data();
+    let (accuracy, num_correct, sample_size) = supervised_data.read_accuracy();
+    info!("validation samples: {} validation accuracy: {:.03}",
+        epoch_size, accuracy);
+    arch.reset_atomic_data();
     SupervisedResults{
       sample_size:  sample_size,
       num_correct:  num_correct,
@@ -186,7 +186,6 @@ impl SgdOptimization {
           // TODO(20151220): reduce gradients.
           arch.allreduce_gradients(ctx);
           let descent_scale = sgd_opt_cfg.learning_rate.at_iter(t) / (sgd_opt_cfg.minibatch_size as f32);
-          //println!("DEBUG: descend: scale {:.6}", descent_scale);
           arch.descend(descent_scale, sgd_opt_cfg.l2_reg_coef, ctx);
           arch.reset_gradients(sgd_opt_cfg.momentum, ctx);
           t += 1;
@@ -196,8 +195,9 @@ impl SgdOptimization {
               let elapsed_ms = (lap_time - start_time).num_milliseconds();
               start_time = lap_time;
               let supervised_data = arch.get_atomic_data();
-              let accuracy = supervised_data.read_accuracy();
-              println!("DEBUG: iter: {} accuracy: {:.03} elapsed: {:.3} s", t, accuracy, elapsed_ms as f32 * 0.001);
+              let (accuracy, _, _) = supervised_data.read_accuracy();
+              info!("epoch: {} iter: {} sample {}/{} accuracy: {:.03} elapsed: {:.3} s",
+                  epoch, t, idx, epoch_size, accuracy, elapsed_ms as f32 * 0.001);
               arch.reset_atomic_data();
             }
           }
@@ -206,8 +206,8 @@ impl SgdOptimization {
           }
           if t % sgd_opt_cfg.valid_iters == 0 {
             // TODO(20151220)
-            /*let validation = Validation;
-            let results = validation.validate(sgd_opt_cfg.minibatch_size, label_cfg, arch, valid_data, ctx);*/
+            let validation = Validation;
+            let _ = validation.validate(sgd_opt_cfg.minibatch_size, label_cfg, arch, valid_data, ctx);
           }
         }
       });

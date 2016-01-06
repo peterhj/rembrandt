@@ -9,7 +9,7 @@ use layer_new::{
 use array_cuda::device::{
   DeviceContext, DeviceCtxRef,
 };
-use array_cuda::device::comm::{
+use array_cuda::device::comm::allreduce::{
   DeviceAllReduceSharedData, DeviceAllReduceWorker,
 };
 use byteorder::{ReadBytesExt, WriteBytesExt, LittleEndian};
@@ -53,6 +53,8 @@ pub trait ArchWorker<A>: Worker where A: AtomicData {
   fn allreduce_gradients(&mut self, ctx: &DeviceCtxRef);
   fn descend(&mut self, scale: f32, l2_reg_coef: f32, ctx: &DeviceCtxRef);
   fn reset_gradients(&mut self, momentum: f32, ctx: &DeviceCtxRef);
+  fn reduce_loss(&mut self, ctx: &DeviceCtxRef) -> f32;
+  fn reset_loss(&mut self, ctx: &DeviceCtxRef);
   fn get_atomic_data(&self) -> &A;
   fn reset_atomic_data(&self);
   fn update_atomic_data(&mut self, batch_size: usize, ctx: &DeviceCtxRef);
@@ -154,7 +156,7 @@ impl<A> PipelineArchWorker<A> where A: AtomicData {
       hidden_layers:    hidden_layers,
       loss_layer:       loss_layer,
       local_tid:        local_tid,
-      dev_allreduce:    DeviceAllReduceWorker::new(local_tid, &shared_data.dev_allreduce, ctx),
+      dev_allreduce:    DeviceAllReduceWorker::<f32>::new(local_tid, &shared_data.dev_allreduce, ctx),
       atomic_data:      atomic_data,
     }
   }
@@ -283,6 +285,16 @@ impl<A> ArchWorker<A> for PipelineArchWorker<A> where A: AtomicData {
     for layer in self.hidden_layers.iter_mut() {
       layer.reset_gradients(momentum, ctx);
     }
+  }
+
+  fn reduce_loss(&mut self, ctx: &DeviceCtxRef) -> f32 {
+    // TODO(20151230)
+    unimplemented!();
+  }
+
+  fn reset_loss(&mut self, ctx: &DeviceCtxRef) {
+    // TODO(20151230)
+    unimplemented!();
   }
 
   fn get_atomic_data(&self) -> &A {
