@@ -50,9 +50,9 @@ pub trait ArchWorker<A>: Worker where A: AtomicData {
   fn loss_layer(&mut self) -> &mut LossLayer;
   fn forward(&mut self, batch_size: usize, phase: Phase, ctx: &DeviceCtxRef);
   fn backward(&mut self, batch_size: usize, scale: f32, ctx: &DeviceCtxRef);
-  fn allreduce_gradients(&mut self, ctx: &DeviceCtxRef);
   fn descend(&mut self, scale: f32, l2_reg_coef: f32, ctx: &DeviceCtxRef);
   fn reset_gradients(&mut self, momentum: f32, ctx: &DeviceCtxRef);
+  fn dev_allreduce_sum_gradients(&mut self, ctx: &DeviceCtxRef);
   fn reduce_loss(&mut self, ctx: &DeviceCtxRef) -> f32;
   fn reset_loss(&mut self, ctx: &DeviceCtxRef);
   fn get_atomic_data(&self) -> &A;
@@ -107,6 +107,17 @@ impl PipelineArchSharedData {
       num_workers:      num_workers,
       dev_allreduce:    DeviceAllReduceSharedData::new(num_workers, num_params, ctxs),
     }
+  }
+}
+
+// FIXME(20160117)
+#[derive(Clone)]
+pub struct PipelineArchWorkerBuilder;
+
+impl PipelineArchWorkerBuilder {
+  pub fn into_worker<A>(self) -> PipelineArchWorker<A> where A: AtomicData {
+    // FIXME(20160117)
+    unimplemented!();
   }
 }
 
@@ -271,10 +282,6 @@ impl<A> ArchWorker<A> for PipelineArchWorker<A> where A: AtomicData {
     }
   }
 
-  fn allreduce_gradients(&mut self, ctx: &DeviceCtxRef) {
-    // TODO(20151220)
-  }
-
   fn descend(&mut self, scale: f32, l2_reg_coef: f32, ctx: &DeviceCtxRef) {
     for layer in self.hidden_layers.iter_mut() {
       layer.descend(scale, l2_reg_coef, ctx);
@@ -284,6 +291,24 @@ impl<A> ArchWorker<A> for PipelineArchWorker<A> where A: AtomicData {
   fn reset_gradients(&mut self, momentum: f32, ctx: &DeviceCtxRef) {
     for layer in self.hidden_layers.iter_mut() {
       layer.reset_gradients(momentum, ctx);
+    }
+  }
+
+  fn dev_allreduce_sum_gradients(&mut self, ctx: &DeviceCtxRef) {
+    if self.num_workers() == 1 {
+      // Do nothing.
+    } else {
+      let mut offset = 0;
+      for layer in self.hidden_layers.iter_mut() {
+        layer.dev_allreduce_load(&mut self.dev_allreduce, offset, ctx);
+        offset += layer.config().params_len();
+      }
+      self.dev_allreduce.communicate(ctx);
+      let mut offset = 0;
+      for layer in self.hidden_layers.iter_mut() {
+        layer.dev_allreduce_store(&mut self.dev_allreduce, offset, ctx);
+        offset += layer.config().params_len();
+      }
     }
   }
 

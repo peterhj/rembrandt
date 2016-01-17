@@ -12,7 +12,7 @@ use array_cuda::device::comm::allreduce::{DeviceAllReduceWorker};
 use array_cuda::device::ext::{DeviceCastBytesExt, DeviceNumExt};
 use array_cuda::device::linalg::{BlasVectorExt, BlasMatrixExt};
 use array_cuda::device::memory::{DeviceZeroExt};
-use array_dist::comm::{DistAllReduceWorker};
+//use array_dist::comm::{DistAllReduceWorker};
 use cuda_dnn::v3::{
   CudnnConvFwdOp, CudnnConvBwdFilterOp, CudnnConvBwdDataOp,
   CudnnAddOp, CudnnActKind, CudnnActOp, CudnnSoftmaxOp,
@@ -39,6 +39,7 @@ use std::slice::bytes::{copy_memory};
 
 pub trait Layer {
   // Introspection.
+  fn config(&self) -> LayerConfig;
   fn output_activation(&self) -> Option<SharedDeviceBuf<f32>>;
   fn output_delta(&self) -> Option<SharedDeviceBuf<f32>>;
 
@@ -55,8 +56,10 @@ pub trait Layer {
   fn reset_gradients(&mut self, momentum: f32, ctx: &DeviceCtxRef) {}
 
   // Synchronous parallelism.
-  fn local_allreduce_gradients(&mut self, worker: &mut DeviceAllReduceWorker<f32>, ctx: &DeviceCtxRef) {}
-  fn global_allreduce_gradients(&mut self, worker: &mut DistAllReduceWorker<f32>, ctx: &DeviceCtxRef) {}
+  fn dev_allreduce_load(&mut self, worker: &mut DeviceAllReduceWorker<f32>, offset: usize, ctx: &DeviceCtxRef) {}
+  fn dev_allreduce_store(&mut self, worker: &mut DeviceAllReduceWorker<f32>, offset: usize, ctx: &DeviceCtxRef) {}
+  //fn local_allreduce_gradients(&mut self, worker: &mut DeviceAllReduceWorker<f32>, ctx: &DeviceCtxRef) {}
+  //fn global_allreduce_gradients(&mut self, worker: &mut DistAllReduceWorker<f32>, ctx: &DeviceCtxRef) {}
 }
 
 pub trait InputLayer: Layer {
@@ -70,7 +73,7 @@ pub trait InputLayer: Layer {
 pub trait LossLayer: Layer {
   fn downcast(&self) -> &Layer;
 
-  fn preload_label(&mut self, batch_idx: usize, label: &SampleLabel, ctx: &DeviceCtxRef);
+  fn preload_label(&mut self, batch_idx: usize, label: &SampleLabel);
   fn load_labels(&mut self, batch_size: usize, ctx: &DeviceCtxRef);
 
   fn store_labels(&mut self, batch_idx: usize, ctx: &DeviceCtxRef);
@@ -186,6 +189,10 @@ impl Data3dLayer {
 }
 
 impl Layer for Data3dLayer {
+  fn config(&self) -> LayerConfig {
+    LayerConfig::Data3d(self.config)
+  }
+
   fn output_activation(&self) -> Option<SharedDeviceBuf<f32>> {
     Some(self.out_buf.clone())
   }
@@ -279,7 +286,10 @@ impl Conv2dLayerConfig {
   }
 
   fn params_len(&self) -> usize {
-    0
+    let (_, _, in_channels) = self.in_dims;
+    let weights_len = self.conv_size * self.conv_size * in_channels;
+    let bias_len = self.out_channels;
+    weights_len + bias_len
   }
 }
 
@@ -373,6 +383,10 @@ impl Conv2dLayer {
 }
 
 impl Layer for Conv2dLayer {
+  fn config(&self) -> LayerConfig {
+    LayerConfig::Conv2d(self.config)
+  }
+
   fn output_activation(&self) -> Option<SharedDeviceBuf<f32>> {
     Some(self.out_act.clone())
   }
@@ -578,13 +592,19 @@ impl Layer for Conv2dLayer {
       .row_vector_scale(momentum);
   }
 
-  fn local_allreduce_gradients(&mut self, worker: &mut DeviceAllReduceWorker<f32>, ctx: &DeviceCtxRef) {
+  fn dev_allreduce_load(&mut self, worker: &mut DeviceAllReduceWorker<f32>, offset: usize, ctx: &DeviceCtxRef) {
+  }
+
+  fn dev_allreduce_store(&mut self, worker: &mut DeviceAllReduceWorker<f32>, offset: usize, ctx: &DeviceCtxRef) {
+  }
+
+  /*fn local_allreduce_gradients(&mut self, worker: &mut DeviceAllReduceWorker<f32>, ctx: &DeviceCtxRef) {
     // TODO(20151227)
   }
 
   fn global_allreduce_gradients(&mut self, worker: &mut DistAllReduceWorker<f32>, ctx: &DeviceCtxRef) {
     // TODO(20151227)
-  }
+  }*/
 }
 
 #[derive(Clone, Copy)]
@@ -654,6 +674,10 @@ impl SoftmaxKLLossLayer {
 }
 
 impl Layer for SoftmaxKLLossLayer {
+  fn config(&self) -> LayerConfig {
+    LayerConfig::SoftmaxKLLoss(self.config)
+  }
+
   fn output_activation(&self) -> Option<SharedDeviceBuf<f32>> {
     None
   }
@@ -694,7 +718,7 @@ impl LossLayer for SoftmaxKLLossLayer {
     self
   }
 
-  fn preload_label(&mut self, batch_idx: usize, label: &SampleLabel, ctx: &DeviceCtxRef) {
+  fn preload_label(&mut self, batch_idx: usize, label: &SampleLabel) {
     match label {
       &SampleLabel::Category{category} => {
         self.true_cats_h.as_mut_slice()[batch_idx] = category;
@@ -742,11 +766,12 @@ impl LossLayer for SoftmaxKLLossLayer {
   }
 
   fn store_probs(&mut self, batch_size: usize, ctx: &DeviceCtxRef) {
-    unimplemented!();
+    self.out_probs.as_view(ctx)
+      .sync_store(&mut self.out_probs_h.as_view_mut());
   }
 
   fn get_probs(&self, batch_size: usize) -> &Array2d<f32> {
-    unimplemented!();
+    &self.out_probs_h
   }
 
   fn reset_loss(&mut self, batch_size: usize, ctx: &DeviceCtxRef) {
@@ -790,7 +815,7 @@ impl LossLayer for SoftmaxKLLossLayer {
 
 pub struct MultiSoftmaxKLLossLayer {
   batch_size:   usize,
-  config:       CategoricalLossLayerConfig,
+  config:       MultiCategoricalLossLayerConfig,
 
   in_act:       SharedDeviceBuf<f32>,
   in_delta:     SharedDeviceBuf<f32>,
@@ -809,6 +834,10 @@ pub struct MultiSoftmaxKLLossLayer {
 }
 
 impl Layer for MultiSoftmaxKLLossLayer {
+  fn config(&self) -> LayerConfig {
+    LayerConfig::MultiSoftmaxKLLoss(self.config)
+  }
+
   fn output_activation(&self) -> Option<SharedDeviceBuf<f32>> {
     None
   }
@@ -829,7 +858,7 @@ impl LossLayer for MultiSoftmaxKLLossLayer {
     self
   }
 
-  fn preload_label(&mut self, batch_idx: usize, label: &SampleLabel, ctx: &DeviceCtxRef) {
+  fn preload_label(&mut self, batch_idx: usize, label: &SampleLabel) {
     unimplemented!();
   }
 

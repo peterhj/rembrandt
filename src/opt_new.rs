@@ -116,7 +116,7 @@ impl Validation {
       }
       if epoch_idx % tid == 0 {
         arch.input_layer().preload_frame(batch_idx, datum, ctx);
-        arch.loss_layer().preload_label(batch_idx, maybe_label.unwrap(), ctx);
+        arch.loss_layer().preload_label(batch_idx, maybe_label.unwrap());
         batch_idx += 1;
       }
       if batch_idx == batch_size {
@@ -170,7 +170,7 @@ impl SgdOptimization {
           return;
         }
         arch.input_layer().preload_frame(batch_idx, datum, ctx);
-        arch.loss_layer().preload_label(batch_idx, maybe_label.unwrap(), ctx);
+        arch.loss_layer().preload_label(batch_idx, maybe_label.unwrap());
         batch_idx += 1;
         idx += 1;
         if batch_idx == batch_size {
@@ -183,8 +183,7 @@ impl SgdOptimization {
           batch_idx = 0;
         }
         if idx % sgd_opt_cfg.minibatch_size == 0 {
-          // TODO(20151220): reduce gradients.
-          arch.allreduce_gradients(ctx);
+          arch.dev_allreduce_sum_gradients(ctx);
           let descent_scale = sgd_opt_cfg.learning_rate.at_iter(t) / (sgd_opt_cfg.minibatch_size as f32);
           arch.descend(descent_scale, sgd_opt_cfg.l2_reg_coef, ctx);
           arch.reset_gradients(sgd_opt_cfg.momentum, ctx);
