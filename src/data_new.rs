@@ -63,9 +63,9 @@ impl DataIterator for SampleIterator {
   fn each_sample(&mut self, label_cfg: SampleLabelConfig, /*filter: &Fn(usize) -> bool,*/ f: &mut FnMut(usize, &SampleDatum, Option<&SampleLabel>)) {
     let mut epoch_idx = 0;
     let (ep_idx_start, ep_idx_end) = self.data.get_episodes_range();
-    for ep_idx in (ep_idx_start .. ep_idx_end) {
+    for ep_idx in ep_idx_start .. ep_idx_end {
       let (start_idx, end_idx) = self.data.get_episode_indices(ep_idx).unwrap();
-      for sample_idx in (start_idx .. end_idx) {
+      for sample_idx in start_idx .. end_idx {
         if let Some((datum, maybe_label)) = self.data.get_episode_sample(label_cfg, ep_idx, sample_idx) {
           f(epoch_idx, &datum, maybe_label.as_ref());
           epoch_idx += 1;
@@ -98,7 +98,7 @@ impl DataIterator for RandomEpisodeIterator {
     let mut epoch_idx = 0;
     let (ep_idx_start, ep_idx_end) = self.data.get_episodes_range();
     let ep_idx_range = Range::new(ep_idx_start, ep_idx_end);
-    for _ in (0 .. self.data.num_samples()) {
+    for _ in 0 .. self.data.num_samples() {
       let ep_idx = ep_idx_range.ind_sample(&mut thread_rng());
       let (start_idx, end_idx) = self.data.get_episode_indices(ep_idx).unwrap();
       let sample_idx = thread_rng().gen_range(start_idx, end_idx);
@@ -373,7 +373,7 @@ impl DataSource for EpisoDbDataSource {
           return None;
         }
         let mut lookahead_cats = Vec::with_capacity(lookahead);
-        for k in (0 .. lookahead) {
+        for k in 0 .. lookahead {
           let category_value = self.labels_db.get_frame(sample_idx + k).unwrap();
           let category = Cursor::new(category_value).read_i32::<LittleEndian>().unwrap();
           if category == -1 {

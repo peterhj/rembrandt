@@ -1,3 +1,5 @@
+#![allow(unused_parens)]
+
 use data::{SampleDatum, SampleLabel};
 use opt::{DescentConfig, DescentSchedule, OptPhase};
 

@@ -1,3 +1,5 @@
+#![allow(unused_parens)]
+
 use caffe_proto::{Datum};
 
 use array::{ArrayDeserialize, Array3d};

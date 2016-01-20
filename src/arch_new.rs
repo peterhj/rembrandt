@@ -17,7 +17,7 @@ use byteorder::{ReadBytesExt, WriteBytesExt, LittleEndian};
 use std::fs::{OpenOptions, copy, create_dir_all, read_link, remove_file};
 use std::io::{Read, Write};
 use std::os::unix::fs::{symlink};
-use std::path::{PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc};
 
 pub trait AtomicData {
@@ -46,6 +46,7 @@ pub trait ArchWorker<A>: Worker where A: AtomicData {
   fn initialize_layer_params(&mut self, ctx: &DeviceCtxRef);
   fn load_layer_params(&mut self, maybe_t: Option<usize>, ctx: &DeviceCtxRef);
   fn save_layer_params(&mut self, t: usize, ctx: &DeviceCtxRef);
+  fn save_layer_params_dir(&mut self, save_dir: &Path, t: usize, ctx: &DeviceCtxRef);
   fn input_layer(&mut self) -> &mut InputLayer;
   fn loss_layer(&mut self) -> &mut LossLayer;
   fn forward(&mut self, batch_size: usize, phase: Phase, ctx: &DeviceCtxRef);
@@ -219,7 +220,12 @@ impl<A> ArchWorker<A> for PipelineArchWorker<A> where A: AtomicData {
   }
 
   fn save_layer_params(&mut self, t: usize, ctx: &DeviceCtxRef) {
-    create_dir_all(&self.params_dir)
+    let save_dir = self.params_dir.clone();
+    self.save_layer_params_dir(&save_dir, t, ctx);
+  }
+
+  fn save_layer_params_dir(&mut self, save_dir: &Path, t: usize, ctx: &DeviceCtxRef) {
+    create_dir_all(save_dir)
       .ok().expect("failed to create params dir!");
 
     let mut blob = Vec::new();
@@ -227,9 +233,9 @@ impl<A> ArchWorker<A> for PipelineArchWorker<A> where A: AtomicData {
       layer.save_params(&mut blob, ctx);
     }
 
-    let mut checkpoint_path = self.params_dir.clone();
+    /*let mut checkpoint_path = PathBuf::from(save_dir);
     checkpoint_path.push("checkpoint");
-    let mut bak_checkpoint_path = self.params_dir.clone();
+    let mut bak_checkpoint_path = save_dir.clone();
     bak_checkpoint_path.push("checkpoint.0");
 
     copy(&checkpoint_path, &bak_checkpoint_path).ok();
@@ -239,9 +245,9 @@ impl<A> ArchWorker<A> for PipelineArchWorker<A> where A: AtomicData {
       .open(&checkpoint_path)
       .ok().expect("failed to open checkpoint file!");
     checkpoint_file.write_u64::<LittleEndian>(t as u64)
-      .ok().expect("failed to write checkpoint!");
+      .ok().expect("failed to write checkpoint!");*/
 
-    let mut blob_path = self.params_dir.clone();
+    let mut blob_path = PathBuf::from(save_dir);
     blob_path.push(&format!("layer_params.t_{}.blob", t));
     let blob_filename = PathBuf::from(&blob_path.file_name().unwrap());
 
@@ -252,7 +258,7 @@ impl<A> ArchWorker<A> for PipelineArchWorker<A> where A: AtomicData {
     blob_file.write_all(&blob)
       .ok().expect("failed to write to blob file!");
 
-    let mut latest_path = self.params_dir.clone();
+    let mut latest_path = PathBuf::from(save_dir);
     latest_path.push("layer_params.latest.blob");
     remove_file(&latest_path).ok();
     symlink(&blob_filename, &latest_path)
