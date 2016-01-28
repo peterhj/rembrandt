@@ -126,10 +126,14 @@ impl NetArch for LinearNetArch {
       .ok().expect("LinearNetArch failed to read latest symlink!");*/
     let blob_path = latest_path;
 
-    let mut blob_file = OpenOptions::new()
-      .read(true)
-      .open(&blob_path)
-      .ok().expect("LinearNetArch failed to open blob file to load layer params!");
+    let mut blob_file = match OpenOptions::new().read(true).open(&blob_path) {
+      //.ok().expect("LinearNetArch failed to open blob file to load layer params!");
+      Ok(file) => file,
+      Err(e) => {
+        panic!("LinearNetArch failed to open blob path {:?} to load layer params: {:?}",
+            blob_path, e);
+      }
+    };
     let mut blob = Vec::new();
     blob_file.read_to_end(&mut blob)
       .ok().expect("LinearNetArch failed to read from blob file!");

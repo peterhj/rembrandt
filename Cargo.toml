@@ -2,7 +2,7 @@
 name = "rembrandt"
 version = "0.4.0"
 authors = ["Peter Jin <peterhaijin@gmail.com>"]
-build = "build.rs"
+#build = "build.rs"
 
 [lib]
 name = "rembrandt"

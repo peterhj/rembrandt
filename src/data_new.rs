@@ -1,4 +1,4 @@
-use array_new::{NdArraySerialize, Array3d};
+use array_new::{NdArraySerialize, Array3d, BitArray3d};
 use byteorder::{LittleEndian, ReadBytesExt};
 use episodb::{EpisoDb};
 //use random::{XorShift128Plus};
@@ -10,8 +10,16 @@ use rand::distributions::range::{Range};
 use std::collections::{HashMap};
 use std::fs::{File};
 use std::io::{Read, BufReader, Cursor};
+//use std::marker::{PhantomData};
 use std::path::{PathBuf};
 
+#[derive(Clone, Copy, Debug)]
+pub enum SampleDatumConfig {
+  ByteArray3d,
+  BitArray3d,
+}
+
+#[derive(Clone)]
 pub enum SampleDatum {
   RowMajorBytes(Array3d<u8>),
 }
@@ -24,7 +32,7 @@ pub enum SampleLabelConfig {
   //Lookahead2{lookahead: usize},
 }
 
-//#[derive(Clone)]
+#[derive(Clone)]
 pub enum SampleLabel {
   Category{category: i32},
   //Category2{category: i32, category2: i32},
@@ -34,7 +42,7 @@ pub enum SampleLabel {
 
 pub trait DataIterator {
   fn max_num_samples(&self) -> usize;
-  fn each_sample(&mut self, label_cfg: SampleLabelConfig, /*filter: &Fn(usize) -> bool,*/ f: &mut FnMut(usize, &SampleDatum, Option<&SampleLabel>));
+  fn each_sample(&mut self, datum_cfg: SampleDatumConfig, label_cfg: SampleLabelConfig, /*filter: &Fn(usize) -> bool,*/ f: &mut FnMut(usize, &SampleDatum, Option<&SampleLabel>));
 
   /*fn get_episode_indices(&mut self, ep_idx: usize) -> Option<(usize, usize)> {
     unimplemented!();
@@ -60,13 +68,13 @@ impl DataIterator for SampleIterator {
     self.data.num_samples()
   }
 
-  fn each_sample(&mut self, label_cfg: SampleLabelConfig, /*filter: &Fn(usize) -> bool,*/ f: &mut FnMut(usize, &SampleDatum, Option<&SampleLabel>)) {
+  fn each_sample(&mut self, datum_cfg: SampleDatumConfig, label_cfg: SampleLabelConfig, /*filter: &Fn(usize) -> bool,*/ f: &mut FnMut(usize, &SampleDatum, Option<&SampleLabel>)) {
     let mut epoch_idx = 0;
     let (ep_idx_start, ep_idx_end) = self.data.get_episodes_range();
     for ep_idx in ep_idx_start .. ep_idx_end {
       let (start_idx, end_idx) = self.data.get_episode_indices(ep_idx).unwrap();
       for sample_idx in start_idx .. end_idx {
-        if let Some((datum, maybe_label)) = self.data.get_episode_sample(label_cfg, ep_idx, sample_idx) {
+        if let Some((datum, maybe_label)) = self.data.get_episode_sample(datum_cfg, label_cfg, ep_idx, sample_idx) {
           f(epoch_idx, &datum, maybe_label.as_ref());
           epoch_idx += 1;
         }
@@ -94,7 +102,7 @@ impl DataIterator for RandomEpisodeIterator {
     self.data.num_samples()
   }
 
-  fn each_sample(&mut self, label_cfg: SampleLabelConfig, f: &mut FnMut(usize, &SampleDatum, Option<&SampleLabel>)) {
+  fn each_sample(&mut self, datum_cfg: SampleDatumConfig, label_cfg: SampleLabelConfig, f: &mut FnMut(usize, &SampleDatum, Option<&SampleLabel>)) {
     let mut epoch_idx = 0;
     let (ep_idx_start, ep_idx_end) = self.data.get_episodes_range();
     let ep_idx_range = Range::new(ep_idx_start, ep_idx_end);
@@ -102,7 +110,7 @@ impl DataIterator for RandomEpisodeIterator {
       let ep_idx = ep_idx_range.ind_sample(&mut thread_rng());
       let (start_idx, end_idx) = self.data.get_episode_indices(ep_idx).unwrap();
       let sample_idx = thread_rng().gen_range(start_idx, end_idx);
-      if let Some((datum, maybe_label)) = self.data.get_episode_sample(label_cfg, ep_idx, sample_idx) {
+      if let Some((datum, maybe_label)) = self.data.get_episode_sample(datum_cfg, label_cfg, ep_idx, sample_idx) {
         f(epoch_idx, &datum, maybe_label.as_ref());
         epoch_idx += 1;
       }
@@ -129,7 +137,7 @@ impl DataIterator for CyclicEpisodeIterator {
     self.data.num_samples()
   }
 
-  fn each_sample(&mut self, label_cfg: SampleLabelConfig, f: &mut FnMut(usize, &SampleDatum, Option<&SampleLabel>)) {
+  fn each_sample(&mut self, datum_cfg: SampleDatumConfig, label_cfg: SampleLabelConfig, f: &mut FnMut(usize, &SampleDatum, Option<&SampleLabel>)) {
     let limit = self.data.num_samples();
     let mut counter = 0;
     let mut epoch_idx = 0;
@@ -138,7 +146,7 @@ impl DataIterator for CyclicEpisodeIterator {
       for ep_idx in ep_idx_start .. ep_idx_end {
         let (start_idx, end_idx) = self.data.get_episode_indices(ep_idx).unwrap();
         let sample_idx = thread_rng().gen_range(start_idx, end_idx);
-        if let Some((datum, maybe_label)) = self.data.get_episode_sample(label_cfg, ep_idx, sample_idx) {
+        if let Some((datum, maybe_label)) = self.data.get_episode_sample(datum_cfg, label_cfg, ep_idx, sample_idx) {
           f(epoch_idx, &datum, maybe_label.as_ref());
           epoch_idx += 1;
         }
@@ -231,7 +239,62 @@ pub trait DataSource {
 
   fn get_episodes_range(&self) -> (usize, usize);
   fn get_episode_indices(&mut self, ep_idx: usize) -> Option<(usize, usize)>;
-  fn get_episode_sample(&mut self, label_cfg: SampleLabelConfig, ep_idx: usize, sample_idx: usize) -> Option<(SampleDatum, Option<SampleLabel>)>;
+  fn get_episode_sample(&mut self, datum_cfg: SampleDatumConfig, label_cfg: SampleLabelConfig, ep_idx: usize, sample_idx: usize) -> Option<(SampleDatum, Option<SampleLabel>)>;
+}
+
+pub trait Augment {
+  fn transform(&mut self, datum: SampleDatum, maybe_label: Option<SampleLabel>) -> (SampleDatum, Option<SampleLabel>);
+}
+
+pub struct AugmentDataSource<A> where A: Augment {
+  inner:    Box<DataSource>,
+  augment:  A,
+  //_marker:  PhantomData<A>,
+}
+
+impl<A> AugmentDataSource<A> where A: Augment {
+  pub fn new(augment: A, inner: Box<DataSource>) -> AugmentDataSource<A> {
+    AugmentDataSource{
+      inner:    inner,
+      augment:  augment,
+      //_marker:  PhantomData,
+    }
+  }
+}
+
+impl<A> DataSource for AugmentDataSource<A> where A: Augment {
+  fn num_samples(&self) -> usize {
+    self.inner.num_samples()
+  }
+
+  fn count_prefix_samples(&self, ep_idx: usize) -> usize {
+    self.inner.count_prefix_samples(ep_idx)
+  }
+
+  fn count_suffix_samples(&self, ep_idx: usize) -> usize {
+    self.inner.count_suffix_samples(ep_idx)
+  }
+
+  fn num_episodes(&self) -> usize {
+    self.inner.num_episodes()
+  }
+
+  fn get_episodes_range(&self) -> (usize, usize) {
+    self.inner.get_episodes_range()
+  }
+
+  fn get_episode_indices(&mut self, ep_idx: usize) -> Option<(usize, usize)> {
+    self.inner.get_episode_indices(ep_idx)
+  }
+
+  fn get_episode_sample(&mut self, datum_cfg: SampleDatumConfig, label_cfg: SampleLabelConfig, ep_idx: usize, sample_idx: usize) -> Option<(SampleDatum, Option<SampleLabel>)> {
+    if let Some((orig_datum, orig_label)) = self.inner.get_episode_sample(datum_cfg, label_cfg, ep_idx, sample_idx) {
+      let (new_datum, new_label) = self.augment.transform(orig_datum, orig_label);
+      Some((new_datum, new_label))
+    } else {
+      None
+    }
+  }
 }
 
 pub struct PartitionDataSource {
@@ -239,6 +302,8 @@ pub struct PartitionDataSource {
   parts:        usize,
   ep_idx_start: usize,
   ep_idx_end:   usize,
+  prefix_offset:    usize,
+  suffix_offset:    usize,
   data: Box<DataSource>,
 }
 
@@ -249,11 +314,15 @@ impl PartitionDataSource {
     let num_eps_per_part = (src_ep_idx_end - src_ep_idx_start) / parts;
     let part_ep_idx_start = src_ep_idx_start + part_idx * num_eps_per_part;
     let part_ep_idx_end = src_ep_idx_start + (part_idx + 1) * num_eps_per_part;
+    let prefix_offset = data.count_prefix_samples(part_ep_idx_start);
+    let suffix_offset = data.count_suffix_samples(part_ep_idx_start);
     PartitionDataSource{
       part_idx:     part_idx,
       parts:        parts,
       ep_idx_start: part_ep_idx_start,
       ep_idx_end:   part_ep_idx_end,
+      prefix_offset:    prefix_offset,
+      suffix_offset:    suffix_offset,
       data: data,
     }
   }
@@ -262,16 +331,16 @@ impl PartitionDataSource {
 impl DataSource for PartitionDataSource {
   fn num_samples(&self) -> usize {
     let start_count = self.data.count_prefix_samples(self.ep_idx_start);
-    let end_count = self.data.count_suffix_samples(self.ep_idx_end);
+    let end_count = self.data.count_suffix_samples(self.ep_idx_end - 1);
     end_count - start_count
   }
 
   fn count_prefix_samples(&self, ep_idx: usize) -> usize {
-    unimplemented!();
+    self.data.count_prefix_samples(ep_idx) - self.prefix_offset
   }
 
   fn count_suffix_samples(&self, ep_idx: usize) -> usize {
-    unimplemented!();
+    self.data.count_suffix_samples(ep_idx) - self.suffix_offset
   }
 
   fn num_episodes(&self) -> usize {
@@ -290,9 +359,9 @@ impl DataSource for PartitionDataSource {
     }
   }
 
-  fn get_episode_sample(&mut self, label_cfg: SampleLabelConfig, ep_idx: usize, sample_idx: usize) -> Option<(SampleDatum, Option<SampleLabel>)> {
+  fn get_episode_sample(&mut self, datum_cfg: SampleDatumConfig, label_cfg: SampleLabelConfig, ep_idx: usize, sample_idx: usize) -> Option<(SampleDatum, Option<SampleLabel>)> {
     if ep_idx >= self.ep_idx_start && ep_idx < self.ep_idx_end {
-      self.data.get_episode_sample(label_cfg, ep_idx, sample_idx)
+      self.data.get_episode_sample(datum_cfg, label_cfg, ep_idx, sample_idx)
     } else {
       None
     }
@@ -348,7 +417,7 @@ impl DataSource for EpisoDbDataSource {
     Some((start_idx, end_idx))
   }
 
-  fn get_episode_sample(&mut self, label_cfg: SampleLabelConfig, ep_idx: usize, sample_idx: usize) -> Option<(SampleDatum, Option<SampleLabel>)> {
+  fn get_episode_sample(&mut self, datum_cfg: SampleDatumConfig, label_cfg: SampleLabelConfig, ep_idx: usize, sample_idx: usize) -> Option<(SampleDatum, Option<SampleLabel>)> {
     let (start_idx, end_idx) = self.data_db.get_episode(ep_idx).unwrap();
     let (start_idx2, end_idx2) = self.labels_db.get_episode(ep_idx).unwrap();
     assert_eq!(start_idx, start_idx2);
@@ -385,8 +454,18 @@ impl DataSource for EpisoDbDataSource {
       }
     };
     let datum_value = self.data_db.get_frame(sample_idx).unwrap();
-    let sample_datum = SampleDatum::RowMajorBytes(Array3d::deserialize(&mut Cursor::new(datum_value))
-      .ok().expect("arraydb source failed to deserialize datum!"));
+    let sample_datum = match datum_cfg {
+      SampleDatumConfig::ByteArray3d => {
+        SampleDatum::RowMajorBytes(Array3d::deserialize(&mut Cursor::new(datum_value))
+          .ok().expect("arraydb source failed to deserialize datum (Array3d<u8>)!"))
+      }
+      SampleDatumConfig::BitArray3d => {
+        let bit_arr = BitArray3d::deserialize(&mut Cursor::new(datum_value))
+          .ok().expect("arraydb source failed to deserialize datum (BitArray3d)!");
+        let arr = bit_arr.to_byte_array();
+        SampleDatum::RowMajorBytes(arr)
+      }
+    };
     Some((sample_datum, Some(sample_label)))
   }
 }

@@ -1,5 +1,5 @@
 use arch_new::{AtomicData, Worker, ArchWorker};
-use data_new::{SampleDatum, SampleLabel, SampleLabelConfig, DataIterator};
+use data_new::{SampleDatum, SampleDatumConfig, SampleLabel, SampleLabelConfig, DataIterator};
 use layer_new::{LossLayer, Phase};
 
 use array_cuda::device::{DeviceCtxRef};
@@ -9,8 +9,9 @@ use time::{get_time};
 
 #[derive(Clone, Copy, Debug)]
 pub struct SgdOptConfig {
+  pub init_t:         usize,
   pub minibatch_size: usize,
-  pub learning_rate:  LearningRateSchedule,
+  pub step_size:      StepSizeSchedule,
   pub momentum:       f32,
   pub l2_reg_coef:    f32,
 
@@ -19,8 +20,10 @@ pub struct SgdOptConfig {
   pub save_iters:     usize,
 }
 
+pub type LearningRateSchedule = StepSizeSchedule;
+
 #[derive(Clone, Copy, Debug)]
-pub enum LearningRateSchedule {
+pub enum StepSizeSchedule {
   Fixed{lr: f32},
   StepOnce{
     lr0: f32, lr0_iters: usize,
@@ -31,20 +34,25 @@ pub enum LearningRateSchedule {
     lr1: f32, lr1_iters: usize,
     lr_final: f32,
   },
+  Decay{
+    init_step:      f32,
+    decay_rate:     f32,
+    level_iters:    usize,
+  }
 }
 
-impl LearningRateSchedule {
+impl StepSizeSchedule {
   pub fn at_iter(&self, t: usize) -> f32 {
     match *self {
-      LearningRateSchedule::Fixed{lr} => lr,
-      LearningRateSchedule::StepOnce{lr0, lr0_iters, lr_final} => {
+      StepSizeSchedule::Fixed{lr} => lr,
+      StepSizeSchedule::StepOnce{lr0, lr0_iters, lr_final} => {
         if t < lr0_iters {
           lr0
         } else {
           lr_final
         }
       }
-      LearningRateSchedule::StepTwice{lr0, lr0_iters, lr1, lr1_iters, lr_final} => {
+      StepSizeSchedule::StepTwice{lr0, lr0_iters, lr1, lr1_iters, lr_final} => {
         if t < lr0_iters {
           lr0
         } else if t < lr1_iters {
@@ -52,6 +60,10 @@ impl LearningRateSchedule {
         } else {
           lr_final
         }
+      }
+      StepSizeSchedule::Decay{init_step, decay_rate, level_iters} => {
+        let p = (t / level_iters) as i32;
+        init_step * decay_rate.powi(p)
       }
     }
   }
@@ -101,24 +113,25 @@ pub struct SupervisedResults {
 pub struct Validation;
 
 impl Validation {
-  pub fn validate(&self, minibatch_size: usize, label: SampleLabelConfig, arch: &mut ArchWorker<SupervisedData>, data: &mut DataIterator, ctx: &DeviceCtxRef) -> SupervisedResults {
+  pub fn validate(&self, minibatch_size: usize, datum_cfg: SampleDatumConfig, label_cfg: SampleLabelConfig, arch: &mut ArchWorker<SupervisedData>, data: &mut DataIterator, ctx: &DeviceCtxRef) -> SupervisedResults {
     let epoch_size = (data.max_num_samples() / minibatch_size) * minibatch_size;
     let batch_size = arch.batch_size();
     assert!(minibatch_size >= batch_size);
     assert_eq!(0, minibatch_size % batch_size);
     let tid = arch.tid();
 
+    let start_time = get_time();
+
     let mut batch_idx = 0;
+    arch.sync_workers();
     arch.reset_atomic_data();
-    data.each_sample(label, &mut |epoch_idx, datum, maybe_label| {
+    data.each_sample(datum_cfg, label_cfg, &mut |epoch_idx, datum, maybe_label| {
       if epoch_idx >= epoch_size {
         return;
       }
-      if epoch_idx % tid == 0 {
-        arch.input_layer().preload_frame(batch_idx, datum, ctx);
-        arch.loss_layer().preload_label(batch_idx, maybe_label.unwrap());
-        batch_idx += 1;
-      }
+      arch.input_layer().preload_frame(batch_idx, datum, ctx);
+      arch.loss_layer().preload_label(batch_idx, maybe_label.unwrap());
+      batch_idx += 1;
       if batch_idx == batch_size {
         arch.input_layer().load_frames(batch_size, ctx);
         arch.loss_layer().load_labels(batch_size, ctx);
@@ -128,13 +141,20 @@ impl Validation {
         batch_idx = 0;
       }
     });
-
     arch.sync_workers();
+
+    let lap_time = get_time();
+    let elapsed_ms = (lap_time - start_time).num_milliseconds();
+
     let supervised_data = arch.get_atomic_data();
     let (accuracy, num_correct, sample_size) = supervised_data.read_accuracy();
-    info!("validation samples: {} validation accuracy: {:.03}",
-        epoch_size, accuracy);
+    if tid == 0 {
+      info!("sgd: samples: {} validation accuracy: {:.03} elapsed: {:.03} s",
+          epoch_size, accuracy, elapsed_ms as f32 * 0.001);
+    }
+    arch.sync_workers();
     arch.reset_atomic_data();
+
     SupervisedResults{
       sample_size:  sample_size,
       num_correct:  num_correct,
@@ -146,33 +166,47 @@ impl Validation {
 pub struct SgdOptimization;
 
 impl SgdOptimization {
-  pub fn train(&self, sgd_opt_cfg: SgdOptConfig, label_cfg: SampleLabelConfig, arch: &mut ArchWorker<SupervisedData>, train_data: &mut DataIterator, valid_data: &mut DataIterator, ctx: &DeviceCtxRef) {
-    let epoch_size = (train_data.max_num_samples() / sgd_opt_cfg.minibatch_size) * sgd_opt_cfg.minibatch_size;
-    let batch_size = arch.batch_size();
-    assert!(sgd_opt_cfg.minibatch_size >= batch_size);
-    assert_eq!(0, sgd_opt_cfg.minibatch_size % batch_size);
+  pub fn train(&self, sgd_opt_cfg: SgdOptConfig, datum_cfg: SampleDatumConfig, label_cfg: SampleLabelConfig, arch: &mut ArchWorker<SupervisedData>, train_data: &mut DataIterator, valid_data: &mut DataIterator, ctx: &DeviceCtxRef) {
     let tid = arch.tid();
     let num_workers = arch.num_workers();
+    let minibatch_size = sgd_opt_cfg.minibatch_size;
+    assert_eq!(0, minibatch_size % num_workers);
+    let local_minibatch_size = minibatch_size / num_workers;
+    let epoch_size = (train_data.max_num_samples() / minibatch_size) * minibatch_size;
+    let batch_size = arch.batch_size();
+    assert!(minibatch_size >= batch_size);
+    assert_eq!(0, minibatch_size % batch_size);
+    assert_eq!(batch_size * num_workers, minibatch_size);
+
+    info!("sgd: tid: {}/{} batch size: {} epoch size: {}",
+        tid, num_workers, batch_size, epoch_size);
 
     let mut start_time = get_time();
 
-    arch.initialize_layer_params(ctx);
+    if sgd_opt_cfg.init_t == 0 {
+      arch.initialize_layer_params(ctx);
+    } else {
+      // FIXME(20160127): load specific iteration of params.
+      arch.load_layer_params(None, ctx);
+    }
     arch.reset_gradients(0.0, ctx);
     arch.reset_atomic_data();
 
-    let mut idx = 0;
+    let mut t = sgd_opt_cfg.init_t;
+    //let mut t = 0;
+
+    let mut local_idx = 0;
     let mut batch_idx = 0;
-    let mut t = 0;
     let mut epoch = 0;
     loop {
-      train_data.each_sample(label_cfg, &mut |epoch_idx, datum, maybe_label| {
+      train_data.each_sample(datum_cfg, label_cfg, &mut |epoch_idx, datum, maybe_label| {
         if epoch_idx >= epoch_size {
           return;
         }
         arch.input_layer().preload_frame(batch_idx, datum, ctx);
         arch.loss_layer().preload_label(batch_idx, maybe_label.unwrap());
         batch_idx += 1;
-        idx += 1;
+        local_idx += 1;
         if batch_idx == batch_size {
           arch.input_layer().load_frames(batch_size, ctx);
           arch.loss_layer().load_labels(batch_size, ctx);
@@ -182,31 +216,38 @@ impl SgdOptimization {
           arch.update_atomic_data(batch_size, ctx);
           batch_idx = 0;
         }
-        if idx % sgd_opt_cfg.minibatch_size == 0 {
+        //if idx % sgd_opt_cfg.minibatch_size == 0 {
+        if local_idx % local_minibatch_size == 0 {
           arch.dev_allreduce_sum_gradients(ctx);
-          let descent_scale = sgd_opt_cfg.learning_rate.at_iter(t) / (sgd_opt_cfg.minibatch_size as f32);
+          let descent_scale = sgd_opt_cfg.step_size.at_iter(t) / (sgd_opt_cfg.minibatch_size as f32);
           arch.descend(descent_scale, sgd_opt_cfg.l2_reg_coef, ctx);
           arch.reset_gradients(sgd_opt_cfg.momentum, ctx);
+          let step_size = sgd_opt_cfg.step_size.at_iter(t);
           t += 1;
           if t % sgd_opt_cfg.display_iters == 0 {
+            arch.sync_workers();
             if tid == 0 {
               let lap_time = get_time();
               let elapsed_ms = (lap_time - start_time).num_milliseconds();
               start_time = lap_time;
               let supervised_data = arch.get_atomic_data();
               let (accuracy, _, _) = supervised_data.read_accuracy();
-              info!("epoch: {} iter: {} sample {}/{} accuracy: {:.03} elapsed: {:.3} s",
-                  epoch, t, idx, epoch_size, accuracy, elapsed_ms as f32 * 0.001);
-              arch.reset_atomic_data();
+              info!("sgd: epoch: {} iter: {} sample {}/{} step: {} accuracy: {:.03} elapsed: {:.3} s",
+                  epoch, t, local_idx * num_workers, epoch_size, step_size, accuracy, elapsed_ms as f32 * 0.001);
             }
+            arch.sync_workers();
+            arch.reset_atomic_data();
           }
           if t % sgd_opt_cfg.save_iters == 0 {
-            arch.save_layer_params(t, ctx);
+            if tid == 0 {
+              arch.save_layer_params(t, ctx);
+            }
+            arch.sync_workers();
           }
           if t % sgd_opt_cfg.valid_iters == 0 {
             // TODO(20151220)
             let validation = Validation;
-            let _ = validation.validate(sgd_opt_cfg.minibatch_size, label_cfg, arch, valid_data, ctx);
+            let _ = validation.validate(sgd_opt_cfg.minibatch_size, datum_cfg, label_cfg, arch, valid_data, ctx);
           }
         }
       });

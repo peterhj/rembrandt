@@ -225,8 +225,8 @@ impl<A> ArchWorker<A> for PipelineArchWorker<A> where A: AtomicData {
   }
 
   fn save_layer_params_dir(&mut self, save_dir: &Path, t: usize, ctx: &DeviceCtxRef) {
-    create_dir_all(save_dir)
-      .ok().expect("failed to create params dir!");
+    create_dir_all(save_dir);
+      //.ok().expect("failed to create params dir!");
 
     let mut blob = Vec::new();
     for layer in self.hidden_layers.iter_mut() {
