@@ -2,6 +2,7 @@ use array_new::{NdArraySerialize, Array3d, BitArray3d};
 use byteorder::{LittleEndian, ReadBytesExt};
 use episodb::{EpisoDb};
 //use random::{XorShift128Plus};
+use rng::xorshift::{Xorshiftplus128Rng};
 use toml::{Parser};
 
 use rand::{Rng, thread_rng};
@@ -10,7 +11,7 @@ use rand::distributions::range::{Range};
 use std::collections::{HashMap};
 use std::fs::{File};
 use std::io::{Read, BufReader, Cursor};
-//use std::marker::{PhantomData};
+use std::marker::{PhantomData};
 use std::path::{PathBuf};
 
 #[derive(Clone, Copy, Debug)]
@@ -26,9 +27,9 @@ pub enum SampleDatum {
 
 #[derive(Clone, Copy, Debug)]
 pub enum SampleLabelConfig {
-  Category,
+  Category{num_categories: i32},
   //Category2,
-  Lookahead{lookahead: usize},
+  LookaheadCategories{num_categories: i32, lookahead: usize},
   //Lookahead2{lookahead: usize},
 }
 
@@ -41,6 +42,10 @@ pub enum SampleLabel {
 }
 
 pub trait DataIterator {
+  /*type Iter: Iterator<Item=(SampleDatum, Option<SampleLabel>)>;
+
+  fn iter(&mut self, datum_cfg: SampleDatumConfig, label_cfg: SampleLabelConfig) -> Self::Iter { unimplemented!(); }*/
+
   fn max_num_samples(&self) -> usize;
   fn each_sample(&mut self, datum_cfg: SampleDatumConfig, label_cfg: SampleLabelConfig, /*filter: &Fn(usize) -> bool,*/ f: &mut FnMut(usize, &SampleDatum, Option<&SampleLabel>));
 
@@ -51,6 +56,16 @@ pub trait DataIterator {
   fn get_episode_sample(&mut self, label_cfg: SampleLabelConfig, ep_idx: usize, sample_idx: usize) -> Option<(SampleDatum, Option<SampleLabel>)> {
     unimplemented!();
   }*/
+}
+
+pub struct DummyIter;
+
+impl Iterator for DummyIter {
+  type Item = (SampleDatum, Option<SampleLabel>);
+
+  fn next(&mut self) -> Option<(SampleDatum, Option<SampleLabel>)> {
+    None
+  }
 }
 
 pub struct SampleIterator {
@@ -64,6 +79,9 @@ impl SampleIterator {
 }
 
 impl DataIterator for SampleIterator {
+  // FIXME(20160129)
+  //type Iter = DummyIter;
+
   fn max_num_samples(&self) -> usize {
     self.data.num_samples()
   }
@@ -83,21 +101,65 @@ impl DataIterator for SampleIterator {
   }
 }
 
-pub struct RandomEpisodeIterator {
-  //rng:  XorShift128PlusRng,
+pub struct RandomEpisodeIterator<'a> {
   data: Box<DataSource>,
+  _marker:  PhantomData<&'a ()>,
 }
 
-impl RandomEpisodeIterator {
-  pub fn new(data: Box<DataSource>) -> RandomEpisodeIterator {
+impl<'a> RandomEpisodeIterator<'a> {
+  pub fn new(data: Box<DataSource>) -> RandomEpisodeIterator<'a> {
     RandomEpisodeIterator{
-      //rng:  XorShift128PlusRng::from_seed([thread_rng().gen(), thread_rng().gen()]),
       data: data,
+      _marker:  PhantomData,
     }
   }
 }
 
-impl DataIterator for RandomEpisodeIterator {
+pub struct RandomEpisodeIter<'a> {
+  ep_idx_range: Range<usize>,
+  datum_cfg:    SampleDatumConfig,
+  label_cfg:    SampleLabelConfig,
+
+  epoch_idx:    usize,
+  num_samples:  usize,
+  rng:          Xorshiftplus128Rng,
+  source:       &'a mut RandomEpisodeIterator<'a>,
+}
+
+impl<'a> Iterator for RandomEpisodeIter<'a> {
+  type Item = (SampleDatum, Option<SampleLabel>);
+
+  fn next(&mut self) -> Option<(SampleDatum, Option<SampleLabel>)> {
+    while self.epoch_idx < self.num_samples {
+      let ep_idx = self.ep_idx_range.ind_sample(&mut self.rng);
+      let (start_idx, end_idx) = self.source.data.get_episode_indices(ep_idx).unwrap();
+      let sample_idx = self.rng.gen_range(start_idx, end_idx);
+      self.epoch_idx += 1;
+      if let Some((datum, maybe_label)) = self.source.data.get_episode_sample(self.datum_cfg, self.label_cfg, ep_idx, sample_idx) {
+        return Some((datum, maybe_label));
+      }
+    }
+    None
+  }
+}
+
+impl<'a> DataIterator for RandomEpisodeIterator<'a> {
+  /*type Iter = RandomEpisodeIter<'a>;
+
+  pub fn iter(&'a mut self, datum_cfg: SampleDatumConfig, label_cfg: SampleLabelConfig) -> RandomEpisodeIter<'a> {
+    let (ep_idx_start, ep_idx_end) = self.data.get_episodes_range();
+    RandomEpisodeIter{
+      ep_idx_range: Range::new(ep_idx_start, ep_idx_end),
+      datum_cfg:    datum_cfg,
+      label_cfg:    label_cfg,
+
+      epoch_idx:    0,
+      num_samples:  self.data.num_samples(),
+      rng:          Xorshiftplus128Rng::new(&mut thread_rng()),
+      source:       self,
+    }
+  }*/
+
   fn max_num_samples(&self) -> usize {
     self.data.num_samples()
   }
@@ -106,7 +168,8 @@ impl DataIterator for RandomEpisodeIterator {
     let mut epoch_idx = 0;
     let (ep_idx_start, ep_idx_end) = self.data.get_episodes_range();
     let ep_idx_range = Range::new(ep_idx_start, ep_idx_end);
-    for _ in 0 .. self.data.num_samples() {
+    let num_samples = self.max_num_samples();
+    for _ in 0 .. num_samples {
       let ep_idx = ep_idx_range.ind_sample(&mut thread_rng());
       let (start_idx, end_idx) = self.data.get_episode_indices(ep_idx).unwrap();
       let sample_idx = thread_rng().gen_range(start_idx, end_idx);
@@ -133,6 +196,9 @@ impl CyclicEpisodeIterator {
 }
 
 impl DataIterator for CyclicEpisodeIterator {
+  // FIXME(20160129)
+  //type Iter = DummyIter;
+
   fn max_num_samples(&self) -> usize {
     self.data.num_samples()
   }
@@ -165,6 +231,8 @@ pub struct DataSourceConfig {
   pub maybe_labels_path:    Option<PathBuf>,
   pub maybe_labels2_path:   Option<PathBuf>,
   //pub maybe_mean:               Option<DataMeanConfig>,
+  pub datum_cfg:    Option<SampleDatumConfig>,
+  pub label_cfg:    Option<SampleLabelConfig>,
 }
 
 #[derive(Clone, Debug)]
@@ -211,6 +279,8 @@ impl DatasetConfig {
         maybe_labels_path: maybe_labels_path,
         maybe_labels2_path: maybe_labels2_path,
         //maybe_mean: maybe_mean,
+        datum_cfg:  None,
+        label_cfg:  None,
       };
       datasets.insert(data_name.clone(), (source_name.to_string(), data_config));
     }
@@ -223,6 +293,21 @@ impl DatasetConfig {
       Some(&(ref src_name, ref data_cfg)) => {
         match src_name as &str {
           "episodb" => Box::new(EpisoDbDataSource::open(data_cfg.clone())),
+          _ => panic!("unknown data source: '{}'", src_name),
+        }
+      }
+      None => panic!("dataset missing key: '{}'", key),
+    }
+  }
+
+  pub fn build_with_cfg(&self, datum_cfg: SampleDatumConfig, label_cfg: SampleLabelConfig, key: &str) -> Box<DataSource> {
+    match self.datasets.get(key) {
+      Some(&(ref src_name, ref data_cfg)) => {
+        let mut data_cfg = data_cfg.clone();
+        data_cfg.datum_cfg = Some(datum_cfg);
+        data_cfg.label_cfg = Some(label_cfg);
+        match src_name as &str {
+          "episodb" => Box::new(EpisoDbDataSource::open(data_cfg)),
           _ => panic!("unknown data source: '{}'", src_name),
         }
       }
@@ -427,25 +512,29 @@ impl DataSource for EpisoDbDataSource {
 
     // FIXME(20151129): Right now we skip samples with category `-1`;
     // should allow user to specify how to handle those.
+    // XXX(20160129): Skip categories that are negative or out of bounds.
     let sample_label = match label_cfg {
-      SampleLabelConfig::Category => {
+      SampleLabelConfig::Category{num_categories} => {
         let category_value = self.labels_db.get_frame(sample_idx).unwrap();
         let category = Cursor::new(category_value).read_i32::<LittleEndian>().unwrap();
-        if category == -1 {
+        if category < 0 || category >= num_categories {
           return None;
         }
         SampleLabel::Category{category: category}
       }
-      SampleLabelConfig::Lookahead{lookahead} => {
+      SampleLabelConfig::LookaheadCategories{num_categories, lookahead} => {
         assert!(lookahead >= 1);
         if sample_idx + lookahead > end_idx {
           return None;
         }
         let mut lookahead_cats = Vec::with_capacity(lookahead);
         for k in 0 .. lookahead {
-          let category_value = self.labels_db.get_frame(sample_idx + k).unwrap();
+          let category_value = match self.labels_db.get_frame(sample_idx + k) {
+            Some(value) => value,
+            None => return None,
+          };
           let category = Cursor::new(category_value).read_i32::<LittleEndian>().unwrap();
-          if category == -1 {
+          if category < 0 || category >= num_categories {
             return None;
           }
           lookahead_cats.push(category);
@@ -453,6 +542,7 @@ impl DataSource for EpisoDbDataSource {
         SampleLabel::MultiCategory{categories: lookahead_cats}
       }
     };
+
     let datum_value = self.data_db.get_frame(sample_idx).unwrap();
     let sample_datum = match datum_cfg {
       SampleDatumConfig::ByteArray3d => {
@@ -466,6 +556,7 @@ impl DataSource for EpisoDbDataSource {
         SampleDatum::RowMajorBytes(arr)
       }
     };
+
     Some((sample_datum, Some(sample_label)))
   }
 }

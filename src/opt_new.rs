@@ -95,11 +95,11 @@ impl AtomicData for SupervisedData {
     self.num_correct.store(0, Ordering::SeqCst);
   }
 
-  fn update(&self, batch_size: usize, loss_layer: &mut LossLayer, ctx: &DeviceCtxRef) {
+  fn update(&self, batch_size: usize, loss_layer: &mut LossLayer, phase: Phase, ctx: &DeviceCtxRef) {
     // TODO(20151220)
-    loss_layer.store_labels(batch_size, ctx);
-    let batch_correct = loss_layer.count_accuracy(batch_size);
-    self.sample_size.fetch_add(batch_size, Ordering::SeqCst);
+    loss_layer.store_labels(batch_size, phase, ctx);
+    let (batch_correct, batch_total) = loss_layer.count_accuracy(batch_size, phase);
+    self.sample_size.fetch_add(batch_total, Ordering::SeqCst);
     self.num_correct.fetch_add(batch_correct, Ordering::SeqCst);
   }
 }
@@ -130,14 +130,14 @@ impl Validation {
         return;
       }
       arch.input_layer().preload_frame(batch_idx, datum, ctx);
-      arch.loss_layer().preload_label(batch_idx, maybe_label.unwrap());
+      arch.loss_layer().preload_label(batch_idx, maybe_label.unwrap(), Phase::Inference);
       batch_idx += 1;
       if batch_idx == batch_size {
         arch.input_layer().load_frames(batch_size, ctx);
         arch.loss_layer().load_labels(batch_size, ctx);
         arch.forward(batch_size, Phase::Inference, ctx);
-        arch.loss_layer().store_labels(batch_size, ctx);
-        arch.update_atomic_data(batch_size, ctx);
+        arch.loss_layer().store_labels(batch_size, Phase::Inference, ctx);
+        arch.update_atomic_data(batch_size, Phase::Inference, ctx);
         batch_idx = 0;
       }
     });
@@ -166,13 +166,14 @@ impl Validation {
 pub struct SgdOptimization;
 
 impl SgdOptimization {
-  pub fn train(&self, sgd_opt_cfg: SgdOptConfig, datum_cfg: SampleDatumConfig, label_cfg: SampleLabelConfig, arch: &mut ArchWorker<SupervisedData>, train_data: &mut DataIterator, valid_data: &mut DataIterator, ctx: &DeviceCtxRef) {
+  pub fn train(&self, sgd_opt_cfg: SgdOptConfig, datum_cfg: SampleDatumConfig, train_label_cfg: SampleLabelConfig, valid_label_cfg: SampleLabelConfig, arch: &mut ArchWorker<SupervisedData>, train_data: &mut DataIterator, valid_data: &mut DataIterator, ctx: &DeviceCtxRef) {
     let tid = arch.tid();
     let num_workers = arch.num_workers();
     let minibatch_size = sgd_opt_cfg.minibatch_size;
     assert_eq!(0, minibatch_size % num_workers);
     let local_minibatch_size = minibatch_size / num_workers;
     let epoch_size = (train_data.max_num_samples() / minibatch_size) * minibatch_size;
+    //let local_epoch_size = epoch_size / num_workers;
     let batch_size = arch.batch_size();
     assert!(minibatch_size >= batch_size);
     assert_eq!(0, minibatch_size % batch_size);
@@ -199,12 +200,22 @@ impl SgdOptimization {
     let mut batch_idx = 0;
     let mut epoch = 0;
     loop {
-      train_data.each_sample(datum_cfg, label_cfg, &mut |epoch_idx, datum, maybe_label| {
+      //for (epoch_idx, (datum, maybe_label)) in train_data.iter(datum_cfg, label_cfg).take(local_epoch_size).enumerate() {
+      train_data.each_sample(datum_cfg, train_label_cfg, &mut |epoch_idx, datum, maybe_label| {
+        //if epoch_idx >= local_epoch_size {
         if epoch_idx >= epoch_size {
+          //break;
           return;
         }
+        match (train_label_cfg, maybe_label) {
+          (SampleLabelConfig::Category{num_categories}, Some(&SampleLabel::Category{category})) => {
+            assert!(category >= 0);
+            assert!(category < num_categories);
+          }
+          _ => {}
+        }
         arch.input_layer().preload_frame(batch_idx, datum, ctx);
-        arch.loss_layer().preload_label(batch_idx, maybe_label.unwrap());
+        arch.loss_layer().preload_label(batch_idx, maybe_label.unwrap(), Phase::Training);
         batch_idx += 1;
         local_idx += 1;
         if batch_idx == batch_size {
@@ -212,8 +223,8 @@ impl SgdOptimization {
           arch.loss_layer().load_labels(batch_size, ctx);
           arch.forward(batch_size, Phase::Training, ctx);
           arch.backward(batch_size, 1.0, ctx);
-          arch.loss_layer().store_labels(batch_size, ctx);
-          arch.update_atomic_data(batch_size, ctx);
+          arch.loss_layer().store_labels(batch_size, Phase::Training, ctx);
+          arch.update_atomic_data(batch_size, Phase::Training, ctx);
           batch_idx = 0;
         }
         //if idx % sgd_opt_cfg.minibatch_size == 0 {
@@ -247,7 +258,7 @@ impl SgdOptimization {
           if t % sgd_opt_cfg.valid_iters == 0 {
             // TODO(20151220)
             let validation = Validation;
-            let _ = validation.validate(sgd_opt_cfg.minibatch_size, datum_cfg, label_cfg, arch, valid_data, ctx);
+            let _ = validation.validate(sgd_opt_cfg.minibatch_size, datum_cfg, valid_label_cfg, arch, valid_data, ctx);
           }
         }
       });

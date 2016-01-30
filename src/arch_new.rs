@@ -4,6 +4,7 @@ use layer_new::{
   Data3dLayerConfig,
   Conv2dLayerConfig,
   CategoricalLossLayerConfig,
+  MultiCategoricalLossLayerConfig,
 };
 
 use array_cuda::device::{
@@ -13,16 +14,18 @@ use array_cuda::device::comm::allreduce::{
   DeviceAllReduceSharedData, DeviceAllReduceWorker,
 };
 use byteorder::{ReadBytesExt, WriteBytesExt, LittleEndian};
+use rng::xorshift::{Xorshiftplus128Rng};
 
+use rand::{Rng, SeedableRng};
 use std::fs::{OpenOptions, copy, create_dir_all, read_link, remove_file};
-use std::io::{Read, Write};
+use std::io::{Read, BufRead, Write, BufReader};
 use std::os::unix::fs::{symlink};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc};
 
 pub trait AtomicData {
   fn reset(&self);
-  fn update(&self, batch_size: usize, loss_layer: &mut LossLayer, ctx: &DeviceCtxRef);
+  fn update(&self, batch_size: usize, loss_layer: &mut LossLayer, phase: Phase, ctx: &DeviceCtxRef);
 }
 
 impl AtomicData for () {
@@ -31,7 +34,7 @@ impl AtomicData for () {
   }
 
   #[inline]
-  fn update(&self, batch_size: usize, loss_layer: &mut LossLayer, ctx: &DeviceCtxRef) {
+  fn update(&self, _: usize, _: &mut LossLayer, _: Phase, _: &DeviceCtxRef) {
   }
 }
 
@@ -45,6 +48,7 @@ pub trait ArchWorker<A>: Worker where A: AtomicData {
   fn batch_size(&self) -> usize;
   fn initialize_layer_params(&mut self, ctx: &DeviceCtxRef);
   fn load_layer_params(&mut self, maybe_t: Option<usize>, ctx: &DeviceCtxRef);
+  fn load_layer_params_dir(&mut self, save_dir: &Path, maybe_t: Option<usize>, ctx: &DeviceCtxRef);
   fn save_layer_params(&mut self, t: usize, ctx: &DeviceCtxRef);
   fn save_layer_params_dir(&mut self, save_dir: &Path, t: usize, ctx: &DeviceCtxRef);
   fn input_layer(&mut self) -> &mut InputLayer;
@@ -58,7 +62,7 @@ pub trait ArchWorker<A>: Worker where A: AtomicData {
   fn reset_loss(&mut self, ctx: &DeviceCtxRef);
   fn get_atomic_data(&self) -> &A;
   fn reset_atomic_data(&self);
-  fn update_atomic_data(&mut self, batch_size: usize, ctx: &DeviceCtxRef);
+  fn update_atomic_data(&mut self, batch_size: usize, phase: Phase, ctx: &DeviceCtxRef);
 }
 
 #[derive(Clone)]
@@ -89,6 +93,11 @@ impl PipelineArchConfig {
 
   pub fn softmax_kl_loss(&mut self, layer_cfg: CategoricalLossLayerConfig) -> &mut PipelineArchConfig {
     self.loss = Some(LayerConfig::SoftmaxKLLoss(layer_cfg));
+    self
+  }
+
+  pub fn multi_softmax_kl_loss(&mut self, layer_cfg: MultiCategoricalLossLayerConfig) -> &mut PipelineArchConfig {
+    self.loss = Some(LayerConfig::MultiSoftmaxKLLoss(layer_cfg));
     self
   }
 }
@@ -125,12 +134,14 @@ impl PipelineArchWorkerBuilder {
 pub struct PipelineArchWorker<A> where A: AtomicData {
   batch_size:       usize,
   params_dir:       PathBuf,
+  shared_seed:      [u64; 2],
 
   input_layer:      Box<InputLayer>,
   hidden_layers:    Vec<Box<Layer>>,
   loss_layer:       Box<LossLayer>,
 
   local_tid:        usize,
+  num_workers:      usize,
   dev_allreduce:    DeviceAllReduceWorker<f32>,
   atomic_data:      Arc<A>,
 }
@@ -141,6 +152,7 @@ impl<A> PipelineArchWorker<A> where A: AtomicData {
       config:           PipelineArchConfig,
       params_dir:       PathBuf,
       local_tid:        usize,
+      shared_seed:      [u64; 2],
       shared_data:      &PipelineArchSharedData,
       atomic_data:      Arc<A>,
       ctx:              &DeviceCtxRef)
@@ -160,14 +172,17 @@ impl<A> PipelineArchWorker<A> where A: AtomicData {
       }
     }
     let loss_layer = config.loss.unwrap().build_loss_layer(batch_size, Some(&*hidden_layers[hidden_layers.len()-1]), ctx);
+    let num_workers = shared_data.num_workers;
 
     PipelineArchWorker{
       batch_size:       batch_size,
       params_dir:       params_dir,
+      shared_seed:      shared_seed,
       input_layer:      input_layer,
       hidden_layers:    hidden_layers,
       loss_layer:       loss_layer,
       local_tid:        local_tid,
+      num_workers:      num_workers,
       dev_allreduce:    DeviceAllReduceWorker::<f32>::new(local_tid, &shared_data.dev_allreduce, ctx),
       atomic_data:      atomic_data,
     }
@@ -194,15 +209,51 @@ impl<A> ArchWorker<A> for PipelineArchWorker<A> where A: AtomicData {
   }
 
   fn initialize_layer_params(&mut self, ctx: &DeviceCtxRef) {
+    /*println!("DEBUG: arch: {}/{} init params seed: {:?}",
+        self.local_tid, self.num_workers, self.shared_seed);*/
+    let mut rng = Xorshiftplus128Rng::from_seed(self.shared_seed);
     for layer in self.hidden_layers.iter_mut() {
-      layer.initialize_params(ctx);
+      let h1 = rng.next_u64();
+      let h2 = rng.next_u64();
+      /*println!("DEBUG: arch: {}/{} layer seed: {:?}",
+          self.local_tid, self.num_workers, [h1, h2]);*/
+      layer.initialize_params([h1, h2], ctx);
     }
   }
 
   fn load_layer_params(&mut self, maybe_t: Option<usize>, ctx: &DeviceCtxRef) {
-    let mut latest_path = self.params_dir.clone();
-    latest_path.push("layer_params.latest.blob");
-    let blob_path = latest_path;
+    let save_dir = self.params_dir.clone();
+    self.load_layer_params_dir(&save_dir, maybe_t, ctx);
+  }
+
+  fn load_layer_params_dir(&mut self, save_dir: &Path, maybe_t: Option<usize>, ctx: &DeviceCtxRef) {
+    let mut checkpoint_path = PathBuf::from(save_dir);
+    checkpoint_path.push("checkpoint");
+
+    let checkpoint_file = OpenOptions::new()
+      .read(true)
+      .open(&checkpoint_path)
+      .ok().expect("failed to open checkpoint file!");
+    let mut latest_t: usize = 0;
+    for line in BufReader::new(checkpoint_file).lines() {
+      let line = line.unwrap();
+      latest_t = line.parse().unwrap();
+      break;
+    }
+
+    let blob_path = match maybe_t {
+      Some(t) => {
+        assert!(t <= latest_t, "failed to load layer params: t: {} checkpoint: {}", t, latest_t);
+        let mut t_path = PathBuf::from(save_dir);
+        t_path.push(&format!("layer_params.t_{}.blob", t));
+        t_path
+      }
+      None => {
+        let mut latest_path = PathBuf::from(save_dir);
+        latest_path.push("layer_params.latest.blob");
+        latest_path
+      }
+    };
 
     let mut blob_file = OpenOptions::new()
       .read(true)
@@ -228,14 +279,9 @@ impl<A> ArchWorker<A> for PipelineArchWorker<A> where A: AtomicData {
     create_dir_all(save_dir);
       //.ok().expect("failed to create params dir!");
 
-    let mut blob = Vec::new();
-    for layer in self.hidden_layers.iter_mut() {
-      layer.save_params(&mut blob, ctx);
-    }
-
-    /*let mut checkpoint_path = PathBuf::from(save_dir);
+    let mut checkpoint_path = PathBuf::from(save_dir);
     checkpoint_path.push("checkpoint");
-    let mut bak_checkpoint_path = save_dir.clone();
+    let mut bak_checkpoint_path = PathBuf::from(save_dir);
     bak_checkpoint_path.push("checkpoint.0");
 
     copy(&checkpoint_path, &bak_checkpoint_path).ok();
@@ -244,8 +290,14 @@ impl<A> ArchWorker<A> for PipelineArchWorker<A> where A: AtomicData {
       .create(true).truncate(true).write(true)
       .open(&checkpoint_path)
       .ok().expect("failed to open checkpoint file!");
-    checkpoint_file.write_u64::<LittleEndian>(t as u64)
+    /*checkpoint_file.write_u64::<LittleEndian>(t as u64)
       .ok().expect("failed to write checkpoint!");*/
+    writeln!(checkpoint_file, "{}", t);
+
+    let mut blob = Vec::new();
+    for layer in self.hidden_layers.iter_mut() {
+      layer.save_params(&mut blob, ctx);
+    }
 
     let mut blob_path = PathBuf::from(save_dir);
     blob_path.push(&format!("layer_params.t_{}.blob", t));
@@ -301,11 +353,15 @@ impl<A> ArchWorker<A> for PipelineArchWorker<A> where A: AtomicData {
   }
 
   fn dev_allreduce_sum_gradients(&mut self, ctx: &DeviceCtxRef) {
-    if self.num_workers() == 1 {
+    let num_workers = self.num_workers();
+    if num_workers <= 1 {
       // Do nothing.
+      //println!("DEBUG: arch: no allreduce");
     } else {
+      //println!("DEBUG: arch: allreduce sum grads {}", self.num_workers());
       let mut offset = 0;
       for layer in self.hidden_layers.iter_mut() {
+        //info!("arch: {}/{} load layer", self.local_tid, num_workers);
         layer.dev_allreduce_load(&mut self.dev_allreduce, offset, ctx);
         offset += layer.config().params_len();
       }
@@ -336,9 +392,9 @@ impl<A> ArchWorker<A> for PipelineArchWorker<A> where A: AtomicData {
     self.atomic_data.reset();
   }
 
-  fn update_atomic_data(&mut self, batch_size: usize, ctx: &DeviceCtxRef) {
+  fn update_atomic_data(&mut self, batch_size: usize, phase: Phase, ctx: &DeviceCtxRef) {
     let &mut PipelineArchWorker{
       ref atomic_data, ref mut loss_layer, .. } = self;
-    atomic_data.update(batch_size, &mut **loss_layer, ctx);
+    atomic_data.update(batch_size, &mut **loss_layer, phase, ctx);
   }
 }

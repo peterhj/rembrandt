@@ -32,6 +32,8 @@ log = "*"
 rand = "*"
 time = "*"
 
+rng = { path = "../../librng" }
+
 [dependencies.array]
 path = "../libarray"
 
