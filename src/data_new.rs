@@ -1,4 +1,4 @@
-use array_new::{NdArraySerialize, Array3d, BitArray3d};
+use array_new::{Array, ArrayViewMut, NdArraySerialize, Array3d, BitArray3d};
 use byteorder::{LittleEndian, ReadBytesExt};
 use episodb::{EpisoDb};
 //use random::{XorShift128Plus};
@@ -16,13 +16,59 @@ use std::path::{PathBuf};
 
 #[derive(Clone, Copy, Debug)]
 pub enum SampleDatumConfig {
-  ByteArray3d,
-  BitArray3d,
+  Bytes3d,
+  Bits3d{scale: u8},
+  BitsThenBytes3d{scale: u8},
+}
+
+impl SampleDatumConfig {
+  pub fn decode(&self, value: &[u8]) -> SampleDatum {
+    match *self {
+      SampleDatumConfig::Bytes3d => {
+        SampleDatum::WHCBytes(Array3d::deserialize(&mut Cursor::new(value))
+          .ok().expect("failed to decode Bytes3d!"))
+      }
+      SampleDatumConfig::Bits3d{scale} => {
+        let bit_arr = BitArray3d::deserialize(&mut Cursor::new(value))
+          .ok().expect("failed to decode Bits3d!");
+        let arr = bit_arr.into_bytes(scale);
+        SampleDatum::WHCBytes(arr)
+      }
+      SampleDatumConfig::BitsThenBytes3d{scale} => {
+        let mut reader = Cursor::new(value);
+        //let bit_size = reader.read_u64::<LittleEndian>().unwrap() as usize;
+        let bit_arr = BitArray3d::deserialize(&mut reader)
+          .ok().expect("failed to decode BitsThenBytes3d bits half!");
+        //let bytes_size = value.read_u64::<LittleEndian>().unwrap() as usize;
+        //assert_eq!(bit_size + bytes_size + 16, value.len());
+        let bytes_arr: Array3d<u8> = Array3d::deserialize(&mut reader)
+          .ok().expect("failed to decode BitsThenBytes3d bytes half!");
+        assert_eq!(bit_arr.bound().0, bytes_arr.bound().0);
+        assert_eq!(bit_arr.bound().1, bytes_arr.bound().1);
+        let (width, height) = (bit_arr.bound().0, bit_arr.bound().1);
+        let bit_chs = bit_arr.bound().2;
+        let bytes_chs = bytes_arr.bound().2;
+        let channels = bit_chs + bytes_chs;
+
+        // FIXME(20160202)
+        let mut arr: Array3d<u8> = unsafe { Array3d::new((width, height, channels)) };
+        {
+          let mut arr = arr.as_view_mut().view_mut((0, 0, 0), (width, height, bit_chs));
+          bit_arr.write_bytes(scale, &mut arr);
+        }
+        {
+          let mut arr = arr.as_view_mut().view_mut((0, 0, bit_chs), (width, height, channels));
+          arr.copy_from(&bytes_arr.as_view());
+        }
+        SampleDatum::WHCBytes(arr)
+      }
+    }
+  }
 }
 
 #[derive(Clone)]
 pub enum SampleDatum {
-  RowMajorBytes(Array3d<u8>),
+  WHCBytes(Array3d<u8>),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -544,18 +590,7 @@ impl DataSource for EpisoDbDataSource {
     };
 
     let datum_value = self.data_db.get_frame(sample_idx).unwrap();
-    let sample_datum = match datum_cfg {
-      SampleDatumConfig::ByteArray3d => {
-        SampleDatum::RowMajorBytes(Array3d::deserialize(&mut Cursor::new(datum_value))
-          .ok().expect("arraydb source failed to deserialize datum (Array3d<u8>)!"))
-      }
-      SampleDatumConfig::BitArray3d => {
-        let bit_arr = BitArray3d::deserialize(&mut Cursor::new(datum_value))
-          .ok().expect("arraydb source failed to deserialize datum (BitArray3d)!");
-        let arr = bit_arr.to_byte_array();
-        SampleDatum::RowMajorBytes(arr)
-      }
-    };
+    let sample_datum = datum_cfg.decode(datum_value);
 
     Some((sample_datum, Some(sample_label)))
   }

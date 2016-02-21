@@ -22,6 +22,7 @@ use std::io::{Read, BufRead, Write, BufReader};
 use std::os::unix::fs::{symlink};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc};
+use std::sync::mpsc::{Receiver, Sender, channel};
 
 pub trait AtomicData {
   fn reset(&self);
@@ -49,8 +50,10 @@ pub trait ArchWorker<A>: Worker where A: AtomicData {
   fn initialize_layer_params(&mut self, ctx: &DeviceCtxRef);
   fn load_layer_params(&mut self, maybe_t: Option<usize>, ctx: &DeviceCtxRef);
   fn load_layer_params_dir(&mut self, save_dir: &Path, maybe_t: Option<usize>, ctx: &DeviceCtxRef);
+  fn load_layer_params_from_mem(&mut self, blob: &[u8], ctx: &DeviceCtxRef);
   fn save_layer_params(&mut self, t: usize, ctx: &DeviceCtxRef);
   fn save_layer_params_dir(&mut self, save_dir: &Path, t: usize, ctx: &DeviceCtxRef);
+  fn save_layer_params_to_mem(&mut self, ctx: &DeviceCtxRef) -> Vec<u8>;
   fn input_layer(&mut self) -> &mut InputLayer;
   fn loss_layer(&mut self) -> &mut LossLayer;
   fn forward(&mut self, batch_size: usize, phase: Phase, ctx: &DeviceCtxRef);
@@ -144,6 +147,10 @@ pub struct PipelineArchWorker<A> where A: AtomicData {
   num_workers:      usize,
   dev_allreduce:    DeviceAllReduceWorker<f32>,
   atomic_data:      Arc<A>,
+
+  // FIXME(20160207)
+  /*tid0_recver:      Option<Receiver<Vec<u8>>>,
+  sender:           Sender<Vec<u8>>,*/
 }
 
 impl<A> PipelineArchWorker<A> where A: AtomicData {
@@ -227,23 +234,23 @@ impl<A> ArchWorker<A> for PipelineArchWorker<A> where A: AtomicData {
   }
 
   fn load_layer_params_dir(&mut self, save_dir: &Path, maybe_t: Option<usize>, ctx: &DeviceCtxRef) {
-    let mut checkpoint_path = PathBuf::from(save_dir);
-    checkpoint_path.push("checkpoint");
-
-    let checkpoint_file = OpenOptions::new()
-      .read(true)
-      .open(&checkpoint_path)
-      .ok().expect("failed to open checkpoint file!");
-    let mut latest_t: usize = 0;
-    for line in BufReader::new(checkpoint_file).lines() {
-      let line = line.unwrap();
-      latest_t = line.parse().unwrap();
-      break;
-    }
-
     let blob_path = match maybe_t {
       Some(t) => {
+        let mut checkpoint_path = PathBuf::from(save_dir);
+        checkpoint_path.push("checkpoint");
+
+        let checkpoint_file = OpenOptions::new()
+          .read(true)
+          .open(&checkpoint_path)
+          .ok().expect("failed to open checkpoint file!");
+        let mut latest_t: usize = 0;
+        for line in BufReader::new(checkpoint_file).lines() {
+          let line = line.unwrap();
+          latest_t = line.parse().unwrap();
+          break;
+        }
         assert!(t <= latest_t, "failed to load layer params: t: {} checkpoint: {}", t, latest_t);
+
         let mut t_path = PathBuf::from(save_dir);
         t_path.push(&format!("layer_params.t_{}.blob", t));
         t_path
@@ -255,14 +262,19 @@ impl<A> ArchWorker<A> for PipelineArchWorker<A> where A: AtomicData {
       }
     };
 
-    let mut blob_file = OpenOptions::new()
+    let mut blob_file = match OpenOptions::new()
       .read(true)
-      .open(&blob_path)
-      .ok().expect("failed to open blob file to load layer params!");
+      .open(&blob_path) {
+        Ok(file) => file,
+        Err(_) => panic!("failed to open blob path: {:?}", blob_path),
+    };
     let mut blob = Vec::new();
     blob_file.read_to_end(&mut blob)
       .ok().expect("failed to read from blob file!");
+    self.load_layer_params_from_mem(&blob, ctx);
+  }
 
+  fn load_layer_params_from_mem(&mut self, blob: &[u8], ctx: &DeviceCtxRef) {
     let mut cursor_offset = 0;
     for layer in self.hidden_layers.iter_mut() {
       let progress = layer.load_params(&blob[cursor_offset ..], ctx);
@@ -294,10 +306,7 @@ impl<A> ArchWorker<A> for PipelineArchWorker<A> where A: AtomicData {
       .ok().expect("failed to write checkpoint!");*/
     writeln!(checkpoint_file, "{}", t);
 
-    let mut blob = Vec::new();
-    for layer in self.hidden_layers.iter_mut() {
-      layer.save_params(&mut blob, ctx);
-    }
+    let blob = self.save_layer_params_to_mem(ctx);
 
     let mut blob_path = PathBuf::from(save_dir);
     blob_path.push(&format!("layer_params.t_{}.blob", t));
@@ -315,6 +324,14 @@ impl<A> ArchWorker<A> for PipelineArchWorker<A> where A: AtomicData {
     remove_file(&latest_path).ok();
     symlink(&blob_filename, &latest_path)
       .ok().expect("failed to symlink latest blob!");
+  }
+
+  fn save_layer_params_to_mem(&mut self, ctx: &DeviceCtxRef) -> Vec<u8> {
+    let mut blob = Vec::new();
+    for layer in self.hidden_layers.iter_mut() {
+      layer.save_params(&mut blob, ctx);
+    }
+    blob
   }
 
   fn input_layer(&mut self) -> &mut InputLayer {

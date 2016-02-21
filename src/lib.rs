@@ -15,6 +15,7 @@ extern crate lmdb;
 extern crate protobuf;
 extern crate rembrandt_kernels;
 extern crate rng;
+extern crate toggle;
 
 #[macro_use]
 extern crate log;

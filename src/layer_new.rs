@@ -10,16 +10,17 @@ use array_cuda::device::{
 };
 use array_cuda::device::comm::allreduce::{DeviceAllReduceWorker};
 use array_cuda::device::ext::{DeviceCastBytesExt, DeviceNumExt};
-use array_cuda::device::linalg::{BlasVectorExt, BlasMatrixExt};
+use array_cuda::device::linalg::{BlasVectorExt, BlasMatrixExt, Transpose};
 use array_cuda::device::memory::{DeviceZeroExt};
 //use array_dist::comm::{DistAllReduceWorker};
-use cuda_dnn::v3::{
+use cuda_dnn::v4::{
   CudnnConvFwdOp, CudnnConvBwdFilterOp, CudnnConvBwdDataOp,
   CudnnAddOp, CudnnActKind, CudnnActOp, CudnnSoftmaxOp,
   CudnnTensorDesc, CudnnFilterDesc, CudnnConvDesc,
 };
 use rembrandt_kernels::ffi::*;
 use rng::xorshift::{Xorshiftplus128Rng};
+use toggle::{Toggle, Disable, Enable};
 
 use rand::{Rng, SeedableRng, thread_rng};
 use rand::distributions::{IndependentSample};
@@ -52,15 +53,37 @@ pub trait Layer {
 
   // The core layer functionality.
   fn forward(&mut self, batch_size: usize, phase: Phase, ctx: &DeviceCtxRef) {}
-  fn backward(&mut self, batch_size: usize, scale: f32, ctx: &DeviceCtxRef) {}
+  fn backward(&mut self, batch_size: usize, loss_scale: f32, ctx: &DeviceCtxRef) {}
   fn descend(&mut self, scale: f32, l2_reg_coef: f32, ctx: &DeviceCtxRef) {}
-  fn reset_gradients(&mut self, momentum: f32, ctx: &DeviceCtxRef) {}
+  fn reset_gradients(&mut self, scale: f32, ctx: &DeviceCtxRef) {}
+
+  // Hessian-vector product.
+  fn hv_forward(&mut self, batch_size: usize, ctx: &DeviceCtxRef) {}
+  fn hv_backward(&mut self, batch_size: usize, ctx: &DeviceCtxRef) {}
+  fn hv_cgsolve(&mut self, batch_size: usize, ctx: &DeviceCtxRef) {}
 
   // Synchronous parallelism.
   fn dev_allreduce_load(&mut self, worker: &mut DeviceAllReduceWorker<f32>, offset: usize, ctx: &DeviceCtxRef) {}
   fn dev_allreduce_store(&mut self, worker: &mut DeviceAllReduceWorker<f32>, offset: usize, ctx: &DeviceCtxRef) {}
   //fn local_allreduce_gradients(&mut self, worker: &mut DeviceAllReduceWorker<f32>, ctx: &DeviceCtxRef) {}
   //fn global_allreduce_gradients(&mut self, worker: &mut DistAllReduceWorker<f32>, ctx: &DeviceCtxRef) {}
+}
+
+pub trait GradientLayer {
+  fn g_backward(&mut self, batch_size: usize, loss_scale: f32, ctx: &DeviceCtxRef) {}
+  fn g_descend(&mut self, step: f32, l2_reg_coef: f32, ctx: &DeviceCtxRef) {}
+  fn g_reset_gradient(&mut self, scale: f32, ctx: &DeviceCtxRef) {}
+  fn g_allreduce_load_params(&mut self, worker: &mut DeviceAllReduceWorker<f32>, offset: usize, ctx: &DeviceCtxRef) {}
+  fn g_allreduce_store_params(&mut self, worker: &mut DeviceAllReduceWorker<f32>, offset: usize, ctx: &DeviceCtxRef) {}
+}
+
+pub trait HessianVectorLayer {
+  fn hv_reset_direction(&mut self, ctx: &DeviceCtxRef) {}
+  fn hv_backward(&mut self, batch_size: usize, loss_scale: f32, ctx: &DeviceCtxRef) {}
+  fn hv_descend(&mut self, step: f32, l2_reg_coef: f32, ctx: &DeviceCtxRef) {}
+  fn hv_reset_gradient(&mut self, scale: f32, ctx: &DeviceCtxRef) {}
+  fn hv_allreduce_load_params(&mut self, worker: &mut DeviceAllReduceWorker<f32>, offset: usize, ctx: &DeviceCtxRef) {}
+  fn hv_allreduce_store_params(&mut self, worker: &mut DeviceAllReduceWorker<f32>, offset: usize, ctx: &DeviceCtxRef) {}
 }
 
 pub trait InputLayer: Layer {
@@ -85,6 +108,11 @@ pub trait LossLayer: Layer {
 
   fn store_probs(&mut self, batch_size: usize, ctx: &DeviceCtxRef);
   fn get_probs(&self, batch_size: usize) -> &Array2d<f32>;
+
+  fn preload_mask(&mut self, batch_idx: usize, bytemask: &[u8]);
+  fn expose_host_mask_buf(&mut self, batch_idx: usize) -> &mut [u8];
+  fn load_masks(&mut self, batch_size: usize, ctx: &DeviceCtxRef);
+  fn apply_masks(&mut self, batch_size: usize, ctx: &DeviceCtxRef);
 
   fn reset_loss(&mut self, batch_size: usize, ctx: &DeviceCtxRef);
   fn accumulate_loss(&mut self, batch_size: usize, ctx: &DeviceCtxRef);
@@ -121,6 +149,9 @@ pub enum ActivationFunction {
 pub enum LayerConfig {
   Data3d(Data3dLayerConfig),
   Conv2d(Conv2dLayerConfig),
+  ResidualConv2d(Conv2dLayerConfig),
+  //StackedResidualConv2d(usize, Conv2dLayerConfig),
+  AffineConv2d(AffineConv2dLayerConfig),
   SoftmaxKLLoss(CategoricalLossLayerConfig),
   MultiSoftmaxKLLoss(MultiCategoricalLossLayerConfig),
 }
@@ -237,7 +268,7 @@ impl InputLayer for Data3dLayer {
 
   fn preload_frame(&mut self, batch_idx: usize, frame: &SampleDatum, ctx: &DeviceCtxRef) {
     match frame {
-      &SampleDatum::RowMajorBytes(ref frame_bytes) => {
+      &SampleDatum::WHCBytes(ref frame_bytes) => {
         copy_memory(frame_bytes.as_slice(), self.expose_host_frame_buf(batch_idx));
       }
       //_ => unimplemented!(),
@@ -297,7 +328,20 @@ impl Conv2dLayerConfig {
   }
 }
 
-pub struct Conv2dLayer {
+struct Conv2dHvData {
+  r_in_act:     SharedDeviceBuf<f32>,
+  r_in_delta:   Option<SharedDeviceBuf<f32>>,
+  r_out_act:    SharedDeviceBuf<f32>,
+  r_out_delta:  SharedDeviceBuf<f32>,
+
+  direction_w:  DeviceArray2d<f32>,
+  direction_b:  DeviceArray2d<f32>,
+  r_grad_w:     DeviceArray2d<f32>,
+  r_grad_b:     DeviceArray2d<f32>,
+}
+
+pub struct Conv2dLayer<HvToggle=Disable<Conv2dHvData>>
+where HvToggle: Toggle<Conv2dHvData> {
   batch_limit:  usize,
   config:       Conv2dLayerConfig,
 
@@ -311,6 +355,8 @@ pub struct Conv2dLayer {
   grad_weights: DeviceArray2d<f32>,
   grad_bias:    DeviceArray2d<f32>,
 
+  hv_data:      HvToggle,
+
   work_space:   DeviceBuffer<u8>,
   conv_fwd:     CudnnConvFwdOp,
   conv_bwd_w:   CudnnConvBwdFilterOp,
@@ -318,7 +364,7 @@ pub struct Conv2dLayer {
   add_bias:     CudnnAddOp,
 }
 
-impl Conv2dLayer {
+impl Conv2dLayer<Disable<Conv2dHvData>> {
   pub fn new(batch_size: usize, config: Conv2dLayerConfig, prev_layer: Option<&Layer>, ctx: &DeviceCtxRef) -> Conv2dLayer {
     let Conv2dLayerConfig{
       in_dims, conv_size, conv_stride, conv_pad,
@@ -376,6 +422,8 @@ impl Conv2dLayer {
       grad_weights: DeviceArray2d::<f32>::zeros((conv_size * conv_size * in_channels, out_channels), ctx),
       grad_bias:    DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
 
+      hv_data:      Disable::new(),
+
       work_space:   DeviceBuffer::<u8>::zeros(work_size, ctx),
 
       conv_fwd:     conv_fwd,
@@ -386,7 +434,7 @@ impl Conv2dLayer {
   }
 }
 
-impl Layer for Conv2dLayer {
+impl Layer for Conv2dLayer<Disable<Conv2dHvData>> {
   fn config(&self) -> LayerConfig {
     LayerConfig::Conv2d(self.config)
   }
@@ -487,8 +535,7 @@ impl Layer for Conv2dLayer {
         work_space.as_ref_mut(ctx).as_mut_ptr(),
         &*ctx.get_dnn(),
     ).unwrap() };
-    // FIXME(20151227)
-    //self.add_bias.set_batch_size(batch_size).unwrap();
+    self.add_bias.set_batch_size(batch_size).unwrap();
     unsafe { self.add_bias.forward(
         bias.as_view(ctx).as_ptr(),
         out_act.as_mut_ptr(),
@@ -549,6 +596,7 @@ impl Layer for Conv2dLayer {
 
     self.conv_bwd_w.set_batch_size(batch_size);
     unsafe { self.conv_bwd_w.backward_filter(
+        scale,
         in_act.as_ptr(),
         out_delta.as_ptr(),
         grad_weights.as_view_mut(ctx).as_mut_ptr(),
@@ -556,6 +604,7 @@ impl Layer for Conv2dLayer {
         &*ctx.get_dnn(),
     ).unwrap() };
     unsafe { self.conv_bwd_w.backward_bias(
+        scale,
         out_delta.as_ptr(),
         grad_bias.as_view_mut(ctx).as_mut_ptr(),
         &*ctx.get_dnn(),
@@ -589,11 +638,11 @@ impl Layer for Conv2dLayer {
     }
   }
 
-  fn reset_gradients(&mut self, momentum: f32, ctx: &DeviceCtxRef) {
+  fn reset_gradients(&mut self, scale: f32, ctx: &DeviceCtxRef) {
     self.grad_weights.as_view_mut(ctx)
-      .matrix_scale(momentum);
+      .matrix_scale(scale);
     self.grad_bias.as_view_mut(ctx)
-      .row_vector_scale(momentum);
+      .row_vector_scale(scale);
   }
 
   fn dev_allreduce_load(&mut self, worker: &mut DeviceAllReduceWorker<f32>, offset: usize, ctx: &DeviceCtxRef) {
@@ -617,12 +666,597 @@ impl Layer for Conv2dLayer {
   }*/
 }
 
+// FIXME(20160202): residual conv layer.
+
+pub struct ResidualConv2dLayer {
+  inner:    Conv2dLayer,
+
+  res_unit: DeviceBuffer<f32>,
+  add_res:  CudnnAddOp,
+}
+
+impl ResidualConv2dLayer {
+  pub fn new(batch_size: usize, config: Conv2dLayerConfig, prev_layer: Option<&Layer>, ctx: &DeviceCtxRef) -> ResidualConv2dLayer {
+    assert_eq!(config.get_in_dims(), config.get_out_dims());
+    let out_dims = config.get_out_dims();
+    let (out_width, out_height, out_channels) = out_dims;
+
+    let inner = Conv2dLayer::new(batch_size, config, prev_layer, ctx);
+    let res_unit = DeviceBuffer::zeros(out_dims.len(), ctx);
+    let add_res = CudnnAddOp::new(
+        CudnnTensorDesc::<f32>::create_4d(out_width, out_height, out_channels, 1).unwrap(),
+        CudnnTensorDesc::<f32>::create_4d(out_width, out_height, out_channels, batch_size).unwrap(),
+    );
+
+    ResidualConv2dLayer{
+      inner:    inner,
+      res_unit: res_unit,
+      add_res:  add_res,
+    }
+  }
+}
+
+impl Layer for ResidualConv2dLayer {
+  fn config(&self) -> LayerConfig {
+    self.inner.config()
+  }
+
+  fn output_activation(&self) -> Option<SharedDeviceBuf<f32>> {
+    self.inner.output_activation()
+  }
+
+  fn output_delta(&self) -> Option<SharedDeviceBuf<f32>> {
+    self.inner.output_delta()
+  }
+
+  fn initialize_params(&mut self, shared_seed: [u64; 2], ctx: &DeviceCtxRef) {
+    self.inner.initialize_params(shared_seed, ctx);
+  }
+
+  fn initialize_gradients(&mut self, ctx: &DeviceCtxRef) {
+    self.inner.initialize_gradients(ctx);
+  }
+
+  fn load_params(&mut self, blob: &[u8], ctx: &DeviceCtxRef) -> usize {
+    self.inner.load_params(blob, ctx)
+  }
+
+  fn save_params(&mut self, blob: &mut Vec<u8>, ctx: &DeviceCtxRef) {
+    self.inner.save_params(blob, ctx);
+  }
+
+  fn forward(&mut self, batch_size: usize, phase: Phase, ctx: &DeviceCtxRef) {
+    assert!(batch_size <= self.inner.batch_limit);
+    let Conv2dLayerConfig{
+      in_dims, conv_size, conv_stride, conv_pad,
+      .. } = self.inner.config;
+    let (in_width, in_height, in_channels) = in_dims;
+    let out_dims = self.inner.config.get_out_dims();
+    let (out_width, out_height, out_channels) = out_dims;
+    let in_length = in_dims.len(); //in_width * in_height * in_channels;
+    let out_length = out_dims.len();
+
+    let &mut ResidualConv2dLayer{
+      ref mut inner,
+      ref mut res_unit,
+      ref mut add_res,
+      .. } = self;
+    let &mut Conv2dLayer{
+      ref mut in_act, ref mut out_act,
+      ref mut work_space,
+      ref mut weights, ref mut bias,
+      ref mut conv_fwd,
+      ref mut add_bias,
+      ref config,
+      .. } = inner;
+
+    let in_act = in_act.borrow_mut().as_ref(ctx);
+    let mut out_act = out_act.borrow_mut().as_ref_mut(ctx);
+
+    conv_fwd.set_batch_size(batch_size);
+    unsafe { conv_fwd.forward(
+        in_act.as_ptr(),
+        weights.as_view(ctx).as_ptr(),
+        out_act.as_mut_ptr(),
+        work_space.as_ref_mut(ctx).as_mut_ptr(),
+        &*ctx.get_dnn(),
+    ).unwrap() };
+
+    add_bias.set_batch_size(batch_size).unwrap();
+    unsafe { add_bias.forward(
+        bias.as_view(ctx).as_ptr(),
+        out_act.as_mut_ptr(),
+        &*ctx.get_dnn(),
+    ).unwrap() };
+
+    add_res.set_batch_size(batch_size).unwrap();
+    unsafe { add_res.forward(
+        in_act.as_ptr(),
+        out_act.as_mut_ptr(),
+        &*ctx.get_dnn(),
+    ).unwrap() };
+
+    match config.act_func {
+      ActivationFunction::Identity => {}
+      ActivationFunction::Rect => {
+        unsafe { rembrandt_kernel_batch_map_rect_inplace(
+            out_act.as_mut_ptr(),
+            out_length as i32,
+            batch_size as i32,
+            ctx.stream.ptr,
+        ) };
+      }
+      _ => unimplemented!(),
+    }
+  }
+
+  fn backward(&mut self, batch_size: usize, scale: f32, ctx: &DeviceCtxRef) {
+    assert!(batch_size <= self.inner.batch_limit);
+    let Conv2dLayerConfig{
+      in_dims, conv_size, conv_stride, conv_pad,
+      .. } = self.inner.config;
+    let (in_width, in_height, in_channels) = in_dims;
+    let out_dims = self.inner.config.get_out_dims();
+    let (out_width, out_height, out_channels) = out_dims;
+    let in_length = in_width * in_height * in_channels;
+    let out_length = out_dims.len();
+
+    let &mut ResidualConv2dLayer{
+      ref mut inner,
+      ref mut res_unit,
+      ref mut add_res,
+      .. } = self;
+    let &mut Conv2dLayer{
+      ref mut in_act, ref mut in_delta,
+      ref mut out_act, ref mut out_delta,
+      ref mut weights, ref mut bias,
+      ref mut grad_weights, ref mut grad_bias,
+      ref mut work_space,
+      ref mut conv_bwd_w,
+      ref mut conv_bwd_d,
+      ref mut add_bias,
+      ref config,
+      .. } = inner;
+
+    let mut in_act = in_act.borrow_mut().as_ref(ctx);
+    let mut out_act = out_act.borrow_mut().as_ref(ctx);
+    let mut out_delta = out_delta.borrow_mut().as_ref_mut(ctx);
+    let mut work_space = work_space.as_ref_mut(ctx);
+
+    match config.act_func {
+      ActivationFunction::Identity => {}
+      ActivationFunction::Rect => {
+        unsafe { rembrandt_kernel_batch_map_rect_backprop_inplace(
+            out_act.as_ptr(),
+            out_length as i32,
+            batch_size as i32,
+            out_delta.as_mut_ptr(),
+            ctx.stream.ptr,
+        ) };
+      }
+      _ => unimplemented!(),
+    }
+
+    conv_bwd_w.set_batch_size(batch_size);
+    unsafe { conv_bwd_w.backward_filter(
+        scale,
+        in_act.as_ptr(),
+        out_delta.as_ptr(),
+        grad_weights.as_view_mut(ctx).as_mut_ptr(),
+        work_space.as_mut_ptr(),
+        &*ctx.get_dnn(),
+    ).unwrap() };
+
+    unsafe { conv_bwd_w.backward_bias(
+        scale,
+        out_delta.as_ptr(),
+        grad_bias.as_view_mut(ctx).as_mut_ptr(),
+        &*ctx.get_dnn(),
+    ).unwrap() };
+
+    if let &mut Some(ref mut in_delta) = in_delta {
+      let mut in_delta = in_delta.borrow_mut().as_ref_mut(ctx);
+
+      conv_bwd_d.set_batch_size(batch_size);
+      unsafe { conv_bwd_d.backward_data(
+          weights.as_view(ctx).as_ptr(),
+          out_delta.as_ptr(),
+          in_delta.as_mut_ptr(),
+          work_space.as_mut_ptr(),
+          &*ctx.get_dnn(),
+      ).unwrap() };
+
+      add_res.set_batch_size(batch_size);
+      unsafe { add_res.forward(
+          res_unit.as_ref(ctx).as_ptr(),
+          in_delta.as_mut_ptr(),
+          &*ctx.get_dnn(),
+      ).unwrap() };
+    }
+  }
+
+  fn descend(&mut self, scale: f32, l2_reg_coef: f32, ctx: &DeviceCtxRef) {
+    self.inner.descend(scale, l2_reg_coef, ctx);
+  }
+
+  fn reset_gradients(&mut self, scale: f32, ctx: &DeviceCtxRef) {
+    self.inner.reset_gradients(scale, ctx);
+  }
+
+  fn dev_allreduce_load(&mut self, worker: &mut DeviceAllReduceWorker<f32>, offset: usize, ctx: &DeviceCtxRef) {
+    self.inner.dev_allreduce_load(worker, offset, ctx);
+  }
+
+  fn dev_allreduce_store(&mut self, worker: &mut DeviceAllReduceWorker<f32>, offset: usize, ctx: &DeviceCtxRef) {
+    self.inner.dev_allreduce_store(worker, offset, ctx);
+  }
+}
+
+// FIXME(20160202): stacked residual conv layer.
+
+pub struct StackedResidualConv2dLayer;
+
+#[derive(Clone, Copy)]
+pub struct AffineConv2dLayerConfig {
+  pub in_dims:      (usize, usize, usize),
+  pub out_channels: usize,
+  pub act_func:     ActivationFunction,
+  pub init_weights: ParamsInitialization,
+}
+
+impl AffineConv2dLayerConfig {
+  fn get_in_dims(&self) -> (usize, usize, usize) {
+    self.in_dims
+  }
+
+  fn get_out_dims(&self) -> (usize, usize, usize) {
+    // XXX(20150926): Note that pool layer uses ceil((L+2*pad-size)/stride)
+    // whereas conv layer uses floor((L+2*pad-size)/stride).
+    let (in_width, in_height, _) = self.in_dims;
+    (in_width, in_height, self.out_channels)
+  }
+
+  fn params_len(&self) -> usize {
+    let (in_width, in_height, in_channels) = self.in_dims;
+    let weights_len = in_channels * self.out_channels;
+    let bias_len = in_width * in_height * self.out_channels;
+    weights_len + bias_len
+  }
+}
+
+pub struct AffineConv2dLayer {
+  batch_limit:  usize,
+  config:       AffineConv2dLayerConfig,
+
+  in_act:       SharedDeviceBuf<f32>,
+  in_delta:     Option<SharedDeviceBuf<f32>>,
+  out_act:      SharedDeviceBuf<f32>,
+  out_delta:    SharedDeviceBuf<f32>,
+
+  weights:      DeviceArray2d<f32>,
+  bias:         DeviceArray2d<f32>,
+  grad_weights: DeviceArray2d<f32>,
+  grad_bias:    DeviceArray2d<f32>,
+  unit_bias:    DeviceArray2d<f32>,
+
+  work_space:   DeviceBuffer<u8>,
+  conv_fwd:     CudnnConvFwdOp,
+  conv_bwd_w:   CudnnConvBwdFilterOp,
+  conv_bwd_d:   CudnnConvBwdDataOp,
+  add_bias:     CudnnAddOp,
+}
+
+impl AffineConv2dLayer {
+  pub fn new(batch_size: usize, config: AffineConv2dLayerConfig, prev_layer: Option<&Layer>, ctx: &DeviceCtxRef) -> AffineConv2dLayer {
+    let AffineConv2dLayerConfig{in_dims, .. } = config;
+    let (in_width, in_height, in_channels) = in_dims;
+    let out_dims = config.get_out_dims();
+    let (out_width, out_height, out_channels) = out_dims;
+    let out_length = out_dims.len();
+
+    let conv_size = 1;
+    let conv_stride = 1;
+    let conv_pad = 0;
+
+    let mut work_size = 0;
+    let conv_fwd = CudnnConvFwdOp::create_fastest(
+        CudnnTensorDesc::<f32>::create_4d(in_width, in_height, in_channels, batch_size).unwrap(),
+        CudnnFilterDesc::<f32>::create_4d(conv_size, conv_size, in_channels, out_channels).unwrap(),
+        CudnnConvDesc::create_2d_symmetric(conv_stride, conv_pad).unwrap(),
+        CudnnTensorDesc::<f32>::create_4d(out_width, out_height, out_channels, batch_size).unwrap(),
+        &*ctx.get_dnn(),
+    ).unwrap();
+    work_size = max(work_size, conv_fwd.work_size);
+    // XXX(20160201): The usual conv bias is unused.
+    //let conv_bwd_w = CudnnConvBwdFilterOp::create_deterministic(
+    let conv_bwd_w = CudnnConvBwdFilterOp::create_fastest(
+        CudnnTensorDesc::<f32>::create_4d(in_width, in_height, in_channels, batch_size).unwrap(),
+        CudnnTensorDesc::<f32>::create_4d(out_width, out_height, out_channels, batch_size).unwrap(),
+        CudnnConvDesc::create_2d_symmetric(conv_stride, conv_pad).unwrap(),
+        CudnnFilterDesc::<f32>::create_4d(conv_size, conv_size, in_channels, out_channels).unwrap(),
+        CudnnTensorDesc::<f32>::create_4d(1, 1, out_channels, 1).unwrap(),
+        &*ctx.get_dnn(),
+    ).unwrap();
+    work_size = max(work_size, conv_bwd_w.work_size);
+    //let conv_bwd_d = CudnnConvBwdDataOp::create_deterministic(
+    let conv_bwd_d = CudnnConvBwdDataOp::create_fastest(
+        CudnnFilterDesc::<f32>::create_4d(conv_size, conv_size, in_channels, out_channels).unwrap(),
+        CudnnTensorDesc::<f32>::create_4d(out_width, out_height, out_channels, batch_size).unwrap(),
+        CudnnConvDesc::create_2d_symmetric(conv_stride, conv_pad).unwrap(),
+        CudnnTensorDesc::<f32>::create_4d(in_width, in_height, in_channels, batch_size).unwrap(),
+        &*ctx.get_dnn(),
+    ).unwrap();
+    work_size = max(work_size, conv_bwd_d.work_size);
+
+    let add_bias = CudnnAddOp::new(
+        CudnnTensorDesc::<f32>::create_4d(out_width, out_height, out_channels, 1).unwrap(),
+        CudnnTensorDesc::<f32>::create_4d(out_width, out_height, out_channels, batch_size).unwrap(),
+    );
+
+    let mut unit_bias = DeviceArray2d::<f32>::zeros((batch_size, 1), ctx);
+    unit_bias.as_view_mut(ctx).set_constant(1.0);
+
+    AffineConv2dLayer{
+      batch_limit:  batch_size,
+      config:       config,
+
+      in_act:       prev_layer.unwrap().output_activation().unwrap(),
+      in_delta:     prev_layer.unwrap().output_delta(),
+      out_act:      Rc::new(RefCell::new(DeviceBuffer::<f32>::zeros(out_length * batch_size, ctx))),
+      out_delta:    Rc::new(RefCell::new(DeviceBuffer::<f32>::zeros(out_length * batch_size, ctx))),
+
+      weights:      DeviceArray2d::<f32>::zeros((in_channels, out_channels), ctx),
+      bias:         DeviceArray2d::<f32>::zeros((out_length, 1), ctx),
+      grad_weights: DeviceArray2d::<f32>::zeros((in_channels, out_channels), ctx),
+      grad_bias:    DeviceArray2d::<f32>::zeros((out_length, 1), ctx),
+      unit_bias:    unit_bias,
+
+      work_space:   DeviceBuffer::<u8>::zeros(work_size, ctx),
+      conv_fwd:     conv_fwd,
+      conv_bwd_w:   conv_bwd_w,
+      conv_bwd_d:   conv_bwd_d,
+      add_bias:     add_bias,
+    }
+  }
+}
+
+impl Layer for AffineConv2dLayer {
+  fn config(&self) -> LayerConfig {
+    LayerConfig::AffineConv2d(self.config)
+  }
+
+  fn output_activation(&self) -> Option<SharedDeviceBuf<f32>> {
+    Some(self.out_act.clone())
+  }
+
+  fn output_delta(&self) -> Option<SharedDeviceBuf<f32>> {
+    Some(self.out_delta.clone())
+  }
+
+  fn initialize_params(&mut self, seed: [u64; 2], ctx: &DeviceCtxRef) {
+    let AffineConv2dLayerConfig{in_dims, out_channels, ..} = self.config;
+    let (_, _, in_channels) = in_dims;
+    let mut rng = Xorshiftplus128Rng::from_seed(seed);
+    let mut init_weights = Array2d::zeros((in_channels, out_channels));
+    match self.config.init_weights {
+      ParamsInitialization::None => {
+        panic!("params initialization explicitly disabled!");
+      }
+      ParamsInitialization::Uniform{half_range} => {
+        let dist = Range::new(-half_range as f64, half_range as f64);
+        for w in init_weights.as_view_mut().as_mut_slice().iter_mut() {
+          *w = dist.ind_sample(&mut rng) as f32;
+        }
+      }
+      ParamsInitialization::Normal{mean, std} => {
+        let dist = Normal::new(mean as f64, std as f64);
+        for w in init_weights.as_view_mut().as_mut_slice().iter_mut() {
+          *w = dist.ind_sample(&mut rng) as f32;
+        }
+      }
+      _ => unimplemented!(),
+    }
+    let init_bias = Array2d::zeros((1, out_channels));
+    self.weights.as_view_mut(ctx).sync_load(&init_weights.as_view());
+    self.bias.as_view_mut(ctx).sync_load(&init_bias.as_view());
+  }
+
+  fn initialize_gradients(&mut self, ctx: &DeviceCtxRef) {
+    self.grad_weights.as_view_mut(ctx).set_constant(0.0);
+    self.grad_bias.as_view_mut(ctx).set_constant(0.0);
+  }
+
+  fn load_params(&mut self, blob: &[u8], ctx: &DeviceCtxRef) -> usize {
+    let AffineConv2dLayerConfig{in_dims, out_channels, ..} = self.config;
+    let (_, _, in_channels) = in_dims;
+    let mut reader = Cursor::new(blob);
+    let load_weights = Array2d::deserialize(&mut reader)
+      .ok().expect("Conv2dLayer failed to deserialize weights!");
+    let load_bias = Array2d::deserialize(&mut reader)
+      .ok().expect("Conv2dLayer failed to deserialize bias!");
+    assert_eq!((in_channels, out_channels), load_weights.as_view().bound());
+    assert_eq!((1, out_channels), load_bias.as_view().bound());
+    self.weights.as_view_mut(ctx).sync_load(&load_weights.as_view());
+    self.bias.as_view_mut(ctx).sync_load(&load_bias.as_view());
+    let progress = reader.position() as usize;
+    println!("DEBUG: conv2d layer: load params: read {}", progress);
+    progress
+  }
+
+  fn save_params(&mut self, blob: &mut Vec<u8>, ctx: &DeviceCtxRef) {
+    let weights = self.weights.as_view(ctx);
+    let bias = self.bias.as_view(ctx);
+    let mut save_weights = Array2d::zeros(weights.bound());
+    let mut save_bias = Array2d::zeros(bias.bound());
+    weights.sync_store(&mut save_weights.as_view_mut());
+    bias.sync_store(&mut save_bias.as_view_mut());
+    save_weights.serialize(blob).unwrap();
+    save_bias.serialize(blob).unwrap();
+  }
+
+  fn forward(&mut self, batch_size: usize, phase: Phase, ctx: &DeviceCtxRef) {
+    assert!(batch_size <= self.batch_limit);
+    let AffineConv2dLayerConfig{in_dims, .. } = self.config;
+    let (in_width, in_height, in_channels) = in_dims;
+    let out_dims = self.config.get_out_dims();
+    let (out_width, out_height, out_channels) = out_dims;
+    let in_length = in_dims.len(); //in_width * in_height * in_channels;
+    let out_length = out_dims.len();
+
+    let &mut AffineConv2dLayer{
+      ref mut in_act, ref mut out_act,
+      ref mut work_space,
+      ref mut weights, ref mut bias,
+      .. } = self;
+
+    let mut out_act = out_act.borrow_mut().as_ref_mut(ctx);
+
+    self.conv_fwd.set_batch_size(batch_size);
+    unsafe { self.conv_fwd.forward(
+        in_act.borrow_mut().as_ref(ctx).as_ptr(),
+        weights.as_view(ctx).as_ptr(),
+        out_act.as_mut_ptr(),
+        work_space.as_ref_mut(ctx).as_mut_ptr(),
+        &*ctx.get_dnn(),
+    ).unwrap() };
+    self.add_bias.set_batch_size(batch_size).unwrap();
+    unsafe { self.add_bias.forward(
+        bias.as_view(ctx).as_ptr(),
+        out_act.as_mut_ptr(),
+        &*ctx.get_dnn(),
+    ).unwrap() };
+
+    match self.config.act_func {
+      ActivationFunction::Identity => {}
+      ActivationFunction::Rect => {
+        unsafe { rembrandt_kernel_batch_map_rect_inplace(
+            out_act.as_mut_ptr(),
+            out_length as i32,
+            batch_size as i32,
+            ctx.stream.ptr,
+        ) };
+      }
+      _ => unimplemented!(),
+    }
+  }
+
+  fn backward(&mut self, batch_size: usize, scale: f32, ctx: &DeviceCtxRef) {
+    assert!(batch_size <= self.batch_limit);
+    let AffineConv2dLayerConfig{in_dims, .. } = self.config;
+    let (in_width, in_height, in_channels) = in_dims;
+    let out_dims = self.config.get_out_dims();
+    let (out_width, out_height, out_channels) = out_dims;
+    let in_length = in_width * in_height * in_channels;
+    let out_length = out_dims.len();
+
+    let &mut AffineConv2dLayer{
+      ref mut in_act, ref mut in_delta,
+      ref mut out_act, ref mut out_delta,
+      ref mut weights, ref mut bias,
+      ref mut grad_weights, ref mut grad_bias,
+      ref mut unit_bias,
+      ref mut work_space,
+      .. } = self;
+
+    let mut work_space = work_space.as_ref_mut(ctx);
+    let mut in_act = in_act.borrow_mut().as_ref(ctx);
+    let mut out_act = out_act.borrow_mut().as_ref(ctx);
+    let mut out_delta = out_delta.borrow_mut();
+
+    match self.config.act_func {
+      ActivationFunction::Identity => {}
+      ActivationFunction::Rect => {
+        unsafe { rembrandt_kernel_batch_map_rect_backprop_inplace(
+            out_act.as_ptr(),
+            out_length as i32,
+            batch_size as i32,
+            out_delta.as_ref_mut(ctx).as_mut_ptr(),
+            ctx.stream.ptr,
+        ) };
+      }
+      _ => unimplemented!(),
+    }
+
+    self.conv_bwd_w.set_batch_size(batch_size);
+    unsafe { self.conv_bwd_w.backward_filter(
+        scale,
+        in_act.as_ptr(),
+        out_delta.as_ref(ctx).as_ptr(),
+        grad_weights.as_view_mut(ctx).as_mut_ptr(),
+        work_space.as_mut_ptr(),
+        &*ctx.get_dnn(),
+    ).unwrap() };
+    // XXX(20160201): The bias gradient is just the output delta dotted along
+    // the batch size dim.
+    grad_bias.as_view_mut(ctx).matrix_prod(
+        scale,
+        &out_delta.as_ref(ctx).into_2d_view((out_length, batch_size)), Transpose::N,
+        &unit_bias.as_view(ctx), Transpose::N,
+        1.0,
+    );
+    if let &mut Some(ref mut in_delta) = in_delta {
+      self.conv_bwd_d.set_batch_size(batch_size);
+      let mut in_delta = in_delta.borrow_mut().as_ref_mut(ctx);
+      unsafe { self.conv_bwd_d.backward_data(
+          weights.as_view(ctx).as_ptr(),
+          out_delta.as_ref(ctx).as_ptr(),
+          in_delta.as_mut_ptr(),
+          work_space.as_mut_ptr(),
+          &*ctx.get_dnn(),
+      ).unwrap() };
+    }
+  }
+
+  fn descend(&mut self, scale: f32, l2_reg_coef: f32, ctx: &DeviceCtxRef) {
+    assert!(l2_reg_coef >= 0.0);
+    if l2_reg_coef > 0.0 {
+      self.grad_weights.as_view_mut(ctx)
+        .matrix_sum(l2_reg_coef, &self.weights.as_view(ctx));
+      self.grad_bias.as_view_mut(ctx)
+        .row_vector_sum(l2_reg_coef, &self.bias.as_view(ctx));
+    }
+    {
+      self.weights.as_view_mut(ctx)
+        .matrix_sum(-scale, &self.grad_weights.as_view(ctx));
+      self.bias.as_view_mut(ctx)
+        .row_vector_sum(-scale, &self.grad_bias.as_view(ctx));
+    }
+  }
+
+  fn reset_gradients(&mut self, scale: f32, ctx: &DeviceCtxRef) {
+    self.grad_weights.as_view_mut(ctx)
+      .matrix_scale(scale);
+    self.grad_bias.as_view_mut(ctx)
+      .row_vector_scale(scale);
+  }
+
+  fn dev_allreduce_load(&mut self, worker: &mut DeviceAllReduceWorker<f32>, offset: usize, ctx: &DeviceCtxRef) {
+    let bias_offset = worker.load(offset, &mut self.grad_weights.as_view(ctx).data);
+    let end_offset = worker.load(bias_offset, &mut self.grad_bias.as_view(ctx).data);
+    assert_eq!(end_offset - offset, self.config.params_len());
+  }
+
+  fn dev_allreduce_store(&mut self, worker: &mut DeviceAllReduceWorker<f32>, offset: usize, ctx: &DeviceCtxRef) {
+    let bias_offset = worker.store(offset, &mut self.grad_weights.as_view_mut(ctx).data);
+    let end_offset = worker.store(bias_offset, &mut self.grad_bias.as_view_mut(ctx).data);
+    assert_eq!(end_offset - offset, self.config.params_len());
+  }
+}
+
 #[derive(Clone, Copy)]
 pub struct CategoricalLossLayerConfig {
   pub num_categories:   usize,
 }
 
-pub struct SoftmaxKLLossLayer {
+struct SoftmaxKLLossHvData {
+  r_in_act:     SharedDeviceBuf<f32>,
+  r_in_delta:   SharedDeviceBuf<f32>,
+  r_out_probs:  DeviceArray2d<f32>,
+  max_logit:    DeviceArray2d<f32>,
+}
+
+pub struct SoftmaxKLLossLayer<HvToggle=Disable<SoftmaxKLLossHvData>>
+where HvToggle: Toggle<SoftmaxKLLossHvData> {
   batch_limit:  usize,
   config:       CategoricalLossLayerConfig,
 
@@ -630,8 +1264,15 @@ pub struct SoftmaxKLLossLayer {
   in_delta:     SharedDeviceBuf<f32>,
 
   max_prob:     DeviceArray2d<f32>,
+  sum_prob:     DeviceArray2d<f32>,
   out_probs:    DeviceArray2d<f32>,
   out_probs_h:  Array2d<f32>,
+
+  hv_data:      HvToggle,
+
+  bytemasks_h:  Vec<u8>,
+  bytemasks:    DeviceBuffer<u8>,
+  masks:        DeviceBuffer<f32>,
 
   out_loss1:    DeviceArray2d<f32>,
   out_loss:     DeviceBuffer<f32>,
@@ -645,7 +1286,7 @@ pub struct SoftmaxKLLossLayer {
   softmax:      CudnnSoftmaxOp,
 }
 
-impl SoftmaxKLLossLayer {
+impl SoftmaxKLLossLayer<Disable<SoftmaxKLLossHvData>> {
   pub fn new(batch_size: usize, config: CategoricalLossLayerConfig, prev_layer: Option<&Layer>, ctx: &DeviceCtxRef) -> SoftmaxKLLossLayer {
     let softmax = CudnnSoftmaxOp::new(
         CudnnTensorDesc::<f32>::create_4d(1, 1, config.num_categories, batch_size).unwrap(),
@@ -659,8 +1300,15 @@ impl SoftmaxKLLossLayer {
       in_delta:     prev_layer.unwrap().output_delta().unwrap(),
 
       max_prob:     DeviceArray2d::<f32>::zeros((1, batch_size), ctx),
+      sum_prob:     DeviceArray2d::<f32>::zeros((1, batch_size), ctx),
       out_probs:    DeviceArray2d::<f32>::zeros((config.num_categories, batch_size), ctx),
       out_probs_h:  Array2d::zeros((config.num_categories, batch_size)),
+
+      hv_data:      Disable::new(),
+
+      bytemasks_h:  repeat(0).take(config.num_categories * batch_size).collect(),
+      bytemasks:    DeviceBuffer::<u8>::zeros(config.num_categories * batch_size, ctx),
+      masks:        DeviceBuffer::<f32>::zeros(config.num_categories * batch_size, ctx),
 
       out_loss1:    DeviceArray2d::<f32>::zeros((1, batch_size), ctx),
       out_loss:     DeviceBuffer::<f32>::zeros(1, ctx),
@@ -676,7 +1324,7 @@ impl SoftmaxKLLossLayer {
   }
 }
 
-impl Layer for SoftmaxKLLossLayer {
+impl Layer for SoftmaxKLLossLayer<Disable<SoftmaxKLLossHvData>> {
   fn config(&self) -> LayerConfig {
     LayerConfig::SoftmaxKLLoss(self.config)
   }
@@ -716,7 +1364,7 @@ impl Layer for SoftmaxKLLossLayer {
   }
 }
 
-impl LossLayer for SoftmaxKLLossLayer {
+impl LossLayer for SoftmaxKLLossLayer<Disable<SoftmaxKLLossHvData>> {
   fn downcast(&self) -> &Layer {
     self
   }
@@ -777,15 +1425,83 @@ impl LossLayer for SoftmaxKLLossLayer {
     &self.out_probs_h
   }
 
+  fn preload_mask(&mut self, batch_idx: usize, bytemask: &[u8]) {
+    assert!(batch_idx < self.batch_limit);
+    let size = self.config.num_categories;
+    assert_eq!(size, bytemask.len());
+    copy_memory(
+        bytemask,
+        &mut self.bytemasks_h[batch_idx * size .. (batch_idx + 1) * size],
+    );
+  }
+
+  fn expose_host_mask_buf(&mut self, batch_idx: usize) -> &mut [u8] {
+    assert!(batch_idx < self.batch_limit);
+    let size = self.config.num_categories;
+    &mut self.bytemasks_h[batch_idx * size .. (batch_idx + 1) * size]
+  }
+
+  fn load_masks(&mut self, batch_size: usize, ctx: &DeviceCtxRef) {
+    assert!(batch_size <= self.batch_limit);
+    {
+      let bytemasks_h = &self.bytemasks_h;
+      let mut bytemasks = self.bytemasks.as_ref_mut(ctx);
+      bytemasks.sync_load(bytemasks_h);
+    }
+    {
+      let bytemasks = self.bytemasks.as_ref(ctx);
+      let mut masks = self.masks.as_ref_mut(ctx);
+      bytemasks.cast_bytes(&mut masks);
+    }
+  }
+
+  fn apply_masks(&mut self, batch_size: usize, ctx: &DeviceCtxRef) {
+    assert!(batch_size <= self.batch_limit);
+    // XXX(20160211): First zero out the masked probs, then renormalize.
+    let len = self.config.num_categories;
+    {
+      let masks = self.masks.as_ref(ctx);
+      let mut out_probs = self.out_probs.as_view_mut(ctx);
+      unsafe { rembrandt_kernel_map_multiply_float(
+          masks.as_ptr(),
+          (len * batch_size) as i32,
+          out_probs.as_mut_ptr(),
+          ctx.stream.ptr,
+      ) };
+    }
+    {
+      let out_probs = self.out_probs.as_view(ctx);
+      let mut sum_prob = self.sum_prob.as_view_mut(ctx);
+      assert!(len <= 1024);
+      unsafe { rembrandt_kernel_batch_blockreduce_sum(
+          out_probs.as_ptr(),
+          len as i32,
+          batch_size as i32,
+          sum_prob.as_mut_ptr(),
+          0.0,
+          ctx.stream.ptr,
+      ) };
+    }
+    {
+      let sum_prob = self.sum_prob.as_view(ctx);
+      let mut out_probs = self.out_probs.as_view_mut(ctx);
+      assert!(len <= 1024);
+      unsafe { rembrandt_kernel_batch_blockmap_normalize(
+          out_probs.as_mut_ptr(),
+          len as i32,
+          batch_size as i32,
+          sum_prob.as_ptr(),
+          ctx.stream.ptr,
+      ) };
+    }
+  }
+
   fn reset_loss(&mut self, batch_size: usize, ctx: &DeviceCtxRef) {
-    // TODO(20151230)
-    //self.out_loss
-    //unimplemented!();
+    self.out_loss.as_ref_mut(ctx).set_constant(0.0);
   }
 
   fn accumulate_loss(&mut self, batch_size: usize, ctx: &DeviceCtxRef) {
     assert!(batch_size <= self.batch_limit);
-    assert!(batch_size <= 1024);
     assert!(self.config.num_categories <= 1024);
     unsafe { rembrandt_kernel_batch_map_softmax_cross_entropy_loss(
         self.out_probs.as_view(ctx).as_ptr(),
@@ -796,6 +1512,7 @@ impl LossLayer for SoftmaxKLLossLayer {
         1.0,
         ctx.stream.ptr,
     ) };
+    assert!(batch_size <= 1024);
     unsafe { rembrandt_kernel_batch_blockreduce_sum(
         self.out_loss1.as_view(ctx).as_ptr(),
         batch_size as i32,
@@ -839,6 +1556,10 @@ pub struct MultiSoftmaxKLLossLayer {
   true_cats:    DeviceArray2d<i32>,
   true_cats_h:  Array2d<i32>,
 
+  out_loss1:    DeviceArray2d<f32>,
+  out_loss:     DeviceBuffer<f32>,
+  out_loss_h:   Vec<f32>,
+
   train_softmax:    CudnnSoftmaxOp,
   infer_softmax:    CudnnSoftmaxOp,
 }
@@ -868,14 +1589,14 @@ impl MultiSoftmaxKLLossLayer {
       out_probs:    DeviceArray2d::<f32>::zeros((config.num_categories, max_lookahead * batch_size), ctx),
       out_probs_h:  Array2d::zeros((config.num_categories, max_lookahead * batch_size)),
 
-      /*out_loss1:    DeviceArray2d::<f32>::zeros((1, batch_size), ctx),
-      out_loss:     DeviceBuffer::<f32>::zeros(1, ctx),
-      out_loss_h:   vec![0.0],*/
-
       pred_cats:    DeviceArray2d::<i32>::zeros((1, max_lookahead * batch_size), ctx),
       pred_cats_h:  Array2d::<i32>::zeros((1, max_lookahead * batch_size)),
       true_cats:    DeviceArray2d::<i32>::zeros((1, max_lookahead * batch_size), ctx),
       true_cats_h:  Array2d::<i32>::zeros((1, max_lookahead * batch_size)),
+
+      out_loss1:    DeviceArray2d::<f32>::zeros((1, max_lookahead * batch_size), ctx),
+      out_loss:     DeviceBuffer::<f32>::zeros(1, ctx),
+      out_loss_h:   vec![0.0],
 
       train_softmax:    train_softmax,
       infer_softmax:    infer_softmax,
@@ -1075,19 +1796,59 @@ impl LossLayer for MultiSoftmaxKLLossLayer {
     &self.out_probs_h
   }
 
-  fn reset_loss(&mut self, batch_size: usize, ctx: &DeviceCtxRef) {
+  fn preload_mask(&mut self, batch_idx: usize, bytemask: &[u8]) {
+    // FIXME(20160211)
     unimplemented!();
+  }
+
+  fn expose_host_mask_buf(&mut self, batch_idx: usize) -> &mut [u8] {
+    // FIXME(20160211)
+    unimplemented!();
+  }
+
+  fn load_masks(&mut self, batch_size: usize, ctx: &DeviceCtxRef) {
+    // FIXME(20160211)
+    unimplemented!();
+  }
+
+  fn apply_masks(&mut self, batch_size: usize, ctx: &DeviceCtxRef) {
+    // FIXME(20160211)
+    unimplemented!();
+  }
+
+  fn reset_loss(&mut self, batch_size: usize, ctx: &DeviceCtxRef) {
+    self.out_loss.as_ref_mut(ctx).set_constant(0.0);
   }
 
   fn accumulate_loss(&mut self, batch_size: usize, ctx: &DeviceCtxRef) {
-    unimplemented!();
+    assert!(batch_size <= self.batch_limit);
+    assert!(batch_size <= 1024);
+    assert!(self.config.num_categories <= 1024);
+    unsafe { rembrandt_kernel_batch_map_softmax_cross_entropy_loss(
+        self.out_probs.as_view(ctx).as_ptr(),
+        self.config.num_categories as i32,
+        batch_size as i32,
+        self.true_cats.as_view(ctx).as_ptr(),
+        self.out_loss1.as_view_mut(ctx).as_mut_ptr(),
+        1.0,
+        ctx.stream.ptr,
+    ) };
+    unsafe { rembrandt_kernel_batch_blockreduce_sum(
+        self.out_loss1.as_view(ctx).as_ptr(),
+        batch_size as i32,
+        1,
+        self.out_loss.as_ref_mut(ctx).as_mut_ptr(),
+        1.0,
+        ctx.stream.ptr,
+    ) };
   }
 
   fn store_loss(&mut self, ctx: &DeviceCtxRef) {
-    unimplemented!();
+    self.out_loss.as_ref(ctx)
+      .sync_store(&mut self.out_loss_h);
   }
 
   fn get_loss(&self) -> f32 {
-    unimplemented!();
+    self.out_loss_h[0]
   }
 }

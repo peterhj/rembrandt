@@ -29,25 +29,27 @@ byteorder = "*"
 env_logger = "*"
 libc = "*"
 log = "*"
+protobuf = { path = "../rust-protobuf" }
 rand = "*"
 time = "*"
+#toggle = "*"
+toggle = { path = "../../libtoggle" }
+toml = { path = "../third_party/toml-rs" }
 
+array_cuda = { path = "../libarray_cuda" }
+array_dist = { path = "../libarray_dist" }
+array_new = { path = "../libarray_new" }
+arraydb = { path = "../arraydb" }
+cuda = { path = "../libcuda" }
+cuda_dnn = { path = "../libcuda_dnn" } #, features = ["cudnn_v3"] }
+episodb = { path = "../../episodb" }
+lmdb = { path = "../liblmdb" }
+rembrandt_kernels = { path = "../rembrandt_kernels" }
+#rembrandt_reportserv = { path = "../rembrandt_reportserv" }
 rng = { path = "../../librng" }
 
 [dependencies.array]
 path = "../libarray"
-
-[dependencies.array_cuda]
-path = "../libarray_cuda"
-
-[dependencies.array_dist]
-path = "../libarray_dist"
-
-[dependencies.array_new]
-path = "../libarray_new"
-
-[dependencies.arraydb]
-path = "../arraydb"
 
 [dependencies.async]
 path = "../libasync"
@@ -55,32 +57,8 @@ path = "../libasync"
 [dependencies.async_cuda]
 path = "../libasync_cuda"
 
-[dependencies.cuda]
-path = "../libcuda"
-
-[dependencies.cuda_dnn]
-path = "../libcuda_dnn"
-
 [dependencies.cuda_sparse]
 path = "../libcuda_sparse"
 
-[dependencies.episodb]
-path = "../../episodb"
-
 [dependencies.linalg]
 path = "../liblinalg"
-
-[dependencies.lmdb]
-path = "../liblmdb"
-
-[dependencies.protobuf]
-path = "../rust-protobuf"
-
-[dependencies.rembrandt_kernels]
-path = "../rembrandt_kernels"
-
-[dependencies.rembrandt_reportserv]
-path = "librembrandt_reportserv"
-
-[dependencies.toml]
-path = "../third_party/toml-rs"

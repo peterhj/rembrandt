@@ -12,7 +12,7 @@ use async_cuda::array_num::{DeviceNumExt};
 use async_cuda::array_rand::{DeviceRandExt};
 use async_cuda::array_types::{DeviceArray2d, DeviceBuf};
 use async_cuda::context::{DeviceContext};
-use cuda_dnn::v3::{
+use cuda_dnn::v4::{
   CudnnConvFwdOp, CudnnConvBwdFilterOp, CudnnConvBwdDataOp,
   CudnnAddOp, CudnnActKind, CudnnActOp, CudnnSoftmaxOp,
   CudnnTensorDesc, CudnnFilterDesc, CudnnConvDesc,
@@ -1574,6 +1574,7 @@ impl Layer for Conv2dLayer {
       }
     }
     unsafe { self.conv_bwd_w_op.backward_filter(
+        1.0,
         in_act.borrow().as_view().as_ptr(),
         out_delta.borrow().as_view().as_ptr(),
         grad_weights.as_mut_view().as_mut_ptr(),
@@ -1581,6 +1582,7 @@ impl Layer for Conv2dLayer {
         &ctx.dnn,
     ).unwrap() };
     unsafe { self.conv_bwd_w_op.backward_bias(
+        1.0,
         out_delta.borrow().as_view().as_ptr(),
         grad_bias.as_mut_view().as_mut_ptr(),
         &ctx.dnn,
