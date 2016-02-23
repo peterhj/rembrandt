@@ -301,12 +301,14 @@ impl SgdOptimization {
         }
         arch.input_layer().preload_frame(batch_idx, datum, ctx);
         arch.loss_layer().preload_label(batch_idx, maybe_label.unwrap(), Phase::Training);
+        arch.loss_layer().preload_weight(batch_idx, 1.0);
         batch_idx += 1;
         local_idx += 1;
 
         if batch_idx == batch_size {
           arch.input_layer().load_frames(batch_size, ctx);
           arch.loss_layer().load_labels(batch_size, ctx);
+          arch.loss_layer().load_weights(batch_size, ctx);
           arch.forward(batch_size, Phase::Training, ctx);
           arch.backward(batch_size, 1.0, ctx);
           arch.loss_layer().accumulate_loss(batch_size, ctx);

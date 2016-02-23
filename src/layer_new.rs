@@ -54,8 +54,9 @@ pub trait Layer {
   // The core layer functionality.
   fn forward(&mut self, batch_size: usize, phase: Phase, ctx: &DeviceCtxRef) {}
   fn backward(&mut self, batch_size: usize, loss_scale: f32, ctx: &DeviceCtxRef) {}
-  fn descend(&mut self, scale: f32, l2_reg_coef: f32, ctx: &DeviceCtxRef) {}
+  fn accumulate_gradients(&mut self, accum_mode: GradAccumMode, ctx: &DeviceCtxRef) {}
   fn reset_gradients(&mut self, scale: f32, ctx: &DeviceCtxRef) {}
+  fn descend(&mut self, scale: f32, l2_reg_coef: f32, ctx: &DeviceCtxRef) {}
 
   // Hessian-vector product.
   fn hv_forward(&mut self, batch_size: usize, ctx: &DeviceCtxRef) {}
@@ -69,7 +70,7 @@ pub trait Layer {
   //fn global_allreduce_gradients(&mut self, worker: &mut DistAllReduceWorker<f32>, ctx: &DeviceCtxRef) {}
 }
 
-pub trait GradientLayer {
+/*pub trait GradientLayer {
   fn g_backward(&mut self, batch_size: usize, loss_scale: f32, ctx: &DeviceCtxRef) {}
   fn g_descend(&mut self, step: f32, l2_reg_coef: f32, ctx: &DeviceCtxRef) {}
   fn g_reset_gradient(&mut self, scale: f32, ctx: &DeviceCtxRef) {}
@@ -84,7 +85,7 @@ pub trait HessianVectorLayer {
   fn hv_reset_gradient(&mut self, scale: f32, ctx: &DeviceCtxRef) {}
   fn hv_allreduce_load_params(&mut self, worker: &mut DeviceAllReduceWorker<f32>, offset: usize, ctx: &DeviceCtxRef) {}
   fn hv_allreduce_store_params(&mut self, worker: &mut DeviceAllReduceWorker<f32>, offset: usize, ctx: &DeviceCtxRef) {}
-}
+}*/
 
 pub trait InputLayer: Layer {
   fn downcast(&self) -> &Layer;
@@ -99,6 +100,9 @@ pub trait LossLayer: Layer {
 
   fn preload_label(&mut self, batch_idx: usize, label: &SampleLabel, phase: Phase);
   fn load_labels(&mut self, batch_size: usize, ctx: &DeviceCtxRef);
+
+  fn preload_weight(&mut self, batch_idx: usize, weight: f32) { unimplemented!(); }
+  fn load_weights(&mut self, batch_size: usize, ctx: &DeviceCtxRef) { unimplemented!(); }
 
   fn store_labels(&mut self, batch_idx: usize, phase: Phase, ctx: &DeviceCtxRef);
   fn get_labels(&self, batch_size: usize) -> &Array2d<i32>;
@@ -129,6 +133,17 @@ pub enum Phase {
 }
 
 #[derive(Clone, Copy, Debug)]
+pub enum GradAccumMode {
+  Add{scale: f32},
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum GradSyncMode {
+  Sum,
+  Average,
+}
+
+#[derive(Clone, Copy, Debug)]
 pub enum ParamsInitialization {
   None,
   Zeros,
@@ -153,6 +168,8 @@ pub enum LayerConfig {
   //StackedResidualConv2d(usize, Conv2dLayerConfig),
   AffineConv2d(AffineConv2dLayerConfig),
   SoftmaxKLLoss(CategoricalLossLayerConfig),
+  AntiLogisticKLLoss(CategoricalLossLayerConfig),
+  AntiLogisticIndicatorLoss(CategoricalLossLayerConfig),
   MultiSoftmaxKLLoss(MultiCategoricalLossLayerConfig),
 }
 
@@ -622,6 +639,22 @@ impl Layer for Conv2dLayer<Disable<Conv2dHvData>> {
     }
   }
 
+  fn accumulate_gradients(&mut self, accum_mode: GradAccumMode, ctx: &DeviceCtxRef) {
+    match accum_mode {
+      GradAccumMode::Add{scale} => {
+        // FIXME(20160223)
+        unimplemented!();
+      }
+    }
+  }
+
+  fn reset_gradients(&mut self, scale: f32, ctx: &DeviceCtxRef) {
+    self.grad_weights.as_view_mut(ctx)
+      .matrix_scale(scale);
+    self.grad_bias.as_view_mut(ctx)
+      .row_vector_scale(scale);
+  }
+
   fn descend(&mut self, scale: f32, l2_reg_coef: f32, ctx: &DeviceCtxRef) {
     assert!(l2_reg_coef >= 0.0);
     if l2_reg_coef > 0.0 {
@@ -636,13 +669,6 @@ impl Layer for Conv2dLayer<Disable<Conv2dHvData>> {
       self.bias.as_view_mut(ctx)
         .row_vector_sum(-scale, &self.grad_bias.as_view(ctx));
     }
-  }
-
-  fn reset_gradients(&mut self, scale: f32, ctx: &DeviceCtxRef) {
-    self.grad_weights.as_view_mut(ctx)
-      .matrix_scale(scale);
-    self.grad_bias.as_view_mut(ctx)
-      .row_vector_scale(scale);
   }
 
   fn dev_allreduce_load(&mut self, worker: &mut DeviceAllReduceWorker<f32>, offset: usize, ctx: &DeviceCtxRef) {
@@ -1283,6 +1309,9 @@ where HvToggle: Toggle<SoftmaxKLLossHvData> {
   true_cats:    DeviceArray2d<i32>,
   true_cats_h:  Array2d<i32>,
 
+  weights:      DeviceArray2d<f32>,
+  weights_h:    Array2d<f32>,
+
   softmax:      CudnnSoftmaxOp,
 }
 
@@ -1319,6 +1348,9 @@ impl SoftmaxKLLossLayer<Disable<SoftmaxKLLossHvData>> {
       true_cats:    DeviceArray2d::<i32>::zeros((1, batch_size), ctx),
       true_cats_h:  Array2d::<i32>::zeros((1, batch_size)),
 
+      weights:      DeviceArray2d::<f32>::zeros((1, batch_size), ctx),
+      weights_h:    Array2d::<f32>::zeros((1, batch_size)),
+
       softmax:      softmax,
     }
   }
@@ -1348,9 +1380,9 @@ impl Layer for SoftmaxKLLossLayer<Disable<SoftmaxKLLossHvData>> {
     ) }.unwrap();
   }
 
-  fn backward(&mut self, batch_size: usize, scale: f32, ctx: &DeviceCtxRef) {
+  fn backward(&mut self, batch_size: usize, _loss_scale: f32, ctx: &DeviceCtxRef) {
     assert!(batch_size <= self.batch_limit);
-    unsafe { rembrandt_kernel_batch_map_softmax_cross_entropy_loss_backprop(
+    /*unsafe { rembrandt_kernel_batch_map_softmax_cross_entropy_loss_backprop(
         self.out_probs.as_view(ctx).as_ptr(),
         self.config.num_categories as i32,
         batch_size as i32,
@@ -1359,6 +1391,15 @@ impl Layer for SoftmaxKLLossLayer<Disable<SoftmaxKLLossHvData>> {
         // XXX(20151218): the minibatch size is now applied during
         // parameter descent.
         1.0,
+        ctx.stream.ptr,
+    ) };*/
+    unsafe { rembrandt_kernel_batch_map_softmax_kl_backward(
+        self.out_probs.as_view(ctx).as_ptr(),
+        self.config.num_categories as i32,
+        batch_size as i32,
+        self.true_cats.as_view(ctx).as_ptr(),
+        self.weights.as_view(ctx).as_ptr(),
+        self.in_delta.borrow_mut().as_ref_mut(ctx).as_mut_ptr(),
         ctx.stream.ptr,
     ) };
   }
@@ -1382,6 +1423,16 @@ impl LossLayer for SoftmaxKLLossLayer<Disable<SoftmaxKLLossHvData>> {
     assert!(batch_size <= self.batch_limit);
     self.true_cats.as_view_mut(ctx)
       .sync_load(&self.true_cats_h.as_view());
+  }
+
+  fn preload_weight(&mut self, batch_idx: usize, weight: f32) {
+    self.weights_h.as_mut_slice()[batch_idx] = weight;
+  }
+
+  fn load_weights(&mut self, batch_size: usize, ctx: &DeviceCtxRef) {
+    assert!(batch_size <= self.batch_limit);
+    self.weights.as_view_mut(ctx)
+      .sync_load(&self.weights_h.as_view());
   }
 
   fn store_labels(&mut self, batch_size: usize, phase: Phase, ctx: &DeviceCtxRef) {
@@ -1530,6 +1581,240 @@ impl LossLayer for SoftmaxKLLossLayer<Disable<SoftmaxKLLossHvData>> {
 
   fn get_loss(&self) -> f32 {
     self.out_loss_h[0]
+  }
+}
+
+// FIXME(20160222)
+pub struct LogisticIndicatorLossLayer {
+  batch_limit:  usize,
+  config:       CategoricalLossLayerConfig,
+
+  in_act:       SharedDeviceBuf<f32>,
+  in_delta:     SharedDeviceBuf<f32>,
+
+  out_values:   DeviceArray2d<f32>,
+  out_values_h: Array2d<f32>,
+}
+
+// FIXME(20160222)
+pub struct AntiLogisticKLLossLayer {
+  batch_limit:  usize,
+  config:       CategoricalLossLayerConfig,
+
+  in_act:       SharedDeviceBuf<f32>,
+  in_delta:     SharedDeviceBuf<f32>,
+
+  sum_logits:   DeviceArray2d<f32>,
+  out_values:   DeviceArray2d<f32>,
+  out_values_h: Array2d<f32>,
+
+  pred_cats:    DeviceArray2d<i32>,
+  pred_cats_h:  Array2d<i32>,
+  true_cats:    DeviceArray2d<i32>,
+  true_cats_h:  Array2d<i32>,
+}
+
+impl Layer for AntiLogisticKLLossLayer {
+  fn config(&self) -> LayerConfig {
+    LayerConfig::AntiLogisticKLLoss(self.config)
+  }
+
+  fn output_activation(&self) -> Option<SharedDeviceBuf<f32>> {
+    None
+  }
+
+  fn output_delta(&self) -> Option<SharedDeviceBuf<f32>> {
+    None
+  }
+
+  fn forward(&mut self, batch_size: usize, phase: Phase, ctx: &DeviceCtxRef) {
+  }
+
+  fn backward(&mut self, batch_size: usize, scale: f32, ctx: &DeviceCtxRef) {
+  }
+}
+
+impl LossLayer for AntiLogisticKLLossLayer {
+  fn downcast(&self) -> &Layer {
+    self
+  }
+
+  fn preload_label(&mut self, batch_idx: usize, label: &SampleLabel, phase: Phase) {
+    match label {
+      &SampleLabel::Category{category} => {
+        self.true_cats_h.as_mut_slice()[batch_idx] = category;
+      }
+      _ => unimplemented!(),
+    }
+  }
+
+  fn load_labels(&mut self, batch_size: usize, ctx: &DeviceCtxRef) {
+    assert!(batch_size <= self.batch_limit);
+    self.true_cats.as_view_mut(ctx)
+      .sync_load(&self.true_cats_h.as_view());
+  }
+
+  fn store_labels(&mut self, batch_idx: usize, phase: Phase, ctx: &DeviceCtxRef) {
+    unimplemented!();
+  }
+
+  fn get_labels(&self, batch_size: usize) -> &Array2d<i32> {
+    unimplemented!();
+  }
+
+  fn count_accuracy(&self, batch_size: usize, phase: Phase) -> (usize, usize) {
+    unimplemented!();
+  }
+
+  fn store_probs(&mut self, batch_size: usize, ctx: &DeviceCtxRef) {
+    self.out_values.as_view(ctx)
+      .sync_store(&mut self.out_values_h.as_view_mut());
+  }
+
+  fn get_probs(&self, batch_size: usize) -> &Array2d<f32> {
+    &self.out_values_h
+  }
+
+  fn preload_mask(&mut self, batch_idx: usize, bytemask: &[u8]) {
+    unimplemented!();
+  }
+
+  fn expose_host_mask_buf(&mut self, batch_idx: usize) -> &mut [u8] {
+    unimplemented!();
+  }
+
+  fn load_masks(&mut self, batch_size: usize, ctx: &DeviceCtxRef) {
+    unimplemented!();
+  }
+
+  fn apply_masks(&mut self, batch_size: usize, ctx: &DeviceCtxRef) {
+    unimplemented!();
+  }
+
+  fn reset_loss(&mut self, batch_size: usize, ctx: &DeviceCtxRef) {
+    unimplemented!();
+  }
+
+  fn accumulate_loss(&mut self, batch_size: usize, ctx: &DeviceCtxRef) {
+    unimplemented!();
+  }
+
+  fn store_loss(&mut self, ctx: &DeviceCtxRef) {
+    unimplemented!();
+  }
+
+  fn get_loss(&self) -> f32 {
+    unimplemented!();
+  }
+}
+
+// FIXME(20160222)
+pub struct AntiLogisticIndicatorLossLayer {
+  batch_limit:  usize,
+  config:       CategoricalLossLayerConfig,
+
+  in_act:       SharedDeviceBuf<f32>,
+  in_delta:     SharedDeviceBuf<f32>,
+
+  sum_logits:   DeviceArray2d<f32>,
+  out_values:   DeviceArray2d<f32>,
+  out_values_h: Array2d<f32>,
+
+  sel_cats:     DeviceArray2d<i32>,
+  sel_cats_h:   Array2d<i32>,
+}
+
+impl Layer for AntiLogisticIndicatorLossLayer {
+  fn config(&self) -> LayerConfig {
+    LayerConfig::AntiLogisticIndicatorLoss(self.config)
+  }
+
+  fn output_activation(&self) -> Option<SharedDeviceBuf<f32>> {
+    None
+  }
+
+  fn output_delta(&self) -> Option<SharedDeviceBuf<f32>> {
+    None
+  }
+
+  fn forward(&mut self, batch_size: usize, phase: Phase, ctx: &DeviceCtxRef) {
+  }
+
+  fn backward(&mut self, batch_size: usize, scale: f32, ctx: &DeviceCtxRef) {
+  }
+}
+
+impl LossLayer for AntiLogisticIndicatorLossLayer {
+  fn downcast(&self) -> &Layer {
+    self
+  }
+
+  fn preload_label(&mut self, batch_idx: usize, label: &SampleLabel, phase: Phase) {
+    match label {
+      &SampleLabel::Category{category} => {
+        self.sel_cats_h.as_mut_slice()[batch_idx] = category;
+      }
+      _ => unimplemented!(),
+    }
+  }
+
+  fn load_labels(&mut self, batch_size: usize, ctx: &DeviceCtxRef) {
+    assert!(batch_size <= self.batch_limit);
+    self.sel_cats.as_view_mut(ctx)
+      .sync_load(&self.sel_cats_h.as_view());
+  }
+
+  fn store_labels(&mut self, batch_idx: usize, phase: Phase, ctx: &DeviceCtxRef) {
+    unimplemented!();
+  }
+
+  fn get_labels(&self, batch_size: usize) -> &Array2d<i32> {
+    unimplemented!();
+  }
+
+  fn count_accuracy(&self, batch_size: usize, phase: Phase) -> (usize, usize) {
+    unimplemented!();
+  }
+
+  fn store_probs(&mut self, batch_size: usize, ctx: &DeviceCtxRef) {
+    self.out_values.as_view(ctx)
+      .sync_store(&mut self.out_values_h.as_view_mut());
+  }
+
+  fn get_probs(&self, batch_size: usize) -> &Array2d<f32> {
+    &self.out_values_h
+  }
+
+  fn preload_mask(&mut self, batch_idx: usize, bytemask: &[u8]) {
+    unimplemented!();
+  }
+
+  fn expose_host_mask_buf(&mut self, batch_idx: usize) -> &mut [u8] {
+    unimplemented!();
+  }
+
+  fn load_masks(&mut self, batch_size: usize, ctx: &DeviceCtxRef) {
+    unimplemented!();
+  }
+
+  fn apply_masks(&mut self, batch_size: usize, ctx: &DeviceCtxRef) {
+    unimplemented!();
+  }
+
+  fn reset_loss(&mut self, batch_size: usize, ctx: &DeviceCtxRef) {
+    unimplemented!();
+  }
+
+  fn accumulate_loss(&mut self, batch_size: usize, ctx: &DeviceCtxRef) {
+    unimplemented!();
+  }
+
+  fn store_loss(&mut self, ctx: &DeviceCtxRef) {
+    unimplemented!();
+  }
+
+  fn get_loss(&self) -> f32 {
+    unimplemented!();
   }
 }
 
