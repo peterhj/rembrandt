@@ -8,17 +8,17 @@ authors = ["Peter Jin <peterhaijin@gmail.com>"]
 name = "rembrandt"
 path = "src/lib.rs"
 
-[[bin]]
-name = "bench-kernels"
-path = "tools/bench-kernels.rs"
+#[[bin]]
+#name = "bench-kernels"
+#path = "tools/bench-kernels.rs"
 
-[[bin]]
-name = "bench-cudnn"
-path = "tools/bench-cudnn.rs"
+#[[bin]]
+#name = "bench-cudnn"
+#path = "tools/bench-cudnn.rs"
 
-[[bin]]
-name = "bench-cublas"
-path = "tools/bench-cublas.rs"
+#[[bin]]
+#name = "bench-cublas"
+#path = "tools/bench-cublas.rs"
 
 #[[bin]]
 #name = "run-rembrandt"
@@ -48,17 +48,17 @@ rembrandt_kernels = { path = "../rembrandt_kernels" }
 #rembrandt_reportserv = { path = "../rembrandt_reportserv" }
 rng = { path = "../../librng" }
 
-[dependencies.array]
-path = "../libarray"
+#[dependencies.array]
+#path = "../libarray"
 
-[dependencies.async]
-path = "../libasync"
+#[dependencies.async]
+#path = "../libasync"
 
-[dependencies.async_cuda]
-path = "../libasync_cuda"
+#[dependencies.async_cuda]
+#path = "../libasync_cuda"
 
-[dependencies.cuda_sparse]
-path = "../libcuda_sparse"
+#[dependencies.cuda_sparse]
+#path = "../libcuda_sparse"
 
-[dependencies.linalg]
-path = "../liblinalg"
+#[dependencies.linalg]
+#path = "../liblinalg"

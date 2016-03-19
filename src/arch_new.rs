@@ -2,7 +2,9 @@ use layer_new::{
   Layer, InputLayer, LossLayer,
   LayerConfig, Phase,
   Data3dLayerConfig,
+  AffineLayerConfig,
   Conv2dLayerConfig,
+  Conv2dLayerConfigV2,
   CategoricalLossLayerConfig,
   MultiCategoricalLossLayerConfig,
 };
@@ -10,15 +12,19 @@ use layer_new::{
 use array_cuda::device::{
   DeviceContext, DeviceCtxRef,
 };
+use array_cuda::device::comm::{
+  for_all_devices,
+};
 use array_cuda::device::comm::allreduce::{
   DeviceAllReduceSharedData, DeviceAllReduceWorker,
 };
+use array_new::{NdArraySerialize, ArrayZeroExt, Array2d};
 use byteorder::{ReadBytesExt, WriteBytesExt, LittleEndian};
 use rng::xorshift::{Xorshiftplus128Rng};
 
-use rand::{Rng, SeedableRng};
+use rand::{Rng, SeedableRng, thread_rng};
 use std::fs::{OpenOptions, copy, create_dir_all, read_link, remove_file};
-use std::io::{Read, BufRead, Write, BufReader};
+use std::io::{Read, BufRead, Write, BufReader, Cursor};
 use std::os::unix::fs::{symlink};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc};
@@ -46,10 +52,12 @@ pub trait Worker {
 }
 
 pub trait ArchWorker<A>: Worker where A: AtomicData {
-  fn batch_size(&self) -> usize;
+  fn batch_capacity(&self) -> usize;
   fn initialize_layer_params(&mut self, ctx: &DeviceCtxRef);
-  fn load_layer_params(&mut self, maybe_t: Option<usize>, ctx: &DeviceCtxRef);
-  fn load_layer_params_dir(&mut self, save_dir: &Path, maybe_t: Option<usize>, ctx: &DeviceCtxRef);
+  fn params_path(&self) -> PathBuf;
+  fn load_layer_params(&mut self, maybe_t: Option<usize>, ctx: &DeviceCtxRef) -> Result<(), ()>;
+  fn load_layer_params_dir(&mut self, save_dir: &Path, maybe_t: Option<usize>, ctx: &DeviceCtxRef) -> Result<(), ()>;
+  fn load_layer_params_into_mem(&mut self, save_dir: &Path, maybe_t: Option<usize>) -> Result<Vec<u8>, ()>;
   fn load_layer_params_from_mem(&mut self, blob: &[u8], ctx: &DeviceCtxRef);
   fn save_layer_params(&mut self, t: usize, ctx: &DeviceCtxRef);
   fn save_layer_params_dir(&mut self, save_dir: &Path, t: usize, ctx: &DeviceCtxRef);
@@ -66,6 +74,102 @@ pub trait ArchWorker<A>: Worker where A: AtomicData {
   fn get_atomic_data(&self) -> &A;
   fn reset_atomic_data(&self);
   fn update_atomic_data(&mut self, batch_size: usize, phase: Phase, ctx: &DeviceCtxRef);
+}
+
+pub struct ReshapePipelineArchConfigs {
+  pub old_arch: PipelineArchConfig,
+  pub new_arch: PipelineArchConfig,
+}
+
+impl ReshapePipelineArchConfigs {
+  pub fn new(old_arch: PipelineArchConfig, new_arch: PipelineArchConfig) -> ReshapePipelineArchConfigs {
+    ReshapePipelineArchConfigs{
+      old_arch: old_arch,
+      new_arch: new_arch,
+    }
+  }
+
+  pub fn reshape_params(&self, old_params_path: &Path, new_params_path: &Path) {
+    assert_eq!(self.old_arch.hidden.len(), self.new_arch.hidden.len());
+
+    let mut old_blob = vec![];
+    let mut old_blob_file = match OpenOptions::new()
+      .read(true)
+      .open(old_params_path) 
+    {
+        Ok(file) => file,
+        Err(_) => panic!(),
+    };
+    match old_blob_file.read_to_end(&mut old_blob) {
+      Ok(_) => {}
+      Err(_) => panic!(),
+    };
+
+    let mut new_blob = vec![];
+
+    let mut reader = Cursor::new(&old_blob);
+    for k in 0 .. self.old_arch.hidden.len() {
+      //match (self.old_arch.hidden[k], self.new_arch.hidden[k]) {
+        /*(LayerConfig::Affine{..}, LayerConfig::Affine{..}) => {
+          unimplemented!();
+        }*/
+      match self.old_arch.hidden[k] {
+        //(LayerConfig::Conv2d{layer_cfg}, LayerConfig::Conv2d{new_layer_cfg: layer_cfg}) => {
+        LayerConfig::Conv2d(layer_cfg)=> {
+          let old_layer_cfg = layer_cfg;
+          match self.new_arch.hidden[k] {
+            LayerConfig::Conv2d(layer_cfg)=> {
+              let new_layer_cfg = layer_cfg;
+              let weights: Array2d<f32> = Array2d::deserialize(&mut reader).unwrap();
+              let bias: Array2d<f32> = Array2d::deserialize(&mut reader).unwrap();
+              if old_layer_cfg == new_layer_cfg {
+                println!("DEBUG: reshape: layer {}: unchanged", k);
+                weights.serialize(&mut new_blob);
+                bias.serialize(&mut new_blob);
+              } else {
+                let old_conv_size = old_layer_cfg.conv_size;
+                let old_in_dims = old_layer_cfg.in_dims;
+                let old_out_channels = old_layer_cfg.out_channels;
+                let new_conv_size = new_layer_cfg.conv_size;
+                let new_in_dims = new_layer_cfg.in_dims;
+                let new_out_channels = new_layer_cfg.out_channels;
+                if old_conv_size == new_conv_size && old_in_dims == new_in_dims {
+                  assert!(new_out_channels <= old_out_channels);
+                  let mut new_weights: Array2d<f32> = Array2d::zeros((new_conv_size * new_conv_size * new_in_dims.2, new_out_channels));
+                  let old_cols = old_conv_size * old_conv_size * old_in_dims.2;
+                  let new_cols = new_conv_size * new_conv_size * new_in_dims.2;
+                  for i in 0 .. new_cols {
+                    for j in 0 .. new_out_channels {
+                      new_weights.as_mut_slice()[i + j * new_cols] = weights.as_slice()[i + j * old_cols];
+                    }
+                  }
+                  let mut new_bias: Array2d<f32> = Array2d::zeros((1, new_out_channels));
+                  for j in 0 .. new_out_channels {
+                    new_bias.as_mut_slice()[j] = bias.as_slice()[j];
+                  }
+                  println!("DEBUG: reshape: layer {}: downsizing out channels: {} => {}",
+                      k, old_out_channels, new_out_channels);
+                  new_weights.serialize(&mut new_blob);
+                  new_bias.serialize(&mut new_blob);
+                } else {
+                  unimplemented!();
+                }
+              }
+            }
+            _ => unimplemented!(),
+          }
+        }
+        _ => unimplemented!(),
+      }
+    }
+
+    let mut new_blob_file = OpenOptions::new()
+      .create(true).truncate(true).write(true)
+      .open(new_params_path)
+      .ok().expect("failed to open blob file to save layer params!");
+    new_blob_file.write_all(&new_blob)
+      .ok().expect("failed to write to blob file!");
+  }
 }
 
 #[derive(Clone)]
@@ -89,8 +193,18 @@ impl PipelineArchConfig {
     self
   }
 
+  pub fn affine(&mut self, layer_cfg: AffineLayerConfig) -> &mut PipelineArchConfig {
+    self.hidden.push(LayerConfig::Affine(layer_cfg));
+    self
+  }
+
   pub fn conv2d(&mut self, layer_cfg: Conv2dLayerConfig) -> &mut PipelineArchConfig {
     self.hidden.push(LayerConfig::Conv2d(layer_cfg));
+    self
+  }
+
+  pub fn conv2d_v2(&mut self, layer_cfg: Conv2dLayerConfigV2) -> &mut PipelineArchConfig {
+    self.hidden.push(LayerConfig::Conv2d_V2(layer_cfg));
     self
   }
 
@@ -98,6 +212,16 @@ impl PipelineArchConfig {
     self.loss = Some(LayerConfig::SoftmaxKLLoss(layer_cfg));
     self
   }
+
+  pub fn logistic_ind_loss(&mut self, layer_cfg: CategoricalLossLayerConfig) -> &mut PipelineArchConfig {
+    self.loss = Some(LayerConfig::LogisticIndicatorLoss(layer_cfg));
+    self
+  }
+
+  /*pub fn antilogistic_kl_loss(&mut self, layer_cfg: CategoricalLossLayerConfig) -> &mut PipelineArchConfig {
+    self.loss = Some(LayerConfig::AntilogisticKLLoss(layer_cfg));
+    self
+  }*/
 
   pub fn multi_softmax_kl_loss(&mut self, layer_cfg: MultiCategoricalLossLayerConfig) -> &mut PipelineArchConfig {
     self.loss = Some(LayerConfig::MultiSoftmaxKLLoss(layer_cfg));
@@ -125,12 +249,43 @@ impl PipelineArchSharedData {
 
 // FIXME(20160117)
 #[derive(Clone)]
-pub struct PipelineArchWorkerBuilder;
+pub struct PipelineArchWorkerBuilder {
+  num_workers:  usize,
+  batch_cap:    usize,
+  arch_cfg:     PipelineArchConfig,
+  params_path:  PathBuf,
+  shared_seed:  [u64; 2],
+  shared_data:  Arc<PipelineArchSharedData>,
+}
 
 impl PipelineArchWorkerBuilder {
-  pub fn into_worker<A>(self) -> PipelineArchWorker<A> where A: AtomicData {
-    // FIXME(20160117)
-    unimplemented!();
+  pub fn new(num_workers: usize, batch_capacity: usize, arch_cfg: PipelineArchConfig, params_path: PathBuf, shared_seed: [u64; 2]) -> PipelineArchWorkerBuilder {
+    let shared_data = for_all_devices(num_workers, |contexts| {
+      Arc::new(PipelineArchSharedData::new(num_workers, &arch_cfg, contexts))
+    });
+    PipelineArchWorkerBuilder{
+      num_workers:  num_workers,
+      batch_cap:    batch_capacity,
+      arch_cfg:     arch_cfg,
+      params_path:  params_path,
+      shared_seed:  shared_seed,
+      shared_data:  shared_data,
+    }
+  }
+
+  pub fn into_worker<A>(self, tid: usize, extra_data: Arc<A>, ctx: &DeviceCtxRef) -> PipelineArchWorker<A> where A: AtomicData {
+    let arch = PipelineArchWorker::new(
+        self.batch_cap,
+        self.arch_cfg,
+        self.params_path,
+        tid,
+        //[thread_rng().next_u64(), thread_rng().next_u64()], // FIXME(20160313): should be shared seed.
+        self.shared_seed,
+        &self.shared_data,
+        extra_data,
+        ctx,
+    );
+    arch
   }
 }
 
@@ -211,7 +366,7 @@ impl<A> Worker for PipelineArchWorker<A> where A: AtomicData {
 }
 
 impl<A> ArchWorker<A> for PipelineArchWorker<A> where A: AtomicData {
-  fn batch_size(&self) -> usize {
+  fn batch_capacity(&self) -> usize {
     self.batch_size
   }
 
@@ -228,28 +383,47 @@ impl<A> ArchWorker<A> for PipelineArchWorker<A> where A: AtomicData {
     }
   }
 
-  fn load_layer_params(&mut self, maybe_t: Option<usize>, ctx: &DeviceCtxRef) {
-    let save_dir = self.params_dir.clone();
-    self.load_layer_params_dir(&save_dir, maybe_t, ctx);
+  fn params_path(&self) -> PathBuf {
+    self.params_dir.clone()
   }
 
-  fn load_layer_params_dir(&mut self, save_dir: &Path, maybe_t: Option<usize>, ctx: &DeviceCtxRef) {
+  fn load_layer_params(&mut self, maybe_t: Option<usize>, ctx: &DeviceCtxRef) -> Result<(), ()> {
+    let save_dir = self.params_dir.clone();
+    self.load_layer_params_dir(&save_dir, maybe_t, ctx)
+  }
+
+  fn load_layer_params_dir(&mut self, save_dir: &Path, maybe_t: Option<usize>, ctx: &DeviceCtxRef) -> Result<(), ()> {
+    let blob = match self.load_layer_params_into_mem(save_dir, maybe_t) {
+      Ok(blob) => blob,
+      Err(_) => return Err(()),
+    };
+    self.load_layer_params_from_mem(&blob, ctx);
+    Ok(())
+  }
+
+  fn load_layer_params_into_mem(&mut self, save_dir: &Path, maybe_t: Option<usize>) -> Result<Vec<u8>, ()> {
     let blob_path = match maybe_t {
       Some(t) => {
         let mut checkpoint_path = PathBuf::from(save_dir);
         checkpoint_path.push("checkpoint");
 
-        let checkpoint_file = OpenOptions::new()
+        let checkpoint_file = match OpenOptions::new()
           .read(true)
           .open(&checkpoint_path)
-          .ok().expect("failed to open checkpoint file!");
+        {
+          Ok(file) => file,
+          Err(_) => return Err(()),
+        };
         let mut latest_t: usize = 0;
         for line in BufReader::new(checkpoint_file).lines() {
           let line = line.unwrap();
           latest_t = line.parse().unwrap();
           break;
         }
-        assert!(t <= latest_t, "failed to load layer params: t: {} checkpoint: {}", t, latest_t);
+        //assert!(t <= latest_t, "failed to load layer params: t: {} checkpoint: {}", t, latest_t);
+        if t > latest_t {
+          return Err(());
+        }
 
         let mut t_path = PathBuf::from(save_dir);
         t_path.push(&format!("layer_params.t_{}.blob", t));
@@ -264,14 +438,17 @@ impl<A> ArchWorker<A> for PipelineArchWorker<A> where A: AtomicData {
 
     let mut blob_file = match OpenOptions::new()
       .read(true)
-      .open(&blob_path) {
+      .open(&blob_path) 
+    {
         Ok(file) => file,
-        Err(_) => panic!("failed to open blob path: {:?}", blob_path),
+        Err(_) => return Err(()),
     };
     let mut blob = Vec::new();
-    blob_file.read_to_end(&mut blob)
-      .ok().expect("failed to read from blob file!");
-    self.load_layer_params_from_mem(&blob, ctx);
+    match blob_file.read_to_end(&mut blob) {
+      Ok(_) => {}
+      Err(_) => return Err(()),
+    };
+    Ok(blob)
   }
 
   fn load_layer_params_from_mem(&mut self, blob: &[u8], ctx: &DeviceCtxRef) {
