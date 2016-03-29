@@ -1,4 +1,4 @@
-use array_new::{Array, ArrayViewMut, NdArraySerialize, Array3d, BitArray3d};
+use array_new::{Shape, Array, ArrayViewMut, NdArraySerialize, Array3d, BitArray3d};
 use byteorder::{LittleEndian, BigEndian, ReadBytesExt};
 use episodb::{EpisoDb};
 //use random::{XorShift128Plus};
@@ -630,7 +630,7 @@ impl MnistDataSource {
     }
   }
 
-  fn open_idx_file<R>(mut reader: R) -> (usize, Option<(usize, usize, usize)>, Vec<u8>) where R: Reader {
+  fn open_idx_file<R>(mut reader: R) -> (usize, Option<(usize, usize, usize)>, Vec<u8>) where R: Read {
     let magic: u32 = reader.read_u32::<BigEndian>().unwrap();
     let magic2 = (magic >> 16) as u8;
     let magic3 = (magic >> 24) as u8;

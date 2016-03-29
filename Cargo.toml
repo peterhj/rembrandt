@@ -47,6 +47,7 @@ lmdb = { path = "../liblmdb" }
 rembrandt_kernels = { path = "../rembrandt_kernels" }
 #rembrandt_reportserv = { path = "../rembrandt_reportserv" }
 rng = { path = "../../librng" }
+worker = { path = "../../libworker" }
 
 #[dependencies.array]
 #path = "../libarray"

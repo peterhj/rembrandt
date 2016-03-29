@@ -1,15 +1,17 @@
-use array_cuda::device::array::{DeviceArray2dView};
+use array_cuda::device::array::{DeviceArray2d};
 use array_cuda::device::comm::{ReduceOperation, AverageReduceOperation};
-use array_cuda::device::context::{DeviceCtxRef};
+use array_cuda::device::context::{DeviceContext, DeviceCtxRef};
 use array_cuda::device::memory::{RawDeviceBuffer};
+use array_new::{AsyncArray};
 use rng::xorshift::{Xorshiftplus128Rng};
 use worker::{WorkerData};
 
+use rand::{Rng, SeedableRng};
 use std::sync::{Arc, Barrier};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub trait CommWorker {
-  fn communicate(&mut self, data: &DeviceArray2dView, ctx: &DeviceCtxRef);
+  fn communicate(&mut self, data: &mut DeviceArray2d<f32>, ctx: &DeviceCtxRef);
 }
 
 #[derive(Clone)]
@@ -18,7 +20,7 @@ pub struct DeviceAllReduceCommWorkerBuilder;
 pub struct DeviceAllReduceCommWorker;
 
 impl CommWorker for DeviceAllReduceCommWorker {
-  fn communicate(&mut self, data: &DeviceArray2dView, ctx: &DeviceCtxRef) {
+  fn communicate(&mut self, data: &mut DeviceArray2d<f32>, ctx: &DeviceCtxRef) {
     unimplemented!();
   }
 }
@@ -53,7 +55,7 @@ impl DeviceGossipCommWorkerBuilder {
       //shared_rns:   self.shared_rns,
       tids_perm:    (0 .. self.num_workers).collect(),
       avg_reduce:   AverageReduceOperation::new(self.num_workers),
-      rng:          Xorshiftplus128Rng::new(self.shared_seed),
+      rng:          Xorshiftplus128Rng::from_seed(self.shared_seed),
     }
   }
 }
@@ -70,7 +72,7 @@ pub struct DeviceGossipCommWorker {
 }
 
 impl CommWorker for DeviceGossipCommWorker {
-  fn communicate(&mut self, data: &mut DeviceArray2d, ctx: &DeviceCtxRef) {
+  fn communicate(&mut self, data: &mut DeviceArray2d<f32>, ctx: &DeviceCtxRef) {
     self.rng.shuffle(&mut self.tids_perm);
 
     let num_workers = self.worker_data.num_workers();
@@ -86,15 +88,27 @@ impl CommWorker for DeviceGossipCommWorker {
       }
     }*/
 
-    data.as_view(ctx).data.raw_send(&self.shared_bufs[src_tid].as_ref());
-    self.shared_bufs[dst_tid].as_ref().raw_send(&self.shared_bufs[num_workers + src_tid].as_ref(), ctx);
-    self.avg_reduce.reduce(&self.shared_bufs[src_tid].as_ref(), &self.shared_bufs[num_workers + src_tid].as_ref(), ctx);
+    data.as_view(ctx).data.raw_send(
+        &(*self.shared_bufs[src_tid]).as_ref(),
+    );
+    self.shared_bufs[dst_tid].as_ref().raw_send(
+        //&(*self.shared_bufs[num_workers + src_tid]).as_ref(),
+        &self.shared_bufs[num_workers + src_tid],
+        ctx,
+    );
+    self.avg_reduce.reduce(
+        &(*self.shared_bufs[src_tid]).as_ref(),
+        &(*self.shared_bufs[num_workers + src_tid]).as_ref(),
+        ctx,
+    );
     ctx.sync();
 
     // FIXME(20160329): should generally replace barriers w/ round numbers,
     // but this is less important for device-only communication.
     self.barrier.wait();
 
-    data.as_view_mut(ctx).data.raw_recv(&self.shared_bufs[num_workers + src_tid].as_ref());
+    data.as_view_mut(ctx).data.raw_recv(
+        &(*self.shared_bufs[num_workers + src_tid]).as_ref(),
+    );
   }
 }
