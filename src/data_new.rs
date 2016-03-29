@@ -1,5 +1,5 @@
 use array_new::{Array, ArrayViewMut, NdArraySerialize, Array3d, BitArray3d};
-use byteorder::{LittleEndian, ReadBytesExt};
+use byteorder::{LittleEndian, BigEndian, ReadBytesExt};
 use episodb::{EpisoDb};
 //use random::{XorShift128Plus};
 use rng::xorshift::{Xorshiftplus128Rng};
@@ -592,6 +592,116 @@ impl DataSource for EpisoDbDataSource {
     let datum_value = self.data_db.get_frame(sample_idx).unwrap();
     let sample_datum = datum_cfg.decode(datum_value);
 
+    Some((sample_datum, Some(sample_label)))
+  }
+}
+
+pub struct MnistDataSource {
+  config:       DataSourceConfig,
+  num_samples:  usize,
+  frame_size:   usize,
+  data_dims:    (usize, usize, usize),
+  data_buf:     Vec<u8>,
+  labels_buf:   Vec<u8>,
+}
+
+impl MnistDataSource {
+  pub fn open(config: DataSourceConfig) -> MnistDataSource {
+    let data_file = match File::open(&config.data_path) {
+      Ok(file) => file,
+      Err(e) => panic!("failed to open mnist data file: {:?}", e),
+    };
+    let mut data_reader = BufReader::new(data_file);
+    let (n, data_dims, data_buf) = Self::open_idx_file(data_reader);
+    let data_dims = data_dims.unwrap();
+    let labels_file = match File::open(config.maybe_labels_path.as_ref().unwrap()) {
+      Ok(file) => file,
+      Err(e) => panic!("failed to open mnist labels file: {:?}", e),
+    };
+    let mut labels_reader = BufReader::new(labels_file);
+    let (_, _, labels_buf) = Self::open_idx_file(labels_reader);
+    MnistDataSource{
+      config:       config,
+      num_samples:  n,
+      frame_size:   data_dims.len(),
+      data_dims:    data_dims,
+      data_buf:     data_buf,
+      labels_buf:   labels_buf,
+    }
+  }
+
+  fn open_idx_file<R>(mut reader: R) -> (usize, Option<(usize, usize, usize)>, Vec<u8>) where R: Reader {
+    let magic: u32 = reader.read_u32::<BigEndian>().unwrap();
+    let magic2 = (magic >> 16) as u8;
+    let magic3 = (magic >> 24) as u8;
+    assert_eq!(magic2, 0x08);
+    let ndims = magic3 as usize;
+    let mut dims = vec![];
+    for d in 0 .. ndims {
+      dims.push(reader.read_u32::<BigEndian>().unwrap() as usize);
+    }
+    let n = dims[0] as usize;
+    let mut frame_size = 1;
+    for d in 1 .. ndims {
+      frame_size *= dims[d] as usize;
+    }
+    let mut buf = Vec::with_capacity(n * frame_size);
+    reader.read_to_end(&mut buf);
+    assert_eq!(buf.len(), n * frame_size);
+    if ndims == 3 {
+      (n, Some((dims[2], dims[1], 1)), buf)
+    } else if ndims == 1 {
+      (n, None, buf)
+    } else {
+      unimplemented!();
+    }
+  }
+}
+
+impl DataSource for MnistDataSource {
+  fn num_samples(&self) -> usize {
+    self.num_samples
+  }
+
+  fn count_prefix_samples(&self, idx: usize) -> usize {
+    idx
+  }
+
+  fn count_suffix_samples(&self, idx: usize) -> usize {
+    idx + 1
+  }
+
+  fn num_episodes(&self) -> usize {
+    self.num_samples
+  }
+
+  fn get_episodes_range(&self) -> (usize, usize) {
+    (0, self.num_samples)
+  }
+
+  fn get_episode_indices(&mut self, idx: usize) -> Option<(usize, usize)> {
+    Some((idx, idx + 1))
+  }
+
+  fn get_episode_sample(&mut self, datum_cfg: SampleDatumConfig, label_cfg: SampleLabelConfig, ep_idx: usize, sample_idx: usize) -> Option<(SampleDatum, Option<SampleLabel>)> {
+    assert_eq!(sample_idx, 0);
+    if ep_idx >= self.num_samples {
+      return None;
+    }
+    let datum_value = (&self.data_buf[ep_idx * self.frame_size .. (ep_idx + 1) * self.frame_size]).to_vec();
+    let sample_datum = match datum_cfg {
+      SampleDatumConfig::Bytes3d => {
+        SampleDatum::WHCBytes(Array3d::with_data(datum_value, self.data_dims))
+      }
+      _ => unimplemented!(),
+    };
+    let sample_label = match label_cfg {
+      SampleLabelConfig::Category{num_categories} => {
+        let category = self.labels_buf[ep_idx] as i32;
+        SampleLabel::Category{category: category}
+      }
+      _ => unimplemented!(),
+    };
     Some((sample_datum, Some(sample_label)))
   }
 }
