@@ -17,6 +17,7 @@ use rembrandt_kernels::ffi::*;
 
 use std::cell::{RefCell};
 use std::cmp::{max};
+use std::iter::{repeat};
 use std::rc::{Rc};
 
 pub trait Operator {
@@ -29,16 +30,17 @@ pub trait Operator {
 
   // Requires `Backward` mode.
   fn backward(&mut self, batch_size: usize);
-  fn descend_params(&mut self, step_size: f32, l2_reg_coef: f32);
-  //fn sync_params(&mut self, comm_worker: &mut CommWorker);
+  fn update_params(&mut self, step_size: f32, l2_reg_coef: f32);
+  fn sync_grads(&mut self);
   fn sync_params(&mut self);
   fn reset_grads(&mut self, scale: f32);
 
   // Requires `HvBackward` mode.
   fn hv_reset_direction(&mut self, _init: HvDirectionInit) { unimplemented!(); }
+  fn hv_solve_direction(&mut self, _solver: HvDirectionSolver) { unimplemented!(); }
   fn hv_forward(&mut self, _batch_size: usize) { unimplemented!(); }
   fn hv_backward(&mut self, _batch_size: usize) { unimplemented!(); }
-  fn hv_descend_params(&mut self, _step_size: f32) { unimplemented!(); }
+  fn hv_update_params(&mut self, _step_size: f32) { unimplemented!(); }
 }
 
 pub trait InputOperator: Operator {
@@ -60,15 +62,49 @@ pub trait LossOperator: Operator {
   //fn reset_loss(&mut self);
 }
 
+pub enum OpNode {
+  Hidden(Box<Operator>),
+  Input(Box<InputOperator>),
+  Loss(Box<LossOperator>),
+  Split(Box<Operator>),
+  //Join(Box<Operator>),
+}
+
 #[derive(Clone, Copy)]
 pub enum OperatorConfig {
   Data3d(Data3dOperatorConfig),
   Affine(AffineOperatorConfig),
   Conv2d(Conv2dOperatorConfig),
   SoftmaxKLLoss(CategoricalLossConfig),
+  Split((usize, usize, usize)),
+  //Join((usize, usize, usize)),
 }
 
 impl OperatorConfig {
+  pub fn build_node<Comm>(&self, batch_size: usize, mode: OpMode, prev_op: Option<&Operator>, comm_worker: Option<Rc<RefCell<Comm>>>, context: Rc<DeviceContext>) -> OpNode
+  where Comm: 'static + CommWorker {
+    match self {
+      &OperatorConfig::Affine(ref cfg) => {
+        unimplemented!();
+      }
+      &OperatorConfig::Conv2d(ref cfg) => {
+        OpNode::Hidden(Box::new(Conv2dOperator::new(batch_size, mode, *cfg, prev_op, comm_worker, context)))
+      }
+      &OperatorConfig::Data3d(ref cfg) => {
+        OpNode::Input(Box::new(Data3dOperator::new(batch_size, *cfg, context)))
+      }
+      &OperatorConfig::SoftmaxKLLoss(ref cfg) => {
+        OpNode::Loss(Box::new(SoftmaxKLLossOperator::new(batch_size, *cfg, prev_op, context)))
+      }
+      &OperatorConfig::Split(dims) => {
+        unimplemented!();
+      }
+      /*&OperatorConfig::Join(dims) => {
+        unimplemented!();
+      }*/
+    }
+  }
+
   pub fn build_operator<Comm>(&self, batch_size: usize, mode: OpMode, prev_op: Option<&Operator>, comm_worker: Option<Rc<RefCell<Comm>>>, context: Rc<DeviceContext>) -> Box<Operator>
   where Comm: 'static + CommWorker {
     match self {
@@ -82,19 +118,19 @@ impl OperatorConfig {
     }
   }
 
-  pub fn build_input_operator(&self, batch_size: usize) -> Box<InputOperator> {
+  pub fn build_input_operator(&self, batch_size: usize, context: Rc<DeviceContext>) -> Box<InputOperator> {
     match self {
       &OperatorConfig::Data3d(ref cfg) => {
-        unimplemented!();
+        Box::new(Data3dOperator::new(batch_size, *cfg, context))
       }
       _ => unimplemented!(),
     }
   }
 
-  pub fn build_loss_operator(&self, batch_size: usize) -> Box<LossOperator> {
+  pub fn build_loss_operator(&self, batch_size: usize, prev_op: Option<&Operator>, context: Rc<DeviceContext>) -> Box<LossOperator> {
     match self {
       &OperatorConfig::SoftmaxKLLoss(ref cfg) => {
-        unimplemented!();
+        Box::new(SoftmaxKLLossOperator::new(batch_size, *cfg, prev_op, context))
       }
       _ => unimplemented!(),
     }
@@ -138,6 +174,11 @@ pub enum HvDirectionInit {
 }
 
 #[derive(Clone, Copy)]
+pub enum HvDirectionSolver {
+  PrecondConjGrad,
+}
+
+#[derive(Clone, Copy)]
 pub enum ActivationFunction {
   Identity,
   Rect,
@@ -146,7 +187,7 @@ pub enum ActivationFunction {
 }
 
 #[derive(Clone, Copy)]
-pub enum ParamsInitialization {
+pub enum ParamsInit {
   Disabled,
   Normal{std: f32},
   Uniform{half_range: f32},
@@ -180,11 +221,13 @@ impl SplitOperator {
     }
   }
 
-  pub fn push_output_deltas(&mut self) {
-    let ctx = &(*self.context).as_ref();
-    self.out_deltas.push(
-        Rc::new(RefCell::new(DeviceBuffer::<f32>::zeros(self.in_dims.len() * self.batch_cap, ctx)))
-    );
+  pub fn try_push_output_deltas(&mut self) {
+    if self.in_delta.is_some() {
+      let ctx = &(*self.context).as_ref();
+      self.out_deltas.push(
+          Rc::new(RefCell::new(DeviceBuffer::<f32>::zeros(self.in_dims.len() * self.batch_cap, ctx)))
+      );
+    }
   }
 }
 
@@ -194,8 +237,12 @@ impl Operator for SplitOperator {
   }
 
   fn get_output_deltas(&self) -> Option<SharedDeviceBuf<f32>> {
-    assert!(self.out_deltas.len() >= 1);
-    Some(self.out_deltas[self.out_deltas.len()-1].clone())
+    if self.in_delta.is_some() {
+      assert!(self.out_deltas.len() >= 1);
+      Some(self.out_deltas[self.out_deltas.len()-1].clone())
+    } else {
+      None
+    }
   }
 
   fn forward(&mut self, _batch_size: usize, _phase: OpPhase) {
@@ -214,7 +261,11 @@ impl Operator for SplitOperator {
     }
   }
 
-  fn descend_params(&mut self, _step_size: f32, _l2_reg_coef: f32) {
+  fn update_params(&mut self, _step_size: f32, _l2_reg_coef: f32) {
+    // Do nothing.
+  }
+
+  fn sync_grads(&mut self) {
     // Do nothing.
   }
 
@@ -246,6 +297,21 @@ pub struct Data3dOperator {
   out_buf:      SharedDeviceBuf<f32>,
 }
 
+impl Data3dOperator {
+  pub fn new(batch_size: usize, config: Data3dOperatorConfig, context: Rc<DeviceContext>) -> Data3dOperator {
+    let ctx = &(*context).as_ref();
+    let frame_len = config.dims.len();
+    Data3dOperator{
+      batch_cap:    batch_size,
+      config:       config,
+      context:      context.clone(),
+      in_buf_h:     repeat(0).take(batch_size * frame_len).collect(),
+      in_buf:       DeviceBuffer::zeros(batch_size * frame_len, ctx),
+      out_buf:      Rc::new(RefCell::new(DeviceBuffer::zeros(batch_size * frame_len, ctx))),
+    }
+  }
+}
+
 impl Operator for Data3dOperator {
   fn get_output_vars(&self) -> Option<SharedDeviceBuf<f32>> {
     Some(self.out_buf.clone())
@@ -262,20 +328,8 @@ impl Operator for Data3dOperator {
     let in_buf = self.in_buf.as_ref(ctx);
     let mut out_buf = self.out_buf.borrow_mut().as_ref_mut(ctx);
     if self.config.normalize {
-      /*unsafe { rembrandt_kernel_map_cast_byte_to_float_normalized(
-          in_buf.as_ptr(),
-          (length * batch_size) as i32,
-          out_buf.as_mut_ptr(),
-          ctx.stream.ptr,
-      ) };*/
       in_buf.cast_bytes_normalized(&mut out_buf);
     } else {
-      /*unsafe { rembrandt_kernel_map_cast_byte_to_float(
-          in_buf.as_ptr(),
-          (length * batch_size) as i32,
-          out_buf.as_mut_ptr(),
-          ctx.stream.ptr,
-      ) };*/
       in_buf.cast_bytes(&mut out_buf);
     }
   }
@@ -284,7 +338,11 @@ impl Operator for Data3dOperator {
     // Do nothing.
   }
 
-  fn descend_params(&mut self, _step_size: f32, _l2_reg_coef: f32) {
+  fn update_params(&mut self, _step_size: f32, _l2_reg_coef: f32) {
+    // Do nothing.
+  }
+
+  fn sync_grads(&mut self) {
     // Do nothing.
   }
 
@@ -330,7 +388,7 @@ pub struct AffineOperatorConfig {
   pub in_channels:  usize,
   pub out_channels: usize,
   pub act_func:     ActivationFunction,
-  pub weights_init: ParamsInitialization,
+  pub weights_init: ParamsInit,
   pub backend:      AffineBackend,
 }
 
@@ -383,7 +441,7 @@ pub struct Conv2dOperatorConfig {
   pub conv_pad:     usize,
   pub out_channels: usize,
   pub act_func:     ActivationFunction,
-  pub weights_init: ParamsInitialization,
+  pub weights_init: ParamsInit,
   pub fwd_backend:  Conv2dFwdBackend,
   pub bwd_backend:  Conv2dBwdBackend,
 }
@@ -672,7 +730,7 @@ impl<Comm> Operator for Conv2dOperator<Comm> where Comm: CommWorker {
     }
   }
 
-  fn descend_params(&mut self, step_size: f32, l2_reg_coef: f32) {
+  fn update_params(&mut self, step_size: f32, l2_reg_coef: f32) {
     assert!(self.backward.is_some());
     assert!(l2_reg_coef >= 0.0);
     let ctx = &(*self.context).as_ref();
@@ -691,7 +749,15 @@ impl<Comm> Operator for Conv2dOperator<Comm> where Comm: CommWorker {
     }
   }
 
-  //fn sync_params(&mut self, comm_worker: &mut CommWorker) {
+  fn sync_grads(&mut self) {
+    assert!(self.backward.is_some());
+    let ctx = &(*self.context).as_ref();
+    let mut backward = self.backward.as_mut().unwrap();
+    let mut comm_worker = backward.comm_worker.borrow_mut();
+    comm_worker.communicate(&mut backward.grad_weights, ctx);
+    comm_worker.communicate(&mut backward.grad_bias, ctx);
+  }
+
   fn sync_params(&mut self) {
     assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
@@ -807,7 +873,11 @@ impl Operator for SoftmaxKLLossOperator {
     ) };
   }
 
-  fn descend_params(&mut self, _step_size: f32, _l2_reg_coef: f32) {
+  fn update_params(&mut self, _step_size: f32, _l2_reg_coef: f32) {
+    // Do nothing.
+  }
+
+  fn sync_grads(&mut self) {
     // Do nothing.
   }
 
