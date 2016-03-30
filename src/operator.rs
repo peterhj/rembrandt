@@ -3,8 +3,8 @@ use data_new::{SampleLabel};
 
 use array_cuda::device::array::{DeviceArray2d};
 use array_cuda::device::context::{DeviceContext, DeviceCtxRef};
-use array_cuda::device::ext::{DeviceCastBytesExt};
-use array_cuda::device::linalg::{BlasMatrixExt, BlasVectorExt};
+use array_cuda::device::ext::{DeviceCastBytesExt, DeviceNumExt};
+use array_cuda::device::linalg::{BlasMatrixExt, BlasVectorExt, Transpose};
 use array_cuda::device::memory::{DeviceZeroExt, DeviceBuffer};
 use array_new::{Shape, Array, AsyncArray, ArrayView, ArrayViewMut, ArrayZeroExt, Array2d};
 use cuda_dnn::v4::{
@@ -392,9 +392,13 @@ pub struct AffineOperatorConfig {
   pub backend:      AffineBackend,
 }
 
-pub struct AffineOperator {
+impl AffineOperatorConfig {
+}
+
+pub struct AffineOperator<Comm> {
   batch_cap:    usize,
   config:       AffineOperatorConfig,
+  mode:         OpMode,
 
   context:      Rc<DeviceContext>,
 
@@ -406,18 +410,243 @@ pub struct AffineOperator {
   weights:      DeviceArray2d<f32>,
   bias:         DeviceArray2d<f32>,
 
-  backward:     Option<AffineBwdOperator>,
+  add_bias:     CudnnAddOp,
+
+  backward:     Option<AffineBwdOperator<Comm>>,
   hv_backward:  Option<AffineHvBwdOperator>,
 }
 
-struct AffineBwdOperator {
+struct AffineBwdOperator<Comm> {
   grad_weights: DeviceArray2d<f32>,
   grad_bias:    DeviceArray2d<f32>,
+
+  unit_bias:    DeviceArray2d<f32>,
+
+  comm_worker:  Rc<RefCell<Comm>>,
 }
 
 struct AffineHvBwdOperator {
   dir_weights:  DeviceArray2d<f32>,
   dir_bias:     DeviceArray2d<f32>,
+}
+
+impl<Comm> AffineOperator<Comm> where Comm: CommWorker {
+  pub fn new(batch_size: usize, mode: OpMode, config: AffineOperatorConfig, prev_op: Option<&Operator>, comm_worker: Option<Rc<RefCell<Comm>>>, context: Rc<DeviceContext>) -> AffineOperator<Comm> {
+    let in_channels = config.in_channels;
+    let out_channels = config.out_channels;
+
+    let ctx = &(*context).as_ref();
+
+    let backward = if mode.backward_enabled() {
+      let mut unit_bias = DeviceArray2d::<f32>::zeros((1, batch_size), ctx);
+      unit_bias.as_view_mut(ctx).set_constant(1.0);
+      Some(AffineBwdOperator{
+        grad_weights: DeviceArray2d::<f32>::zeros((in_channels, out_channels), ctx),
+        grad_bias:    DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
+        unit_bias:    unit_bias,
+        comm_worker:  comm_worker.unwrap(),
+      })
+    } else {
+      None
+    };
+
+    let add_bias = CudnnAddOp::new(
+        CudnnTensorDesc::<f32>::create_4d(1, 1, out_channels, 1).unwrap(),
+        CudnnTensorDesc::<f32>::create_4d(1, 1, out_channels, batch_size).unwrap(),
+    );
+
+    AffineOperator{
+      batch_cap:    batch_size,
+      mode:         mode,
+      config:       config,
+      context:      context.clone(),
+      in_act:       match prev_op.unwrap().get_output_vars() {
+        Some(vars) => vars,
+        None => panic!("AffineOperator missing required prev operator output vars"),
+      },
+      in_delta:     prev_op.unwrap().get_output_deltas(),
+      out_act:      Rc::new(RefCell::new(DeviceBuffer::<f32>::zeros(out_channels * batch_size, ctx))),
+      out_delta:    Rc::new(RefCell::new(DeviceBuffer::<f32>::zeros(out_channels * batch_size, ctx))),
+      weights:      DeviceArray2d::<f32>::zeros((in_channels, out_channels), ctx),
+      bias:         DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
+      add_bias:     add_bias,
+      backward:     backward,
+      hv_backward:  None,
+    }
+  }
+}
+
+impl<Comm> Operator for AffineOperator<Comm> where Comm: CommWorker {
+  fn get_output_vars(&self) -> Option<SharedDeviceBuf<f32>> {
+    Some(self.out_act.clone())
+  }
+
+  fn get_output_deltas(&self) -> Option<SharedDeviceBuf<f32>> {
+    Some(self.out_delta.clone())
+  }
+
+  fn init_params(&mut self, _shared_seed: [u64; 2]) {
+    // FIXME(20160330)
+    unimplemented!();
+  }
+
+  fn load_params(&mut self, _blob: &[u8]) -> usize {
+    // FIXME(20160330)
+    unimplemented!();
+  }
+
+  fn save_params(&mut self, _blob: &mut Vec<u8>) {
+    // FIXME(20160330)
+    unimplemented!();
+  }
+
+  fn forward(&mut self, batch_size: usize, phase: OpPhase) {
+    assert!(batch_size <= self.batch_cap);
+    let in_channels = self.config.in_channels;
+    let out_channels = self.config.out_channels;
+
+    let &mut AffineOperator{
+      ref context,
+      ref mut in_act, ref mut out_act,
+      ref mut weights, ref mut bias,
+      .. } = self;
+
+    let ctx = &(**context).as_ref();
+    let weights = weights.as_view(ctx);
+    let bias = bias.as_view(ctx);
+    let in_act = in_act.borrow_mut().as_ref(ctx)
+      .into_2d_view((in_channels, batch_size));
+    let mut out_act = out_act.borrow_mut().as_ref_mut(ctx)
+      .into_2d_view_mut((out_channels, batch_size));
+
+    out_act.matrix_prod(1.0, &weights, Transpose::T, &in_act, Transpose::N, 0.0);
+
+    self.add_bias.set_batch_size(batch_size).unwrap();
+    unsafe { self.add_bias.forward(
+        bias.as_ptr(),
+        out_act.as_mut_ptr(),
+        &*ctx.get_dnn(),
+    ).unwrap() };
+
+    match self.config.act_func {
+      ActivationFunction::Identity => {}
+      ActivationFunction::Rect => {
+        unsafe { rembrandt_kernel_batch_map_rect_inplace(
+            out_act.as_mut_ptr(),
+            out_channels as i32,
+            batch_size as i32,
+            ctx.stream.ptr,
+        ) };
+      }
+      _ => unimplemented!(),
+    }
+  }
+
+  fn backward(&mut self, batch_size: usize) {
+    assert!(self.backward.is_some());
+    assert!(batch_size <= self.batch_cap);
+    let in_channels = self.config.in_channels;
+    let out_channels = self.config.out_channels;
+
+    let &mut AffineOperator{
+      ref context,
+      ref mut in_act, ref mut in_delta,
+      ref mut out_act, ref mut out_delta,
+      ref mut weights, ref mut bias,
+      ref mut backward,
+      .. } = self;
+    let mut backward = backward.as_mut().unwrap();
+    let &mut AffineBwdOperator{
+      ref mut grad_weights, ref mut grad_bias,
+      ref mut unit_bias,
+      .. } = backward;
+
+    let ctx = &(**context).as_ref();
+    let weights = weights.as_view(ctx);
+    let mut grad_weights = grad_weights.as_view_mut(ctx);
+    let mut grad_bias = grad_bias.as_view_mut(ctx);
+    let in_act = in_act.borrow_mut().as_ref(ctx)
+      .into_2d_view((in_channels, batch_size));
+    let out_act = out_act.borrow_mut().as_ref(ctx)
+      .into_2d_view((out_channels, batch_size));
+    let unit_bias = unit_bias.as_view(ctx);
+
+    {
+      let mut out_delta = out_delta.borrow_mut().as_ref_mut(ctx)
+        .into_2d_view_mut((out_channels, batch_size));
+      match self.config.act_func {
+        ActivationFunction::Identity => {}
+        ActivationFunction::Rect => {
+          unsafe { rembrandt_kernel_batch_map_rect_backprop_inplace(
+              out_act.as_ptr(),
+              out_channels as i32,
+              batch_size as i32,
+              out_delta.as_mut_ptr(),
+              ctx.stream.ptr,
+          ) };
+        }
+        _ => unimplemented!(),
+      }
+    }
+
+    let out_delta = out_delta.borrow_mut().as_ref(ctx)
+      .into_2d_view((out_channels, batch_size));
+    grad_weights.matrix_prod(1.0, &in_act, Transpose::N, &out_delta, Transpose::T, 1.0);
+    grad_bias.matrix_prod(1.0, &unit_bias, Transpose::N, &out_delta, Transpose::T, 1.0);
+
+    if let &mut Some(ref mut in_delta) = in_delta {
+      let mut in_delta = in_delta.borrow_mut().as_ref_mut(ctx)
+        .into_2d_view_mut((in_channels, batch_size));
+      in_delta.matrix_prod(1.0, &weights, Transpose::N, &out_delta, Transpose::N, 0.0);
+    }
+  }
+
+  fn update_params(&mut self, step_size: f32, l2_reg_coef: f32) {
+    assert!(self.backward.is_some());
+    assert!(l2_reg_coef >= 0.0);
+    let ctx = &(*self.context).as_ref();
+    let mut backward = self.backward.as_mut().unwrap();
+    if l2_reg_coef > 0.0 {
+      backward.grad_weights.as_view_mut(ctx)
+        .matrix_sum(l2_reg_coef, &self.weights.as_view(ctx));
+      backward.grad_bias.as_view_mut(ctx)
+        .row_vector_sum(l2_reg_coef, &self.bias.as_view(ctx));
+    }
+    {
+      self.weights.as_view_mut(ctx)
+        .matrix_sum(-step_size, &backward.grad_weights.as_view(ctx));
+      self.bias.as_view_mut(ctx)
+        .row_vector_sum(-step_size, &backward.grad_bias.as_view(ctx));
+    }
+  }
+
+  fn sync_grads(&mut self) {
+    assert!(self.backward.is_some());
+    let ctx = &(*self.context).as_ref();
+    let mut backward = self.backward.as_mut().unwrap();
+    let mut comm_worker = backward.comm_worker.borrow_mut();
+    comm_worker.communicate(&mut backward.grad_weights, ctx);
+    comm_worker.communicate(&mut backward.grad_bias, ctx);
+  }
+
+  fn sync_params(&mut self) {
+    assert!(self.backward.is_some());
+    let ctx = &(*self.context).as_ref();
+    let mut backward = self.backward.as_mut().unwrap();
+    let mut comm_worker = backward.comm_worker.borrow_mut();
+    comm_worker.communicate(&mut self.weights, ctx);
+    comm_worker.communicate(&mut self.bias, ctx);
+  }
+
+  fn reset_grads(&mut self, scale: f32) {
+    assert!(self.backward.is_some());
+    let ctx = &(*self.context).as_ref();
+    let mut backward = self.backward.as_mut().unwrap();
+    backward.grad_weights.as_view_mut(ctx)
+      .matrix_scale(scale);
+    backward.grad_bias.as_view_mut(ctx)
+      .row_vector_scale(scale);
+  }
 }
 
 #[derive(Clone, Copy)]
@@ -595,13 +824,18 @@ impl<Comm> Operator for Conv2dOperator<Comm> where Comm: CommWorker {
   }
 
   fn init_params(&mut self, _shared_seed: [u64; 2]) {
+    // FIXME(20160330)
+    unimplemented!();
   }
 
   fn load_params(&mut self, _blob: &[u8]) -> usize {
-    0
+    // FIXME(20160330)
+    unimplemented!();
   }
 
   fn save_params(&mut self, _blob: &mut Vec<u8>) {
+    // FIXME(20160330)
+    unimplemented!();
   }
 
   fn forward(&mut self, batch_size: usize, phase: OpPhase) {

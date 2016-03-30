@@ -339,6 +339,7 @@ impl DatasetConfig {
       Some(&(ref src_name, ref data_cfg)) => {
         match src_name as &str {
           "episodb" => Box::new(EpisoDbDataSource::open(data_cfg.clone())),
+          "mnist"   => Box::new(MnistDataSource::open(data_cfg.clone())),
           _ => panic!("unknown data source: '{}'", src_name),
         }
       }
@@ -354,6 +355,7 @@ impl DatasetConfig {
         data_cfg.label_cfg = Some(label_cfg);
         match src_name as &str {
           "episodb" => Box::new(EpisoDbDataSource::open(data_cfg)),
+          "mnist"   => Box::new(MnistDataSource::open(data_cfg)),
           _ => panic!("unknown data source: '{}'", src_name),
         }
       }
