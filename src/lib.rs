@@ -41,6 +41,6 @@ pub mod data_new;
 pub mod layer_new;
 pub mod opt_new;
 
-pub mod arch;
-pub mod comm;
+//pub mod arch;
+//pub mod comm;
 pub mod operator;

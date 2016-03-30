@@ -1,5 +1,5 @@
-use comm::{CommWorker};
 use data_new::{SampleLabel};
+use operator::comm::{CommWorker};
 
 use array_cuda::device::array::{DeviceArray2d};
 use array_cuda::device::context::{DeviceContext, DeviceCtxRef};
@@ -18,7 +18,11 @@ use rembrandt_kernels::ffi::*;
 use std::cell::{RefCell};
 use std::cmp::{max};
 use std::iter::{repeat};
+use std::marker::{PhantomData};
 use std::rc::{Rc};
+
+pub mod arch;
+pub mod comm;
 
 pub trait Operator {
   fn get_output_vars(&self) -> Option<SharedDeviceBuf<f32>> { None }
@@ -28,14 +32,14 @@ pub trait Operator {
   fn save_params(&mut self, _blob: &mut Vec<u8>) {}
   fn forward(&mut self, batch_size: usize, phase: OpPhase);
 
-  // Requires `Backward` mode.
+  // Requires `Backward` capability.
   fn backward(&mut self, batch_size: usize);
   fn update_params(&mut self, step_size: f32, l2_reg_coef: f32);
   fn sync_grads(&mut self);
   fn sync_params(&mut self);
   fn reset_grads(&mut self, scale: f32);
 
-  // Requires `HvBackward` mode.
+  // Requires `HvBackward` capability.
   fn hv_reset_direction(&mut self, _init: HvDirectionInit) { unimplemented!(); }
   fn hv_solve_direction(&mut self, _solver: HvDirectionSolver) { unimplemented!(); }
   fn hv_forward(&mut self, _batch_size: usize) { unimplemented!(); }
@@ -62,7 +66,7 @@ pub trait LossOperator: Operator {
   //fn reset_loss(&mut self);
 }
 
-pub enum OpNode {
+pub enum OperatorNode {
   Hidden(Box<Operator>),
   Input(Box<InputOperator>),
   Loss(Box<LossOperator>),
@@ -70,31 +74,45 @@ pub enum OpNode {
   //Join(Box<Operator>),
 }
 
-#[derive(Clone, Copy)]
-pub enum OperatorConfig {
+pub enum OperatorConfig<Comm> {
   Data3d(Data3dOperatorConfig),
   Affine(AffineOperatorConfig),
   Conv2d(Conv2dOperatorConfig),
+  Pool2d(Pool2dOperatorConfig),
   SoftmaxKLLoss(CategoricalLossConfig),
   Split((usize, usize, usize)),
   //Join((usize, usize, usize)),
+  _Dummy(PhantomData<Comm>),
 }
 
-impl OperatorConfig {
-  pub fn build_node<Comm>(&self, batch_size: usize, mode: OpMode, prev_op: Option<&Operator>, comm_worker: Option<Rc<RefCell<Comm>>>, context: Rc<DeviceContext>) -> OpNode
-  where Comm: 'static + CommWorker {
+impl<Comm> Clone for OperatorConfig<Comm> where Comm: 'static + CommWorker {
+  fn clone(&self) -> OperatorConfig<Comm> {
+    match self {
+      &OperatorConfig::Data3d(cfg)        => OperatorConfig::Data3d(cfg),
+      &OperatorConfig::Affine(cfg)        => OperatorConfig::Affine(cfg),
+      &OperatorConfig::Conv2d(cfg)        => OperatorConfig::Conv2d(cfg),
+      &OperatorConfig::Pool2d(cfg)        => OperatorConfig::Pool2d(cfg),
+      &OperatorConfig::SoftmaxKLLoss(cfg) => OperatorConfig::SoftmaxKLLoss(cfg),
+      &OperatorConfig::Split(cfg)         => OperatorConfig::Split(cfg),
+      &OperatorConfig::_Dummy(marker)     => OperatorConfig::_Dummy(PhantomData),
+    }
+  }
+}
+
+impl<Comm> OperatorConfig<Comm> where Comm: 'static + CommWorker {
+  pub fn build_node(&self, batch_size: usize, capability: OpCapability, prev_op: Option<&Operator>, comm_worker: Option<Rc<RefCell<Comm>>>, context: Rc<DeviceContext>) -> OperatorNode {
     match self {
       &OperatorConfig::Affine(ref cfg) => {
-        unimplemented!();
+        OperatorNode::Hidden(Box::new(AffineOperator::new(batch_size, capability, *cfg, prev_op, comm_worker, context)))
       }
       &OperatorConfig::Conv2d(ref cfg) => {
-        OpNode::Hidden(Box::new(Conv2dOperator::new(batch_size, mode, *cfg, prev_op, comm_worker, context)))
+        OperatorNode::Hidden(Box::new(Conv2dOperator::new(batch_size, capability, *cfg, prev_op, comm_worker, context)))
       }
       &OperatorConfig::Data3d(ref cfg) => {
-        OpNode::Input(Box::new(Data3dOperator::new(batch_size, *cfg, context)))
+        OperatorNode::Input(Box::new(Data3dOperator::new(batch_size, *cfg, context)))
       }
       &OperatorConfig::SoftmaxKLLoss(ref cfg) => {
-        OpNode::Loss(Box::new(SoftmaxKLLossOperator::new(batch_size, *cfg, prev_op, context)))
+        OperatorNode::Loss(Box::new(SoftmaxKLLossOperator::new(batch_size, *cfg, prev_op, context)))
       }
       &OperatorConfig::Split(dims) => {
         unimplemented!();
@@ -102,62 +120,54 @@ impl OperatorConfig {
       /*&OperatorConfig::Join(dims) => {
         unimplemented!();
       }*/
+      _ => unreachable!(),
     }
   }
 
-  pub fn build_operator<Comm>(&self, batch_size: usize, mode: OpMode, prev_op: Option<&Operator>, comm_worker: Option<Rc<RefCell<Comm>>>, context: Rc<DeviceContext>) -> Box<Operator>
-  where Comm: 'static + CommWorker {
-    match self {
-      &OperatorConfig::Affine(ref cfg) => {
-        unimplemented!();
-      }
-      &OperatorConfig::Conv2d(ref cfg) => {
-        Box::new(Conv2dOperator::new(batch_size, mode, *cfg, prev_op, comm_worker, context))
-      }
+  pub fn build_operator(&self, batch_size: usize, capability: OpCapability, prev_op: Option<&Operator>, comm_worker: Option<Rc<RefCell<Comm>>>, context: Rc<DeviceContext>) -> Box<Operator> {
+    match self.build_node(batch_size, capability, prev_op, comm_worker, context) {
+      OperatorNode::Hidden(op) => op,
       _ => unimplemented!(),
     }
   }
 
   pub fn build_input_operator(&self, batch_size: usize, context: Rc<DeviceContext>) -> Box<InputOperator> {
-    match self {
-      &OperatorConfig::Data3d(ref cfg) => {
-        Box::new(Data3dOperator::new(batch_size, *cfg, context))
-      }
+    match self.build_node(batch_size, OpCapability::Forward, None, None, context) {
+      OperatorNode::Input(op) => op,
       _ => unimplemented!(),
     }
   }
 
   pub fn build_loss_operator(&self, batch_size: usize, prev_op: Option<&Operator>, context: Rc<DeviceContext>) -> Box<LossOperator> {
-    match self {
-      &OperatorConfig::SoftmaxKLLoss(ref cfg) => {
-        Box::new(SoftmaxKLLossOperator::new(batch_size, *cfg, prev_op, context))
-      }
+    // FIXME(20160330): set proper `OpCapability`.
+    match self.build_node(batch_size, OpCapability::Backward, prev_op, None, context) {
+      OperatorNode::Loss(op) => op,
       _ => unimplemented!(),
     }
   }
 }
 
 #[derive(Clone, Copy)]
-pub enum OpMode {
+pub enum OpCapability {
   Forward,
   Backward,
   HvBackward,
 }
 
-impl OpMode {
+impl OpCapability {
   pub fn backward_enabled(&self) -> bool {
     match *self {
-      OpMode::Forward     => false,
-      OpMode::Backward    => true,
-      OpMode::HvBackward  => true,
+      OpCapability::Forward     => false,
+      OpCapability::Backward    => true,
+      OpCapability::HvBackward  => true,
     }
   }
 
   pub fn hv_backward_enabled(&self) -> bool {
     match *self {
-      OpMode::Forward     => false,
-      OpMode::Backward    => false,
-      OpMode::HvBackward  => true,
+      OpCapability::Forward     => false,
+      OpCapability::Backward    => false,
+      OpCapability::HvBackward  => true,
     }
   }
 }
@@ -191,6 +201,12 @@ pub enum ParamsInit {
   Disabled,
   Normal{std: f32},
   Uniform{half_range: f32},
+}
+
+#[derive(Clone, Copy)]
+pub enum PoolOperation {
+  Max,
+  Average,
 }
 
 pub type SharedDeviceBuf<T> = Rc<RefCell<DeviceBuffer<T>>>;
@@ -321,10 +337,10 @@ impl Operator for Data3dOperator {
     None
   }
 
-  fn forward(&mut self, batch_size: usize, phase: OpPhase) {
+  fn forward(&mut self, batch_size: usize, _phase: OpPhase) {
     assert!(batch_size <= self.batch_cap);
     let ctx = &(*self.context).as_ref();
-    let length = self.config.dims.len();
+    //let length = self.config.dims.len();
     let in_buf = self.in_buf.as_ref(ctx);
     let mut out_buf = self.out_buf.borrow_mut().as_ref_mut(ctx);
     if self.config.normalize {
@@ -397,8 +413,8 @@ impl AffineOperatorConfig {
 
 pub struct AffineOperator<Comm> {
   batch_cap:    usize,
+  _capability:  OpCapability,
   config:       AffineOperatorConfig,
-  mode:         OpMode,
 
   context:      Rc<DeviceContext>,
 
@@ -431,13 +447,13 @@ struct AffineHvBwdOperator {
 }
 
 impl<Comm> AffineOperator<Comm> where Comm: CommWorker {
-  pub fn new(batch_size: usize, mode: OpMode, config: AffineOperatorConfig, prev_op: Option<&Operator>, comm_worker: Option<Rc<RefCell<Comm>>>, context: Rc<DeviceContext>) -> AffineOperator<Comm> {
+  pub fn new(batch_size: usize, capability: OpCapability, config: AffineOperatorConfig, prev_op: Option<&Operator>, comm_worker: Option<Rc<RefCell<Comm>>>, context: Rc<DeviceContext>) -> AffineOperator<Comm> {
     let in_channels = config.in_channels;
     let out_channels = config.out_channels;
 
     let ctx = &(*context).as_ref();
 
-    let backward = if mode.backward_enabled() {
+    let backward = if capability.backward_enabled() {
       let mut unit_bias = DeviceArray2d::<f32>::zeros((1, batch_size), ctx);
       unit_bias.as_view_mut(ctx).set_constant(1.0);
       Some(AffineBwdOperator{
@@ -457,7 +473,7 @@ impl<Comm> AffineOperator<Comm> where Comm: CommWorker {
 
     AffineOperator{
       batch_cap:    batch_size,
-      mode:         mode,
+      _capability:  capability,
       config:       config,
       context:      context.clone(),
       in_act:       match prev_op.unwrap().get_output_vars() {
@@ -500,7 +516,7 @@ impl<Comm> Operator for AffineOperator<Comm> where Comm: CommWorker {
     unimplemented!();
   }
 
-  fn forward(&mut self, batch_size: usize, phase: OpPhase) {
+  fn forward(&mut self, batch_size: usize, _phase: OpPhase) {
     assert!(batch_size <= self.batch_cap);
     let in_channels = self.config.in_channels;
     let out_channels = self.config.out_channels;
@@ -623,7 +639,7 @@ impl<Comm> Operator for AffineOperator<Comm> where Comm: CommWorker {
   fn sync_grads(&mut self) {
     assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
-    let mut backward = self.backward.as_mut().unwrap();
+    let backward = self.backward.as_mut().unwrap();
     let mut comm_worker = backward.comm_worker.borrow_mut();
     comm_worker.communicate(&mut backward.grad_weights, ctx);
     comm_worker.communicate(&mut backward.grad_bias, ctx);
@@ -632,7 +648,7 @@ impl<Comm> Operator for AffineOperator<Comm> where Comm: CommWorker {
   fn sync_params(&mut self) {
     assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
-    let mut backward = self.backward.as_mut().unwrap();
+    let backward = self.backward.as_ref().unwrap();
     let mut comm_worker = backward.comm_worker.borrow_mut();
     comm_worker.communicate(&mut self.weights, ctx);
     comm_worker.communicate(&mut self.bias, ctx);
@@ -693,7 +709,7 @@ impl Conv2dOperatorConfig {
 
 pub struct Conv2dOperator<Comm> {
   batch_cap:    usize,
-  mode:         OpMode,
+  _capability:  OpCapability,
   config:       Conv2dOperatorConfig,
 
   context:      Rc<DeviceContext>,
@@ -730,7 +746,7 @@ struct Conv2dHvBwdOperator {
 }
 
 impl<Comm> Conv2dOperator<Comm> where Comm: CommWorker {
-  pub fn new(batch_size: usize, mode: OpMode, config: Conv2dOperatorConfig, prev_op: Option<&Operator>, comm_worker: Option<Rc<RefCell<Comm>>>, context: Rc<DeviceContext>) -> Conv2dOperator<Comm> {
+  pub fn new(batch_size: usize, capability: OpCapability, config: Conv2dOperatorConfig, prev_op: Option<&Operator>, comm_worker: Option<Rc<RefCell<Comm>>>, context: Rc<DeviceContext>) -> Conv2dOperator<Comm> {
     let Conv2dOperatorConfig{
       in_dims, conv_size, conv_stride, conv_pad,
       .. } = config;
@@ -757,7 +773,7 @@ impl<Comm> Conv2dOperator<Comm> where Comm: CommWorker {
     ).unwrap();
     workspace_size = max(workspace_size, conv_fwd.work_size);
 
-    let backward = if mode.backward_enabled() {
+    let backward = if capability.backward_enabled() {
       let conv_bwd_w = CudnnConvBwdFilterOp::create_fastest(
           CudnnTensorDesc::<f32>::create_4d(in_width, in_height, in_channels, batch_size).unwrap(),
           CudnnTensorDesc::<f32>::create_4d(out_width, out_height, out_channels, batch_size).unwrap(),
@@ -793,7 +809,7 @@ impl<Comm> Conv2dOperator<Comm> where Comm: CommWorker {
 
     Conv2dOperator{
       batch_cap:    batch_size,
-      mode:         mode,
+      _capability:  capability,
       config:       config,
       context:      context.clone(),
       in_act:       match prev_op.unwrap().get_output_vars() {
@@ -838,15 +854,15 @@ impl<Comm> Operator for Conv2dOperator<Comm> where Comm: CommWorker {
     unimplemented!();
   }
 
-  fn forward(&mut self, batch_size: usize, phase: OpPhase) {
+  fn forward(&mut self, batch_size: usize, _phase: OpPhase) {
     assert!(batch_size <= self.batch_cap);
-    let Conv2dOperatorConfig{
+    /*let Conv2dOperatorConfig{
       in_dims, conv_size, conv_stride, conv_pad,
-      .. } = self.config;
-    let (in_width, in_height, in_channels) = in_dims;
+      .. } = self.config;*/
+    //let (in_width, in_height, in_channels) = in_dims;
+    //let in_length = in_dims.len();
     let out_dims = self.config.get_out_dims();
-    let (out_width, out_height, out_channels) = out_dims;
-    let in_length = in_dims.len();
+    //let (out_width, out_height, out_channels) = out_dims;
     let out_length = out_dims.len();
 
     let &mut Conv2dOperator{
@@ -894,20 +910,20 @@ impl<Comm> Operator for Conv2dOperator<Comm> where Comm: CommWorker {
   fn backward(&mut self, batch_size: usize) {
     assert!(self.backward.is_some());
     assert!(batch_size <= self.batch_cap);
-    let Conv2dOperatorConfig{
+    /*let Conv2dOperatorConfig{
       in_dims, conv_size, conv_stride, conv_pad,
-      .. } = self.config;
-    let (in_width, in_height, in_channels) = in_dims;
+      .. } = self.config;*/
+    //let (in_width, in_height, in_channels) = in_dims;
+    //let in_length = in_dims.len();
     let out_dims = self.config.get_out_dims();
-    let (out_width, out_height, out_channels) = out_dims;
-    let in_length = in_dims.len();
+    //let (out_width, out_height, out_channels) = out_dims;
     let out_length = out_dims.len();
 
     let &mut Conv2dOperator{
       ref context,
       ref mut in_act, ref mut in_delta,
       ref mut out_act, ref mut out_delta,
-      ref mut weights, ref mut bias,
+      ref mut weights, //ref mut bias,
       ref mut workspace,
       ref mut backward,
       .. } = self;
@@ -917,8 +933,8 @@ impl<Comm> Operator for Conv2dOperator<Comm> where Comm: CommWorker {
       .. } = backward;
 
     let ctx = &(**context).as_ref();
-    let mut in_act = in_act.borrow_mut().as_ref(ctx);
-    let mut out_act = out_act.borrow_mut().as_ref(ctx);
+    let in_act = in_act.borrow_mut().as_ref(ctx);
+    let out_act = out_act.borrow_mut().as_ref(ctx);
     let mut out_delta = out_delta.borrow_mut().as_ref_mut(ctx);
     let mut workspace = workspace.as_ref_mut(ctx);
 
@@ -1013,6 +1029,102 @@ impl<Comm> Operator for Conv2dOperator<Comm> where Comm: CommWorker {
 }
 
 #[derive(Clone, Copy)]
+pub struct Pool2dOperatorConfig {
+  pub in_dims:  (usize, usize, usize),
+  pub pool_size:    usize,
+  pub pool_stride:  usize,
+  pub pool_pad:     usize,
+  pub pool_op:      PoolOperation,
+  pub act_func:     ActivationFunction,
+}
+
+impl Pool2dOperatorConfig {
+  pub fn get_out_dims(&self) -> (usize, usize, usize) {
+    let (in_width, in_height, in_channels) = self.in_dims;
+    let out_width = max(0, (in_width + 2 * self.pool_pad - self.pool_size + self.pool_stride) as isize) as usize / self.pool_stride;
+    let out_height = max(0, (in_height + 2 * self.pool_pad - self.pool_size + self.pool_stride) as isize) as usize / self.pool_stride;
+    (out_width, out_height, in_channels)
+  }
+}
+
+pub struct Pool2dOperator {
+  batch_cap:    usize,
+  config:       Pool2dOperatorConfig,
+
+  context:      Rc<DeviceContext>,
+
+  in_act:       SharedDeviceBuf<f32>,
+  in_delta:     Option<SharedDeviceBuf<f32>>,
+  out_act:      SharedDeviceBuf<f32>,
+  out_delta:    SharedDeviceBuf<f32>,
+
+  pool_mask:    DeviceBuffer<f32>,
+}
+
+impl Pool2dOperator {
+  pub fn new(batch_size: usize, config: Pool2dOperatorConfig, prev_op: Option<&Operator>, context: Rc<DeviceContext>) -> Pool2dOperator {
+    let in_dims = config.in_dims;
+    let in_len = in_dims.len();
+    let out_dims = config.get_out_dims();
+    let out_len = out_dims.len();
+    let ctx = &(*context).as_ref();
+    Pool2dOperator{
+      batch_cap:    batch_size,
+      config:       config,
+      context:      context.clone(),
+      in_act:       match prev_op.unwrap().get_output_vars() {
+        Some(vars) => vars,
+        None => panic!("Pool2dOperator missing required prev operator output vars"),
+      },
+      in_delta:     prev_op.unwrap().get_output_deltas(),
+      out_act:      Rc::new(RefCell::new(DeviceBuffer::<f32>::zeros(out_len * batch_size, ctx))),
+      out_delta:    Rc::new(RefCell::new(DeviceBuffer::<f32>::zeros(out_len * batch_size, ctx))),
+      pool_mask:    DeviceBuffer::<f32>::zeros(in_len * batch_size, ctx),
+    }
+  }
+}
+
+impl Operator for Pool2dOperator {
+  fn get_output_vars(&self) -> Option<SharedDeviceBuf<f32>> {
+    Some(self.out_act.clone())
+  }
+
+  fn get_output_deltas(&self) -> Option<SharedDeviceBuf<f32>> {
+    Some(self.out_delta.clone())
+  }
+
+  fn forward(&mut self, batch_size: usize, phase: OpPhase) {
+    assert!(batch_size <= self.batch_cap);
+    let ctx = &(*self.context).as_ref();
+    // FIXME(20160330)
+    unimplemented!();
+  }
+
+  fn backward(&mut self, batch_size: usize) {
+    assert!(batch_size <= self.batch_cap);
+    let ctx = &(*self.context).as_ref();
+    // FIXME(20160330)
+    unimplemented!();
+  }
+
+  fn update_params(&mut self, _step_size: f32, _l2_reg_coef: f32) {
+    // Do nothing.
+  }
+
+  fn sync_grads(&mut self) {
+    // Do nothing.
+  }
+
+  fn sync_params(&mut self) {
+    // Do nothing.
+  }
+
+  fn reset_grads(&mut self, _scale: f32) {
+    // Do nothing.
+  }
+}
+
+#[derive(Clone, Copy)]
 pub struct CategoricalLossConfig {
   pub category_count:   usize,
 }
@@ -1054,7 +1166,10 @@ impl SoftmaxKLLossOperator {
       batch_cap:    batch_size,
       loss_config:  loss_config,
       context:      context.clone(),
-      in_act:       prev_op.unwrap().get_output_vars().unwrap(),
+      in_act:       match prev_op.unwrap().get_output_vars() {
+        Some(vars) => vars,
+        None => panic!("SoftmaxKLLossOperator missing required prev operator output vars"),
+      },
       in_delta:     prev_op.unwrap().get_output_deltas().unwrap(),
       label_cats:   DeviceArray2d::<i32>::zeros((1, batch_size), ctx),
       label_cats_h: Array2d::<i32>::zeros((1, batch_size)),

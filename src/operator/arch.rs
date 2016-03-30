@@ -1,13 +1,13 @@
-use comm::{CommWorker};
 use operator::{
   Operator, InputOperator, LossOperator,
-  OpNode, OperatorConfig,
-  OpMode, OpPhase,
+  OperatorNode, OperatorConfig,
+  OpCapability, OpPhase,
   Data3dOperatorConfig,
   AffineOperatorConfig,
   Conv2dOperatorConfig,
   CategoricalLossConfig,
 };
+use operator::comm::{CommWorker};
 
 use array_cuda::device::context::{DeviceContext, DeviceCtxRef};
 use worker::{WorkerData};
@@ -17,13 +17,13 @@ use std::collections::{HashSet};
 use std::iter::{FromIterator, repeat};
 use std::rc::{Rc};
 
-pub struct PipelineOperatorConfig {
-  pub input_op:     Option<OperatorConfig>,
-  pub hidden_ops:   Vec<OperatorConfig>,
-  pub loss_op:      Option<OperatorConfig>,
+pub struct PipelineOperatorConfig<Comm> {
+  pub input_op:     Option<OperatorConfig<Comm>>,
+  pub hidden_ops:   Vec<OperatorConfig<Comm>>,
+  pub loss_op:      Option<OperatorConfig<Comm>>,
 }
 
-impl PipelineOperatorConfig {
+impl<Comm> PipelineOperatorConfig<Comm> where Comm: CommWorker {
   pub fn data3d(&mut self, cfg: Data3dOperatorConfig) {
   }
 
@@ -37,21 +37,20 @@ impl PipelineOperatorConfig {
   }
 }
 
-pub struct PipelineOperatorWorkerBuilder {
-  config:   PipelineOperatorConfig,
-  mode:     OpMode,
+pub struct PipelineOperatorWorkerBuilder<Comm> {
+  config:       PipelineOperatorConfig<Comm>,
+  capability:   OpCapability,
 }
 
-impl PipelineOperatorWorkerBuilder {
-  pub fn into_worker<Comm>(self, context: Rc<DeviceContext>, comm_worker: Comm) -> PipelineOperatorWorker<Comm>
-  where Comm: CommWorker {
+impl<Comm> PipelineOperatorWorkerBuilder<Comm> where Comm: CommWorker {
+  pub fn into_worker(self, context: Rc<DeviceContext>, comm_worker: Comm) -> PipelineOperatorWorker<Comm> {
     unimplemented!();
   }
 }
 
 pub struct PipelineOperatorWorker<Comm> where Comm: CommWorker {
   worker_data:  WorkerData,
-  config:       PipelineOperatorConfig,
+  config:       PipelineOperatorConfig<Comm>,
   shared_seed:  [u64; 2],
 
   context:      Rc<DeviceContext>,
@@ -128,11 +127,11 @@ impl<Comm> Operator for PipelineOperatorWorker<Comm> where Comm: CommWorker {
   }
 }
 
-pub struct GraphOperatorConfig {
-  pub ops:  Vec<(Vec<usize>, OperatorConfig)>,
+pub struct GraphOperatorConfig<Comm> {
+  pub ops:  Vec<(Vec<usize>, OperatorConfig<Comm>)>,
 }
 
-impl GraphOperatorConfig {
+impl<Comm> GraphOperatorConfig<Comm> where Comm: CommWorker {
   pub fn data3d(&mut self, cfg: Data3dOperatorConfig) -> usize {
     let curr_id = self.ops.len();
     self.ops.push((vec![], OperatorConfig::Data3d(cfg)));
@@ -158,16 +157,16 @@ impl GraphOperatorConfig {
   }
 }
 
-pub struct GraphOperatorWorkerBuilder {
-  op_nodes:     Vec<OperatorConfig>,
+pub struct GraphOperatorWorkerBuilder<Comm> {
+  op_nodes:     Vec<OperatorConfig<Comm>>,
   in_node_ids:  Vec<Vec<usize>>,
   out_node_ids: Vec<Vec<usize>>,
   top_order:    Vec<usize>,
 }
 
-impl GraphOperatorWorkerBuilder {
-  pub fn new(config: GraphOperatorConfig) -> GraphOperatorWorkerBuilder {
-    let mut op_nodes = vec![];
+impl<Comm> GraphOperatorWorkerBuilder<Comm> where Comm: 'static + CommWorker {
+  pub fn new(config: GraphOperatorConfig<Comm>) -> GraphOperatorWorkerBuilder<Comm> {
+    let mut op_nodes: Vec<OperatorConfig<Comm>> = vec![];
     let num_ops = config.ops.len();
     let mut in_node_ids = vec![];
     let mut out_node_ids = vec![];
@@ -176,7 +175,7 @@ impl GraphOperatorWorkerBuilder {
       out_node_ids.push(vec![]);
     }
     for (curr_id, &(ref prev_ids, ref op_cfg)) in config.ops.iter().enumerate() {
-      op_nodes.push(*op_cfg);
+      op_nodes.push(op_cfg.clone());
       for &prev_id in prev_ids.iter() {
         in_node_ids[curr_id].push(prev_id);
         out_node_ids[prev_id].push(curr_id);
@@ -188,7 +187,7 @@ impl GraphOperatorWorkerBuilder {
       if in_node_ids[curr_id].len() <= 1 && out_node_ids[curr_id].len() <= 1 {
         // Do nothing.
       } else if in_node_ids[curr_id].len() <= 1 && out_node_ids[curr_id].len() > 1 {
-        // Insert a `SplitOperator`.
+        // FIXME(20160330): Insert a `SplitOperator`.
         //op_nodes.push(OperatorConfig::Split(op_nodes[curr_id].config().get_in_dims()));
         in_node_ids.push(vec![curr_id]);
         let curr_out_nodes = out_node_ids[curr_id].clone();
@@ -201,7 +200,7 @@ impl GraphOperatorWorkerBuilder {
         unimplemented!();
       }
     }
-    // FIXME(20160329): Sort the graph into topological order.
+    // Sort the graph into topological order.
     let num_ops = op_nodes.len();
     let mut top_order = Vec::with_capacity(num_ops);
     let mut unmarked = HashSet::from_iter(0 .. num_ops);
@@ -226,6 +225,11 @@ impl GraphOperatorWorkerBuilder {
       out_node_ids: out_node_ids,
       top_order:    vec![],
     }
+  }
+
+  pub fn into_worker(self, comm_worker: Comm) -> GraphOperatorWorker<Comm> {
+    // FIXME(20160330)
+    unimplemented!();
   }
 }
 
