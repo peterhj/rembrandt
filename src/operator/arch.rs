@@ -5,51 +5,128 @@ use operator::{
   Data3dOperatorConfig,
   AffineOperatorConfig,
   Conv2dOperatorConfig,
+  Pool2dOperatorConfig,
   CategoricalLossConfig,
 };
 use operator::comm::{CommWorker};
 
 use array_cuda::device::context::{DeviceContext, DeviceCtxRef};
+use rng::xorshift::{Xorshiftplus128Rng};
 use worker::{WorkerData};
 
+use rand::{Rng, SeedableRng, thread_rng};
 use std::cell::{RefCell};
 use std::collections::{HashSet};
 use std::iter::{FromIterator, repeat};
 use std::rc::{Rc};
 
-pub struct PipelineOperatorConfig<Comm> {
+// FIXME(20160330): why can't I derive Clone here?
+//#[derive(Clone)]
+pub struct PipelineOperatorConfig<Comm> where Comm: 'static + CommWorker {
   pub input_op:     Option<OperatorConfig<Comm>>,
   pub hidden_ops:   Vec<OperatorConfig<Comm>>,
   pub loss_op:      Option<OperatorConfig<Comm>>,
 }
 
-impl<Comm> PipelineOperatorConfig<Comm> where Comm: CommWorker {
+impl<Comm> Clone for PipelineOperatorConfig<Comm> where Comm: 'static + CommWorker {
+  fn clone(&self) -> PipelineOperatorConfig<Comm> {
+    PipelineOperatorConfig{
+      input_op:     self.input_op.clone(),
+      hidden_ops:   self.hidden_ops.clone(),
+      loss_op:      self.loss_op.clone(),
+    }
+  }
+}
+
+impl<Comm> PipelineOperatorConfig<Comm> where Comm: 'static + CommWorker {
+  pub fn new() -> PipelineOperatorConfig<Comm> {
+    PipelineOperatorConfig{
+      input_op:     None,
+      hidden_ops:   vec![],
+      loss_op:      None,
+    }
+  }
+
   pub fn data3d(&mut self, cfg: Data3dOperatorConfig) {
+    self.input_op = Some(OperatorConfig::Data3d(cfg));
   }
 
   pub fn affine(&mut self, cfg: AffineOperatorConfig) {
+    self.hidden_ops.push(OperatorConfig::Affine(cfg));
   }
 
   pub fn conv2d(&mut self, cfg: Conv2dOperatorConfig) {
+    self.hidden_ops.push(OperatorConfig::Conv2d(cfg));
+  }
+
+  pub fn pool2d(&mut self, cfg: Pool2dOperatorConfig) {
+    self.hidden_ops.push(OperatorConfig::Pool2d(cfg));
   }
 
   pub fn softmax_kl_loss(&mut self, cfg: CategoricalLossConfig) {
+    self.loss_op = Some(OperatorConfig::SoftmaxKLLoss(cfg));
   }
 }
 
-pub struct PipelineOperatorWorkerBuilder<Comm> {
+#[derive(Clone)]
+pub struct PipelineOperatorWorkerBuilder<Comm> where Comm: 'static + CommWorker {
+  num_workers:  usize,
+  batch_size:   usize,
   config:       PipelineOperatorConfig<Comm>,
   capability:   OpCapability,
+  shared_seed:  [u64; 2],
 }
 
-impl<Comm> PipelineOperatorWorkerBuilder<Comm> where Comm: CommWorker {
-  pub fn into_worker(self, context: Rc<DeviceContext>, comm_worker: Comm) -> PipelineOperatorWorker<Comm> {
-    unimplemented!();
+impl<Comm> PipelineOperatorWorkerBuilder<Comm> where Comm: 'static + CommWorker {
+  pub fn new(num_workers: usize, batch_size: usize, config: PipelineOperatorConfig<Comm>, capability: OpCapability) -> PipelineOperatorWorkerBuilder<Comm> {
+    PipelineOperatorWorkerBuilder{
+      num_workers:  num_workers,
+      batch_size:   batch_size,
+      config:       config,
+      capability:   capability,
+      shared_seed:  [thread_rng().next_u64(), thread_rng().next_u64()],
+    }
+  }
+
+  pub fn into_worker(self, tid: usize, context: Rc<DeviceContext>, comm_worker: Rc<RefCell<Comm>>) -> PipelineOperatorWorker<Comm> {
+    let config = self.config.clone();
+    let input_op = config.input_op.unwrap().build_input_operator(self.batch_size, context.clone());
+    let mut hidden_ops: Vec<Box<Operator>> = vec![];
+    for h in 0 .. config.hidden_ops.len() {
+      let hidden_op = {
+        let prev_op = match h {
+          0 => input_op.downcast(),
+          _ => &*hidden_ops[h-1],
+        };
+        config.hidden_ops[h].build_operator(self.batch_size, self.capability, Some(prev_op), Some(comm_worker.clone()), context.clone())
+      };
+      hidden_ops.push(hidden_op);
+    }
+    let loss_op = {
+      let num_hidden_ops = hidden_ops.len();
+      let prev_op = match num_hidden_ops {
+        0 => input_op.downcast(),
+        _ => &*hidden_ops[num_hidden_ops-1],
+      };
+      config.loss_op.unwrap().build_loss_operator(self.batch_size, Some(prev_op), context.clone())
+    };
+    PipelineOperatorWorker{
+      worker_data:  WorkerData::new(self.num_workers, tid),
+      batch_size:   self.batch_size,
+      config:       self.config,
+      shared_seed:  self.shared_seed,
+      context:      context,
+      comm_worker:  comm_worker,
+      input_op:     input_op,
+      hidden_ops:   hidden_ops,
+      loss_op:      loss_op,
+    }
   }
 }
 
-pub struct PipelineOperatorWorker<Comm> where Comm: CommWorker {
+pub struct PipelineOperatorWorker<Comm> where Comm: 'static + CommWorker {
   worker_data:  WorkerData,
+  batch_size:   usize,
   config:       PipelineOperatorConfig<Comm>,
   shared_seed:  [u64; 2],
 
@@ -60,16 +137,26 @@ pub struct PipelineOperatorWorker<Comm> where Comm: CommWorker {
   loss_op:      Box<LossOperator>,
 }
 
-impl<Comm> PipelineOperatorWorker<Comm> where Comm: CommWorker {
+impl<Comm> PipelineOperatorWorker<Comm> where Comm: 'static + CommWorker {
   pub fn get_shared_seed(&self) -> [u64; 2] {
     self.shared_seed
   }
+
+  pub fn input_operator(&mut self) -> &mut InputOperator {
+    &mut *self.input_op
+  }
+
+  pub fn loss_operator(&mut self) -> &mut LossOperator {
+    &mut *self.loss_op
+  }
 }
 
-impl<Comm> Operator for PipelineOperatorWorker<Comm> where Comm: CommWorker {
+impl<Comm> Operator for PipelineOperatorWorker<Comm> where Comm: 'static + CommWorker {
   fn init_params(&mut self, shared_seed: [u64; 2]) {
+    let mut rng = Xorshiftplus128Rng::from_seed(shared_seed);
     for r in 0 .. self.hidden_ops.len() {
-      self.hidden_ops[r].init_params(shared_seed);
+      let op_seed = [rng.next_u64(), rng.next_u64()];
+      self.hidden_ops[r].init_params(op_seed);
     }
   }
 

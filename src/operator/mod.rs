@@ -6,7 +6,10 @@ use array_cuda::device::context::{DeviceContext, DeviceCtxRef};
 use array_cuda::device::ext::{DeviceCastBytesExt, DeviceNumExt};
 use array_cuda::device::linalg::{BlasMatrixExt, BlasVectorExt, Transpose};
 use array_cuda::device::memory::{DeviceZeroExt, DeviceBuffer};
-use array_new::{Shape, Array, AsyncArray, ArrayView, ArrayViewMut, ArrayZeroExt, Array2d};
+use array_new::{
+  Array, AsyncArray, ArrayView, ArrayViewMut, ArrayZeroExt, NdArraySerialize,
+  Shape, Array2d,
+};
 use cuda_dnn::v4::{
   CudnnConvFwdOp, CudnnConvBwdFilterOp, CudnnConvBwdDataOp,
   CudnnAddOp, CudnnActKind, CudnnActOp, CudnnSoftmaxOp,
@@ -14,9 +17,15 @@ use cuda_dnn::v4::{
 };
 use cuda_dnn::v4::ffi::{cudnnConvolutionFwdAlgo_t};
 use rembrandt_kernels::ffi::*;
+use rng::xorshift::{Xorshiftplus128Rng};
 
+use rand::{SeedableRng};
+use rand::distributions::{IndependentSample};
+use rand::distributions::normal::{Normal};
+use rand::distributions::range::{Range};
 use std::cell::{RefCell};
 use std::cmp::{max};
+use std::io::{Cursor};
 use std::iter::{repeat};
 use std::marker::{PhantomData};
 use std::rc::{Rc};
@@ -63,6 +72,7 @@ pub trait LossOperator: Operator {
   fn get_output_values(&self, batch_size: usize) -> &Array2d<f32>;
   fn store_output_categories(&mut self, batch_size: usize);
   fn get_output_categories(&self, batch_size: usize) -> &Array2d<i32>;
+  fn accuracy_count(&self, batch_size: usize) -> usize;
   //fn reset_loss(&mut self);
 }
 
@@ -107,6 +117,10 @@ impl<Comm> OperatorConfig<Comm> where Comm: 'static + CommWorker {
       }
       &OperatorConfig::Conv2d(ref cfg) => {
         OperatorNode::Hidden(Box::new(Conv2dOperator::new(batch_size, capability, *cfg, prev_op, comm_worker, context)))
+      }
+      &OperatorConfig::Pool2d(ref _cfg) => {
+        // FIXME(20160330)
+        unimplemented!();
       }
       &OperatorConfig::Data3d(ref cfg) => {
         OperatorNode::Input(Box::new(Data3dOperator::new(batch_size, *cfg, context)))
@@ -404,7 +418,7 @@ pub struct AffineOperatorConfig {
   pub in_channels:  usize,
   pub out_channels: usize,
   pub act_func:     ActivationFunction,
-  pub weights_init: ParamsInit,
+  pub init_weights: ParamsInit,
   pub backend:      AffineBackend,
 }
 
@@ -501,19 +515,59 @@ impl<Comm> Operator for AffineOperator<Comm> where Comm: CommWorker {
     Some(self.out_delta.clone())
   }
 
-  fn init_params(&mut self, _shared_seed: [u64; 2]) {
-    // FIXME(20160330)
-    unimplemented!();
+  fn init_params(&mut self, shared_seed: [u64; 2]) {
+    let AffineOperatorConfig{in_channels, out_channels, ..} = self.config;
+    let ctx = &(*self.context).as_ref();
+    let mut rng = Xorshiftplus128Rng::from_seed(shared_seed);
+    let mut init_weights = Array2d::zeros((in_channels, out_channels));
+    match self.config.init_weights {
+      ParamsInit::Disabled => {
+        panic!("AffineOperator: params init explicitly disabled");
+      }
+      ParamsInit::Uniform{half_range} => {
+        let dist = Range::new(-half_range as f64, half_range as f64);
+        for w in init_weights.as_view_mut().as_mut_slice().iter_mut() {
+          *w = dist.ind_sample(&mut rng) as f32;
+        }
+      }
+      ParamsInit::Normal{std} => {
+        let dist = Normal::new(0.0, std as f64);
+        for w in init_weights.as_view_mut().as_mut_slice().iter_mut() {
+          *w = dist.ind_sample(&mut rng) as f32;
+        }
+      }
+    }
+    let init_bias = Array2d::zeros((1, out_channels));
+    self.weights.as_view_mut(ctx).sync_load(&init_weights.as_view());
+    self.bias.as_view_mut(ctx).sync_load(&init_bias.as_view());
   }
 
-  fn load_params(&mut self, _blob: &[u8]) -> usize {
-    // FIXME(20160330)
-    unimplemented!();
+  fn load_params(&mut self, blob: &[u8]) -> usize {
+    let AffineOperatorConfig{in_channels, out_channels, ..} = self.config;
+    let ctx = &(*self.context).as_ref();
+    let mut reader = Cursor::new(blob);
+    let load_weights = Array2d::deserialize(&mut reader)
+      .ok().expect("AffineOperator failed to deserialize weights!");
+    let load_bias = Array2d::deserialize(&mut reader)
+      .ok().expect("AffineOperator failed to deserialize bias!");
+    assert_eq!((in_channels, out_channels), load_weights.as_view().bound());
+    assert_eq!((1, out_channels), load_bias.as_view().bound());
+    self.weights.as_view_mut(ctx).sync_load(&load_weights.as_view());
+    self.bias.as_view_mut(ctx).sync_load(&load_bias.as_view());
+    let progress = reader.position() as usize;
+    progress
   }
 
-  fn save_params(&mut self, _blob: &mut Vec<u8>) {
-    // FIXME(20160330)
-    unimplemented!();
+  fn save_params(&mut self, blob: &mut Vec<u8>) {
+    let ctx = &(*self.context).as_ref();
+    let weights = self.weights.as_view(ctx);
+    let bias = self.bias.as_view(ctx);
+    let mut save_weights = Array2d::zeros(weights.bound());
+    let mut save_bias = Array2d::zeros(bias.bound());
+    weights.sync_store(&mut save_weights.as_view_mut());
+    bias.sync_store(&mut save_bias.as_view_mut());
+    save_weights.serialize(blob).unwrap();
+    save_bias.serialize(blob).unwrap();
   }
 
   fn forward(&mut self, batch_size: usize, _phase: OpPhase) {
@@ -686,7 +740,7 @@ pub struct Conv2dOperatorConfig {
   pub conv_pad:     usize,
   pub out_channels: usize,
   pub act_func:     ActivationFunction,
-  pub weights_init: ParamsInit,
+  pub init_weights: ParamsInit,
   pub fwd_backend:  Conv2dFwdBackend,
   pub bwd_backend:  Conv2dBwdBackend,
 }
@@ -839,19 +893,61 @@ impl<Comm> Operator for Conv2dOperator<Comm> where Comm: CommWorker {
     Some(self.out_delta.clone())
   }
 
-  fn init_params(&mut self, _shared_seed: [u64; 2]) {
-    // FIXME(20160330)
-    unimplemented!();
+  fn init_params(&mut self, shared_seed: [u64; 2]) {
+    let Conv2dOperatorConfig{in_dims, conv_size, out_channels, ..} = self.config;
+    let ctx = &(*self.context).as_ref();
+    let (_, _, in_channels) = in_dims;
+    let mut rng = Xorshiftplus128Rng::from_seed(shared_seed);
+    let mut init_weights = Array2d::zeros((conv_size * conv_size * in_channels, out_channels));
+    match self.config.init_weights {
+      ParamsInit::Disabled => {
+        panic!("Conv2dOperator: params init explicitly disabled");
+      }
+      ParamsInit::Uniform{half_range} => {
+        let dist = Range::new(-half_range as f64, half_range as f64);
+        for w in init_weights.as_view_mut().as_mut_slice().iter_mut() {
+          *w = dist.ind_sample(&mut rng) as f32;
+        }
+      }
+      ParamsInit::Normal{std} => {
+        let dist = Normal::new(0.0, std as f64);
+        for w in init_weights.as_view_mut().as_mut_slice().iter_mut() {
+          *w = dist.ind_sample(&mut rng) as f32;
+        }
+      }
+    }
+    let init_bias = Array2d::zeros((1, out_channels));
+    self.weights.as_view_mut(ctx).sync_load(&init_weights.as_view());
+    self.bias.as_view_mut(ctx).sync_load(&init_bias.as_view());
   }
 
-  fn load_params(&mut self, _blob: &[u8]) -> usize {
-    // FIXME(20160330)
-    unimplemented!();
+  fn load_params(&mut self, blob: &[u8]) -> usize {
+    let Conv2dOperatorConfig{in_dims, conv_size, out_channels, ..} = self.config;
+    let ctx = &(*self.context).as_ref();
+    let (_, _, in_channels) = in_dims;
+    let mut reader = Cursor::new(blob);
+    let load_weights = Array2d::deserialize(&mut reader)
+      .ok().expect("Conv2dOperator failed to deserialize weights!");
+    let load_bias = Array2d::deserialize(&mut reader)
+      .ok().expect("Conv2dOperator failed to deserialize bias!");
+    assert_eq!((conv_size * conv_size * in_channels, out_channels), load_weights.as_view().bound());
+    assert_eq!((1, out_channels), load_bias.as_view().bound());
+    self.weights.as_view_mut(ctx).sync_load(&load_weights.as_view());
+    self.bias.as_view_mut(ctx).sync_load(&load_bias.as_view());
+    let progress = reader.position() as usize;
+    progress
   }
 
-  fn save_params(&mut self, _blob: &mut Vec<u8>) {
-    // FIXME(20160330)
-    unimplemented!();
+  fn save_params(&mut self, blob: &mut Vec<u8>) {
+    let ctx = &(*self.context).as_ref();
+    let weights = self.weights.as_view(ctx);
+    let bias = self.bias.as_view(ctx);
+    let mut save_weights = Array2d::zeros(weights.bound());
+    let mut save_bias = Array2d::zeros(bias.bound());
+    weights.sync_store(&mut save_weights.as_view_mut());
+    bias.sync_store(&mut save_bias.as_view_mut());
+    save_weights.serialize(blob).unwrap();
+    save_bias.serialize(blob).unwrap();
   }
 
   fn forward(&mut self, batch_size: usize, _phase: OpPhase) {
@@ -1296,5 +1392,19 @@ impl LossOperator for SoftmaxKLLossOperator {
 
   fn get_output_categories(&self, batch_size: usize) -> &Array2d<i32> {
     &self.out_cats_h
+  }
+
+  fn accuracy_count(&self, batch_size: usize) -> usize {
+    assert!(batch_size <= self.batch_cap);
+    let mut correct_count = 0;
+    for (&y_label, &y_hat) in self.label_cats_h.as_slice().iter()
+      .zip(self.out_cats_h.as_slice().iter())
+      .take(batch_size)
+    {
+      if y_label == y_hat {
+        correct_count += 1;
+      }
+    }
+    correct_count
   }
 }

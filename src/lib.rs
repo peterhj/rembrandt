@@ -44,3 +44,4 @@ pub mod opt_new;
 //pub mod arch;
 //pub mod comm;
 pub mod operator;
+pub mod opt;
