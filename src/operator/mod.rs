@@ -34,6 +34,7 @@ pub mod arch;
 pub mod comm;
 
 pub trait Operator {
+  fn batch_size(&self) -> usize;
   fn get_output_vars(&self) -> Option<SharedDeviceBuf<f32>> { None }
   fn get_output_deltas(&self) -> Option<SharedDeviceBuf<f32>> { None }
   fn init_params(&mut self, _shared_seed: [u64; 2]) {}
@@ -262,6 +263,10 @@ impl SplitOperator {
 }
 
 impl Operator for SplitOperator {
+  fn batch_size(&self) -> usize {
+    self.batch_cap
+  }
+
   fn get_output_vars(&self) -> Option<SharedDeviceBuf<f32>> {
     Some(self.shared_act.clone())
   }
@@ -343,6 +348,10 @@ impl Data3dOperator {
 }
 
 impl Operator for Data3dOperator {
+  fn batch_size(&self) -> usize {
+    self.batch_cap
+  }
+
   fn get_output_vars(&self) -> Option<SharedDeviceBuf<f32>> {
     Some(self.out_buf.clone())
   }
@@ -507,6 +516,10 @@ impl<Comm> AffineOperator<Comm> where Comm: CommWorker {
 }
 
 impl<Comm> Operator for AffineOperator<Comm> where Comm: CommWorker {
+  fn batch_size(&self) -> usize {
+    self.batch_cap
+  }
+
   fn get_output_vars(&self) -> Option<SharedDeviceBuf<f32>> {
     Some(self.out_act.clone())
   }
@@ -885,6 +898,10 @@ impl<Comm> Conv2dOperator<Comm> where Comm: CommWorker {
 }
 
 impl<Comm> Operator for Conv2dOperator<Comm> where Comm: CommWorker {
+  fn batch_size(&self) -> usize {
+    self.batch_cap
+  }
+
   fn get_output_vars(&self) -> Option<SharedDeviceBuf<f32>> {
     Some(self.out_act.clone())
   }
@@ -1181,6 +1198,10 @@ impl Pool2dOperator {
 }
 
 impl Operator for Pool2dOperator {
+  fn batch_size(&self) -> usize {
+    self.batch_cap
+  }
+
   fn get_output_vars(&self) -> Option<SharedDeviceBuf<f32>> {
     Some(self.out_act.clone())
   }
@@ -1285,6 +1306,10 @@ impl SoftmaxKLLossOperator {
 }
 
 impl Operator for SoftmaxKLLossOperator {
+  fn batch_size(&self) -> usize {
+    self.batch_cap
+  }
+
   fn get_output_vars(&self) -> Option<SharedDeviceBuf<f32>> {
     None
   }

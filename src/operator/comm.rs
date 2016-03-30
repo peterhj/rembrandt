@@ -6,7 +6,7 @@ use array_new::{AsyncArray};
 use rng::xorshift::{Xorshiftplus128Rng};
 use worker::{WorkerData};
 
-use rand::{Rng, SeedableRng};
+use rand::{Rng, SeedableRng, thread_rng};
 use std::sync::{Arc, Barrier};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -35,15 +35,15 @@ pub struct DeviceGossipCommWorkerBuilder {
 }
 
 impl DeviceGossipCommWorkerBuilder {
-  pub fn new<R>(seed_rng: &mut R, contexts: &[DeviceContext]) -> DeviceGossipCommWorkerBuilder
-  where R: Rng {
-    let num_workers = contexts.len();
+  pub fn new(num_workers: usize /*seed_rng: &mut R,*/ /*contexts: &[DeviceContext]*/) -> DeviceGossipCommWorkerBuilder {
+    //let num_workers = contexts.len();
     DeviceGossipCommWorkerBuilder{
       num_workers:  num_workers,
       barrier:      Arc::new(Barrier::new(num_workers)),
       shared_bufs:  vec![], // FIXME(20160324)
       //shared_rns:   Arc::new(vec![]), // FIXME(20160325)
-      shared_seed:  [seed_rng.next_u64(), seed_rng.next_u64()],
+      //shared_seed:  [seed_rng.next_u64(), seed_rng.next_u64()],
+      shared_seed:  [thread_rng().next_u64(), thread_rng().next_u64()],
     }
   }
 

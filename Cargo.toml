@@ -8,6 +8,10 @@ authors = ["Peter Jin <peterhaijin@gmail.com>"]
 name = "rembrandt"
 path = "src/lib.rs"
 
+[[bin]]
+name = "train-mnist"
+path = "tools/train-mnist.rs"
+
 #[[bin]]
 #name = "bench-kernels"
 #path = "tools/bench-kernels.rs"
@@ -31,6 +35,7 @@ libc = "*"
 log = "*"
 protobuf = { path = "../rust-protobuf" }
 rand = "*"
+threadpool = "*"
 time = "*"
 #toggle = "*"
 toggle = { path = "../../libtoggle" }
