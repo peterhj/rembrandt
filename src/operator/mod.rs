@@ -86,7 +86,9 @@ pub enum OperatorNode {
   //Join(Box<Operator>),
 }
 
-pub enum OperatorConfig<Comm> {
+#[derive(Clone)]
+//pub enum OperatorConfig<Comm> {
+pub enum OperatorConfig {
   Data3d(Data3dOperatorConfig),
   Affine(AffineOperatorConfig),
   Conv2d(Conv2dOperatorConfig),
@@ -94,10 +96,14 @@ pub enum OperatorConfig<Comm> {
   SoftmaxKLLoss(CategoricalLossConfig),
   Split((usize, usize, usize)),
   //Join((usize, usize, usize)),
-  _Dummy(PhantomData<Comm>),
+  //_Dummy(PhantomData<Comm>),
 }
 
-impl<Comm> Clone for OperatorConfig<Comm> where Comm: 'static + CommWorker {
+// FIXME(20160331): this is needed because of the hacky <Comm> generic.
+/*unsafe impl<Comm> Send for OperatorConfig<Comm> where Comm: 'static + CommWorker {
+}*/
+
+/*impl<Comm> Clone for OperatorConfig<Comm> where Comm: 'static + CommWorker {
   fn clone(&self) -> OperatorConfig<Comm> {
     match self {
       &OperatorConfig::Data3d(cfg)        => OperatorConfig::Data3d(cfg),
@@ -109,10 +115,11 @@ impl<Comm> Clone for OperatorConfig<Comm> where Comm: 'static + CommWorker {
       &OperatorConfig::_Dummy(marker)     => OperatorConfig::_Dummy(PhantomData),
     }
   }
-}
+}*/
 
-impl<Comm> OperatorConfig<Comm> where Comm: 'static + CommWorker {
-  pub fn build_node(&self, batch_size: usize, capability: OpCapability, prev_op: Option<&Operator>, comm_worker: Option<Rc<RefCell<Comm>>>, context: Rc<DeviceContext>) -> OperatorNode {
+//impl<Comm2> OperatorConfig<Comm2> where Comm2: 'static + CommWorker {
+impl OperatorConfig {
+  pub fn build_node<Comm: 'static + CommWorker>(&self, batch_size: usize, capability: OpCapability, prev_op: Option<&Operator>, comm_worker: Option<Rc<RefCell<Comm>>>, context: Rc<DeviceContext>) -> OperatorNode {
     match self {
       &OperatorConfig::Affine(ref cfg) => {
         OperatorNode::Hidden(Box::new(AffineOperator::new(batch_size, capability, *cfg, prev_op, comm_worker, context)))
@@ -135,27 +142,27 @@ impl<Comm> OperatorConfig<Comm> where Comm: 'static + CommWorker {
       /*&OperatorConfig::Join(dims) => {
         unimplemented!();
       }*/
-      _ => unreachable!(),
+      //_ => unreachable!(),
     }
   }
 
-  pub fn build_operator(&self, batch_size: usize, capability: OpCapability, prev_op: Option<&Operator>, comm_worker: Option<Rc<RefCell<Comm>>>, context: Rc<DeviceContext>) -> Box<Operator> {
+  pub fn build_operator<Comm: 'static + CommWorker>(&self, batch_size: usize, capability: OpCapability, prev_op: Option<&Operator>, comm_worker: Option<Rc<RefCell<Comm>>>, context: Rc<DeviceContext>) -> Box<Operator> {
     match self.build_node(batch_size, capability, prev_op, comm_worker, context) {
       OperatorNode::Hidden(op) => op,
       _ => unimplemented!(),
     }
   }
 
-  pub fn build_input_operator(&self, batch_size: usize, context: Rc<DeviceContext>) -> Box<InputOperator> {
-    match self.build_node(batch_size, OpCapability::Forward, None, None, context) {
+  pub fn build_input_operator<Comm: 'static + CommWorker>(&self, batch_size: usize, context: Rc<DeviceContext>) -> Box<InputOperator> {
+    match self.build_node::<Comm>(batch_size, OpCapability::Forward, None, None, context) {
       OperatorNode::Input(op) => op,
       _ => unimplemented!(),
     }
   }
 
-  pub fn build_loss_operator(&self, batch_size: usize, prev_op: Option<&Operator>, context: Rc<DeviceContext>) -> Box<LossOperator> {
+  pub fn build_loss_operator<Comm: 'static + CommWorker>(&self, batch_size: usize, prev_op: Option<&Operator>, context: Rc<DeviceContext>) -> Box<LossOperator> {
     // FIXME(20160330): set proper `OpCapability`.
-    match self.build_node(batch_size, OpCapability::Backward, prev_op, None, context) {
+    match self.build_node::<Comm>(batch_size, OpCapability::Backward, prev_op, None, context) {
       OperatorNode::Loss(op) => op,
       _ => unimplemented!(),
     }

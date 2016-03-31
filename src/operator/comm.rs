@@ -10,6 +10,12 @@ use rand::{Rng, SeedableRng, thread_rng};
 use std::sync::{Arc, Barrier};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+pub trait CommWorkerBuilder: Send + Clone {
+  type Worker: CommWorker;
+
+  fn into_worker(self, tid: usize) -> Self::Worker;
+}
+
 pub trait CommWorker {
   fn load(&mut self, offset: usize, data: &mut DeviceArray2d<f32>, ctx: &DeviceCtxRef);
   fn communicate(&mut self, ctx: &DeviceCtxRef);
@@ -61,14 +67,18 @@ impl DeviceGossipCommWorkerBuilder {
     DeviceGossipCommWorkerBuilder{
       num_workers:  num_workers,
       barrier:      Arc::new(Barrier::new(num_workers)),
-      shared_bufs:  shared_bufs, // FIXME(20160324)
+      shared_bufs:  shared_bufs,
       //shared_rns:   Arc::new(vec![]), // FIXME(20160325)
       //shared_seed:  [seed_rng.next_u64(), seed_rng.next_u64()],
       shared_seed:  [thread_rng().next_u64(), thread_rng().next_u64()],
     }
   }
+}
 
-  pub fn into_worker(self, tid: usize) -> DeviceGossipCommWorker {
+impl CommWorkerBuilder for DeviceGossipCommWorkerBuilder {
+  type Worker = DeviceGossipCommWorker;
+
+  fn into_worker(self, tid: usize) -> DeviceGossipCommWorker {
     DeviceGossipCommWorker{
       worker_data:  WorkerData::new(self.num_workers, tid),
       barrier:      self.barrier,

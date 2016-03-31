@@ -8,17 +8,26 @@ use operator::{
   Pool2dOperatorConfig,
   CategoricalLossConfig,
 };
-use operator::comm::{CommWorker};
+use operator::comm::{CommWorkerBuilder, CommWorker};
 
 use array_cuda::device::context::{DeviceContext, DeviceCtxRef};
 use rng::xorshift::{Xorshiftplus128Rng};
+use threadpool::{ThreadPool};
 use worker::{WorkerData};
 
 use rand::{Rng, SeedableRng, thread_rng};
 use std::cell::{RefCell};
 use std::collections::{HashSet};
 use std::iter::{FromIterator, repeat};
+use std::marker::{PhantomData};
 use std::rc::{Rc};
+use std::sync::{Arc, Barrier};
+
+pub trait OperatorWorkerBuilder<Comm>: Send + Clone where Comm: 'static + CommWorker {
+  type Worker: OperatorWorker;
+
+  fn into_worker(self, tid: usize, context: Rc<DeviceContext>, comm_worker: Rc<RefCell<Comm>>) -> Self::Worker;
+}
 
 pub trait OperatorWorker: Operator {
   fn num_workers(&self) -> usize;
@@ -29,15 +38,71 @@ pub trait OperatorWorker: Operator {
   fn loss_operator(&mut self, rank: usize) -> &mut LossOperator;
 }
 
+pub struct OperatorServer<Comm, CBuilder, WBuilder>
+where Comm: 'static + CommWorker,
+      CBuilder: CommWorkerBuilder<Worker=Comm>,
+      WBuilder: OperatorWorkerBuilder<Comm>,
+{
+  num_workers:  usize,
+  comm_worker_builder:  CBuilder,
+  op_worker_builder:    WBuilder,
+  join_barrier: Arc<Barrier>,
+  _marker:      PhantomData<(Comm)>,
+}
+
+impl<Comm, CBuilder, WBuilder> OperatorServer<Comm, CBuilder, WBuilder>
+where Comm: 'static + CommWorker,
+      CBuilder: 'static + CommWorkerBuilder<Worker=Comm>,
+      WBuilder: 'static + OperatorWorkerBuilder<Comm>,
+{
+  pub fn new(num_workers: usize, comm_worker_builder: CBuilder, op_worker_builder: WBuilder) -> OperatorServer<Comm, CBuilder, WBuilder> {
+    OperatorServer{
+      num_workers:  num_workers,
+      comm_worker_builder:    comm_worker_builder,
+      op_worker_builder:      op_worker_builder,
+      join_barrier: Arc::new(Barrier::new(num_workers + 1)),
+      _marker:      PhantomData,
+    }
+  }
+
+  pub fn fork<F>(&self) {
+    let pool = ThreadPool::new(self.num_workers);
+    for tid in 0 .. self.num_workers {
+      let comm_worker_builder = self.comm_worker_builder.clone();
+      let op_worker_builder = self.op_worker_builder.clone();
+      let join_barrier = self.join_barrier.clone();
+      pool.execute(move || {
+        let context = Rc::new(DeviceContext::new(tid));
+        let comm_worker = Rc::new(RefCell::new(comm_worker_builder.into_worker(tid)));
+        let mut op_worker = op_worker_builder.into_worker(tid, context, comm_worker);
+        // FIXME(20160331): invoke user defined worker.
+        //f(&mut op_worker);
+        join_barrier.wait();
+      });
+    }
+  }
+
+  pub fn join(self) {
+    self.join_barrier.wait();
+  }
+}
+
 // FIXME(20160330): why can't I derive Clone here?
 //#[derive(Clone)]
-pub struct PipelineOperatorWorkerConfig<Comm> where Comm: 'static + CommWorker {
+/*pub struct PipelineOperatorWorkerConfig<Comm> where Comm: 'static + CommWorker {
   pub input_op:     Option<OperatorConfig<Comm>>,
   pub hidden_ops:   Vec<OperatorConfig<Comm>>,
   pub loss_op:      Option<OperatorConfig<Comm>>,
+}*/
+
+#[derive(Clone)]
+pub struct PipelineOperatorWorkerConfig {
+  pub input_op:     Option<OperatorConfig>,
+  pub hidden_ops:   Vec<OperatorConfig>,
+  pub loss_op:      Option<OperatorConfig>,
 }
 
-impl<Comm> Clone for PipelineOperatorWorkerConfig<Comm> where Comm: 'static + CommWorker {
+/*impl<Comm> Clone for PipelineOperatorWorkerConfig<Comm> where Comm: 'static + CommWorker {
   fn clone(&self) -> PipelineOperatorWorkerConfig<Comm> {
     PipelineOperatorWorkerConfig{
       input_op:     self.input_op.clone(),
@@ -45,10 +110,12 @@ impl<Comm> Clone for PipelineOperatorWorkerConfig<Comm> where Comm: 'static + Co
       loss_op:      self.loss_op.clone(),
     }
   }
-}
+}*/
 
-impl<Comm> PipelineOperatorWorkerConfig<Comm> where Comm: 'static + CommWorker {
-  pub fn new() -> PipelineOperatorWorkerConfig<Comm> {
+//impl<Comm> PipelineOperatorWorkerConfig<Comm> where Comm: 'static + CommWorker {
+impl PipelineOperatorWorkerConfig {
+  //pub fn new() -> PipelineOperatorWorkerConfig<Comm> {
+  pub fn new() -> PipelineOperatorWorkerConfig {
     PipelineOperatorWorkerConfig{
       input_op:     None,
       hidden_ops:   vec![],
@@ -83,11 +150,15 @@ impl<Comm> PipelineOperatorWorkerConfig<Comm> where Comm: 'static + CommWorker {
 }
 
 pub struct PipelineOperatorWorkerBuilder<Comm> where Comm: 'static + CommWorker {
+//pub struct PipelineOperatorWorkerBuilder {
   num_workers:  usize,
   batch_size:   usize,
-  config:       PipelineOperatorWorkerConfig<Comm>,
+  //config:       PipelineOperatorWorkerConfig<Comm>,
+  config:       PipelineOperatorWorkerConfig,
   capability:   OpCapability,
   shared_seed:  [u64; 2],
+  // XXX: Contravariance.
+  _marker:      PhantomData<fn () -> Comm>,
 }
 
 impl<Comm> Clone for PipelineOperatorWorkerBuilder<Comm> where Comm: 'static + CommWorker {
@@ -98,24 +169,31 @@ impl<Comm> Clone for PipelineOperatorWorkerBuilder<Comm> where Comm: 'static + C
       config:       self.config.clone(),
       capability:   self.capability,
       shared_seed:  self.shared_seed,
+      _marker:      PhantomData,
     }
   }
 }
 
 impl<Comm> PipelineOperatorWorkerBuilder<Comm> where Comm: 'static + CommWorker {
-  pub fn new(num_workers: usize, batch_size: usize, config: PipelineOperatorWorkerConfig<Comm>, capability: OpCapability) -> PipelineOperatorWorkerBuilder<Comm> {
+  //pub fn new(num_workers: usize, batch_size: usize, config: PipelineOperatorWorkerConfig<Comm>, capability: OpCapability) -> PipelineOperatorWorkerBuilder<Comm> {
+  pub fn new(num_workers: usize, batch_size: usize, config: PipelineOperatorWorkerConfig, capability: OpCapability) -> PipelineOperatorWorkerBuilder<Comm> {
     PipelineOperatorWorkerBuilder{
       num_workers:  num_workers,
       batch_size:   batch_size,
       config:       config,
       capability:   capability,
       shared_seed:  [thread_rng().next_u64(), thread_rng().next_u64()],
+      _marker:      PhantomData,
     }
   }
+}
 
-  pub fn into_worker(self, tid: usize, context: Rc<DeviceContext>, comm_worker: Rc<RefCell<Comm>>) -> PipelineOperatorWorker<Comm> {
+impl<Comm> OperatorWorkerBuilder<Comm> for PipelineOperatorWorkerBuilder<Comm> where Comm: 'static + CommWorker {
+  type Worker = PipelineOperatorWorker<Comm>;
+
+  fn into_worker(self, tid: usize, context: Rc<DeviceContext>, comm_worker: Rc<RefCell<Comm>>) -> PipelineOperatorWorker<Comm> {
     let config = self.config.clone();
-    let input_op = config.input_op.unwrap().build_input_operator(self.batch_size, context.clone());
+    let input_op = config.input_op.unwrap().build_input_operator::<Comm>(self.batch_size, context.clone());
     let mut hidden_ops: Vec<Box<Operator>> = vec![];
     for r in 0 .. config.hidden_ops.len() {
       let hidden_op = {
@@ -133,7 +211,7 @@ impl<Comm> PipelineOperatorWorkerBuilder<Comm> where Comm: 'static + CommWorker 
         0 => input_op.downcast(),
         _ => &*hidden_ops[num_hidden_ops-1],
       };
-      config.loss_op.unwrap().build_loss_operator(self.batch_size, Some(prev_op), context.clone())
+      config.loss_op.unwrap().build_loss_operator::<Comm>(self.batch_size, Some(prev_op), context.clone())
     };
     PipelineOperatorWorker{
       worker_data:  WorkerData::new(self.num_workers, tid),
@@ -152,7 +230,8 @@ impl<Comm> PipelineOperatorWorkerBuilder<Comm> where Comm: 'static + CommWorker 
 pub struct PipelineOperatorWorker<Comm> where Comm: 'static + CommWorker {
   worker_data:  WorkerData,
   batch_size:   usize,
-  config:       PipelineOperatorWorkerConfig<Comm>,
+  //config:       PipelineOperatorWorkerConfig<Comm>,
+  config:       PipelineOperatorWorkerConfig,
   shared_seed:  [u64; 2],
 
   context:      Rc<DeviceContext>,
@@ -267,11 +346,14 @@ impl<Comm> Operator for PipelineOperatorWorker<Comm> where Comm: 'static + CommW
   }
 }
 
-pub struct GraphOperatorConfig<Comm> {
-  pub ops:  Vec<(Vec<usize>, OperatorConfig<Comm>)>,
+//pub struct GraphOperatorConfig<Comm> {
+pub struct GraphOperatorConfig {
+  //pub ops:  Vec<(Vec<usize>, OperatorConfig<Comm>)>,
+  pub ops:  Vec<(Vec<usize>, OperatorConfig)>,
 }
 
-impl<Comm> GraphOperatorConfig<Comm> where Comm: CommWorker {
+//impl<Comm> GraphOperatorConfig<Comm> where Comm: CommWorker {
+impl GraphOperatorConfig {
   pub fn data3d(&mut self, cfg: Data3dOperatorConfig) -> usize {
     let curr_id = self.ops.len();
     self.ops.push((vec![], OperatorConfig::Data3d(cfg)));
@@ -297,16 +379,20 @@ impl<Comm> GraphOperatorConfig<Comm> where Comm: CommWorker {
   }
 }
 
-pub struct GraphOperatorWorkerBuilder<Comm> {
-  op_nodes:     Vec<OperatorConfig<Comm>>,
+pub struct GraphOperatorWorkerBuilder<Comm> where Comm: 'static + CommWorker {
+  //op_nodes:     Vec<OperatorConfig<Comm>>,
+  op_nodes:     Vec<OperatorConfig>,
   in_node_ids:  Vec<Vec<usize>>,
   out_node_ids: Vec<Vec<usize>>,
   top_order:    Vec<usize>,
+  _marker:      PhantomData<fn () -> Comm>,
 }
 
 impl<Comm> GraphOperatorWorkerBuilder<Comm> where Comm: 'static + CommWorker {
-  pub fn new(config: GraphOperatorConfig<Comm>) -> GraphOperatorWorkerBuilder<Comm> {
-    let mut op_nodes: Vec<OperatorConfig<Comm>> = vec![];
+  //pub fn new(config: GraphOperatorConfig<Comm>) -> GraphOperatorWorkerBuilder<Comm> {
+  pub fn new(config: GraphOperatorConfig) -> GraphOperatorWorkerBuilder<Comm> {
+    //let mut op_nodes: Vec<OperatorConfig<Comm>> = vec![];
+    let mut op_nodes: Vec<OperatorConfig> = vec![];
     let num_ops = config.ops.len();
     let mut in_node_ids = vec![];
     let mut out_node_ids = vec![];
@@ -364,6 +450,7 @@ impl<Comm> GraphOperatorWorkerBuilder<Comm> where Comm: 'static + CommWorker {
       in_node_ids:  in_node_ids,
       out_node_ids: out_node_ids,
       top_order:    vec![],
+      _marker:      PhantomData,
     }
   }
 

@@ -23,12 +23,13 @@ use rembrandt::operator::{
   CategoricalLossConfig,
 };
 use rembrandt::operator::comm::{
+  CommWorkerBuilder,
   DeviceGossipCommWorkerBuilder,
 };
 use rembrandt::operator::worker::{
+  OperatorWorkerBuilder,
   PipelineOperatorWorkerConfig,
   PipelineOperatorWorkerBuilder,
-  PipelineOperatorWorker,
 };
 use rembrandt::opt::sgd::{
   SgdOptConfig, StepSizeSchedule, MomentumSchedule, SgdOpt,
