@@ -30,8 +30,8 @@ use std::iter::{repeat};
 use std::marker::{PhantomData};
 use std::rc::{Rc};
 
-pub mod arch;
 pub mod comm;
+pub mod worker;
 
 pub trait Operator {
   fn batch_size(&self) -> usize;
@@ -46,7 +46,8 @@ pub trait Operator {
   fn backward(&mut self, batch_size: usize);
   fn update_params(&mut self, step_size: f32, l2_reg_coef: f32);
   fn sync_grads(&mut self);
-  fn sync_params(&mut self);
+  fn stage_params(&mut self) {}
+  fn sync_params(&mut self) {}
   fn reset_grads(&mut self, scale: f32);
 
   // Requires `HvBackward` capability.
@@ -701,12 +702,17 @@ impl<Comm> Operator for AffineOperator<Comm> where Comm: CommWorker {
   }
 
   fn sync_grads(&mut self) {
+    unimplemented!();
+  }
+
+  fn stage_params(&mut self) {
     assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
-    let backward = self.backward.as_mut().unwrap();
+    let backward = self.backward.as_ref().unwrap();
     let mut comm_worker = backward.comm_worker.borrow_mut();
-    comm_worker.communicate(&mut backward.grad_weights, ctx);
-    comm_worker.communicate(&mut backward.grad_bias, ctx);
+    // FIXME(20160331)
+    comm_worker.load(0, &mut self.weights, ctx);
+    comm_worker.load(0, &mut self.bias, ctx);
   }
 
   fn sync_params(&mut self) {
@@ -714,8 +720,9 @@ impl<Comm> Operator for AffineOperator<Comm> where Comm: CommWorker {
     let ctx = &(*self.context).as_ref();
     let backward = self.backward.as_ref().unwrap();
     let mut comm_worker = backward.comm_worker.borrow_mut();
-    comm_worker.communicate(&mut self.weights, ctx);
-    comm_worker.communicate(&mut self.bias, ctx);
+    // FIXME(20160331)
+    comm_worker.store(0, &mut self.weights, ctx);
+    comm_worker.store(0, &mut self.bias, ctx);
   }
 
   fn reset_grads(&mut self, scale: f32) {
@@ -1108,21 +1115,27 @@ impl<Comm> Operator for Conv2dOperator<Comm> where Comm: CommWorker {
   }
 
   fn sync_grads(&mut self) {
+    unimplemented!();
+  }
+
+  fn stage_params(&mut self) {
     assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
-    let mut backward = self.backward.as_mut().unwrap();
+    let backward = self.backward.as_ref().unwrap();
     let mut comm_worker = backward.comm_worker.borrow_mut();
-    comm_worker.communicate(&mut backward.grad_weights, ctx);
-    comm_worker.communicate(&mut backward.grad_bias, ctx);
+    // FIXME(20160331)
+    comm_worker.load(0, &mut self.weights, ctx);
+    comm_worker.load(0, &mut self.bias, ctx);
   }
 
   fn sync_params(&mut self) {
     assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
-    let mut backward = self.backward.as_mut().unwrap();
+    let backward = self.backward.as_ref().unwrap();
     let mut comm_worker = backward.comm_worker.borrow_mut();
-    comm_worker.communicate(&mut self.weights, ctx);
-    comm_worker.communicate(&mut self.bias, ctx);
+    // FIXME(20160331)
+    comm_worker.store(0, &mut self.weights, ctx);
+    comm_worker.store(0, &mut self.bias, ctx);
   }
 
   fn reset_grads(&mut self, scale: f32) {

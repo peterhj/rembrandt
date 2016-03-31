@@ -246,9 +246,17 @@ impl<Comm> Operator for PipelineOperatorWorker<Comm> where Comm: 'static + CommW
     }
   }
 
+  fn stage_params(&mut self) {
+    for op in self.hidden_ops.iter_mut() {
+      op.stage_params();
+    }
+  }
+
   fn sync_params(&mut self) {
-    for r in 0 .. self.hidden_ops.len() {
-      self.hidden_ops[r].sync_params();
+    let ctx = &(*self.context).as_ref();
+    self.comm_worker.borrow_mut().communicate(ctx);
+    for op in self.hidden_ops.iter_mut() {
+      op.sync_params();
     }
   }
 

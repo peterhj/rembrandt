@@ -22,13 +22,13 @@ use rembrandt::operator::{
   Pool2dOperatorConfig,
   CategoricalLossConfig,
 };
-use rembrandt::operator::arch::{
+use rembrandt::operator::comm::{
+  DeviceGossipCommWorkerBuilder,
+};
+use rembrandt::operator::worker::{
   PipelineOperatorWorkerConfig,
   PipelineOperatorWorkerBuilder,
   PipelineOperatorWorker,
-};
-use rembrandt::operator::comm::{
-  DeviceGossipCommWorkerBuilder,
 };
 use rembrandt::opt::sgd::{
   SgdOptConfig, StepSizeSchedule, MomentumSchedule, SgdOpt,
@@ -44,7 +44,7 @@ use std::sync::{Arc, Barrier};
 fn main() {
   env_logger::init().unwrap();
 
-  let num_workers = 1;
+  let num_workers = 4;
   let batch_size = 32;
 
   let sgd_opt_cfg = SgdOptConfig{
@@ -136,7 +136,8 @@ fn main() {
     .affine(aff2_op_cfg)
     .softmax_kl_loss(loss_cfg);
 
-  let comm_worker_builder = DeviceGossipCommWorkerBuilder::new(num_workers);
+  // FIXME(20160331)
+  let comm_worker_builder = DeviceGossipCommWorkerBuilder::new(num_workers, 0);
   let worker_builder = PipelineOperatorWorkerBuilder::new(num_workers, batch_size, worker_cfg, OpCapability::Backward);
   let pool = ThreadPool::new(num_workers);
   let barrier = Arc::new(Barrier::new(num_workers + 1));

@@ -3,7 +3,7 @@ use data_new::{
   SampleDatum, SampleDatumConfig, SampleLabel, SampleLabelConfig, 
 };
 use operator::{Operator, OpPhase};
-use operator::arch::{OperatorWorker};
+use operator::worker::{OperatorWorker};
 
 //use array_cuda::device::context::{DeviceCtxRef};
 

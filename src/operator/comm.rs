@@ -1,5 +1,5 @@
 use array_cuda::device::array::{DeviceArray2d};
-use array_cuda::device::comm::{ReduceOperation, AverageReduceOperation};
+use array_cuda::device::comm::{ReduceOperation, AverageReduceOperation, for_all_devices};
 use array_cuda::device::context::{DeviceContext, DeviceCtxRef};
 use array_cuda::device::memory::{RawDeviceBuffer};
 use array_new::{AsyncArray};
@@ -11,7 +11,9 @@ use std::sync::{Arc, Barrier};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub trait CommWorker {
-  fn communicate(&mut self, data: &mut DeviceArray2d<f32>, ctx: &DeviceCtxRef);
+  fn load(&mut self, offset: usize, data: &mut DeviceArray2d<f32>, ctx: &DeviceCtxRef);
+  fn communicate(&mut self, ctx: &DeviceCtxRef);
+  fn store(&mut self, offset: usize, data: &mut DeviceArray2d<f32>, ctx: &DeviceCtxRef);
 }
 
 #[derive(Clone)]
@@ -20,7 +22,15 @@ pub struct DeviceAllReduceCommWorkerBuilder;
 pub struct DeviceAllReduceCommWorker;
 
 impl CommWorker for DeviceAllReduceCommWorker {
-  fn communicate(&mut self, data: &mut DeviceArray2d<f32>, ctx: &DeviceCtxRef) {
+  fn load(&mut self, offset: usize, data: &mut DeviceArray2d<f32>, ctx: &DeviceCtxRef) {
+    unimplemented!();
+  }
+
+  fn communicate(&mut self, ctx: &DeviceCtxRef) {
+    unimplemented!();
+  }
+
+  fn store(&mut self, offset: usize, data: &mut DeviceArray2d<f32>, ctx: &DeviceCtxRef) {
     unimplemented!();
   }
 }
@@ -35,12 +45,23 @@ pub struct DeviceGossipCommWorkerBuilder {
 }
 
 impl DeviceGossipCommWorkerBuilder {
-  pub fn new(num_workers: usize /*seed_rng: &mut R,*/ /*contexts: &[DeviceContext]*/) -> DeviceGossipCommWorkerBuilder {
+  pub fn new(num_workers: usize, buf_size: usize, /*contexts: &[DeviceContext]*/) -> DeviceGossipCommWorkerBuilder {
     //let num_workers = contexts.len();
+    let mut shared_bufs = Vec::with_capacity(2 * num_workers);
+    for_all_devices(num_workers, |contexts| {
+      for tid in 0 .. num_workers {
+        let ctx = contexts[tid].as_ref();
+        shared_bufs.push(Arc::new(unsafe { RawDeviceBuffer::new(buf_size, &ctx) }));
+      }
+      for tid in 0 .. num_workers {
+        let ctx = contexts[tid].as_ref();
+        shared_bufs.push(Arc::new(unsafe { RawDeviceBuffer::new(buf_size, &ctx) }));
+      }
+    });
     DeviceGossipCommWorkerBuilder{
       num_workers:  num_workers,
       barrier:      Arc::new(Barrier::new(num_workers)),
-      shared_bufs:  vec![], // FIXME(20160324)
+      shared_bufs:  shared_bufs, // FIXME(20160324)
       //shared_rns:   Arc::new(vec![]), // FIXME(20160325)
       //shared_seed:  [seed_rng.next_u64(), seed_rng.next_u64()],
       shared_seed:  [thread_rng().next_u64(), thread_rng().next_u64()],
@@ -72,7 +93,15 @@ pub struct DeviceGossipCommWorker {
 }
 
 impl CommWorker for DeviceGossipCommWorker {
-  fn communicate(&mut self, data: &mut DeviceArray2d<f32>, ctx: &DeviceCtxRef) {
+  fn load(&mut self, offset: usize, data: &mut DeviceArray2d<f32>, ctx: &DeviceCtxRef) {
+    let src_tid = self.worker_data.tid();
+    let data = data.as_view(ctx).data;
+    data.raw_send(
+        &(*self.shared_bufs[src_tid]).as_ref_range(offset, offset + data.len()),
+    );
+  }
+
+  fn communicate(&mut self, ctx: &DeviceCtxRef) {
     let num_workers = self.worker_data.num_workers();
     if num_workers <= 1 {
       return;
@@ -92,9 +121,6 @@ impl CommWorker for DeviceGossipCommWorker {
       }
     }*/
 
-    data.as_view(ctx).data.raw_send(
-        &(*self.shared_bufs[src_tid]).as_ref(),
-    );
     self.shared_bufs[dst_tid].as_ref().raw_send(
         //&(*self.shared_bufs[num_workers + src_tid]).as_ref(),
         &self.shared_bufs[num_workers + src_tid],
@@ -110,9 +136,15 @@ impl CommWorker for DeviceGossipCommWorker {
     // FIXME(20160329): should generally replace barriers w/ round numbers,
     // but this is less important for device-only communication.
     self.barrier.wait();
+  }
 
-    data.as_view_mut(ctx).data.raw_recv(
-        &(*self.shared_bufs[num_workers + src_tid]).as_ref(),
+  fn store(&mut self, offset: usize, data: &mut DeviceArray2d<f32>, ctx: &DeviceCtxRef) {
+    let num_workers = self.worker_data.num_workers();
+    let src_tid = self.worker_data.tid();
+    let mut data = data.as_view_mut(ctx).data;
+    let data_len = data.len();
+    data.raw_recv(
+        &(*self.shared_bufs[num_workers + src_tid]).as_ref_range(offset, offset + data_len),
     );
   }
 }
