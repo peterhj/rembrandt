@@ -45,8 +45,10 @@ use std::sync::{Arc, Barrier};
 fn main() {
   env_logger::init().unwrap();
 
-  let num_workers = 4;
+  let num_workers = 1;
   let batch_size = 32;
+  //let num_workers = 2;
+  //let batch_size = 16;
 
   let sgd_opt_cfg = SgdOptConfig{
     init_t:         None,
@@ -109,6 +111,7 @@ fn main() {
     act_func:       ActivationFunction::Identity,
   };
   let aff1_op_cfg = AffineOperatorConfig{
+    //in_channels:    784,
     in_channels:    2450,
     out_channels:   500,
     act_func:       ActivationFunction::Rect,
@@ -138,7 +141,7 @@ fn main() {
     .softmax_kl_loss(loss_cfg);
 
   // FIXME(20160331)
-  let comm_worker_builder = DeviceGossipCommWorkerBuilder::new(num_workers, 0);
+  let comm_worker_builder = DeviceGossipCommWorkerBuilder::new(num_workers, worker_cfg.params_len());
   let worker_builder = PipelineOperatorWorkerBuilder::new(num_workers, batch_size, worker_cfg, OpCapability::Backward);
   let pool = ThreadPool::new(num_workers);
   let barrier = Arc::new(Barrier::new(num_workers + 1));

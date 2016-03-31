@@ -123,6 +123,14 @@ impl PipelineOperatorWorkerConfig {
     }
   }
 
+  pub fn params_len(&self) -> usize {
+    let mut params_len = 0;
+    for op in self.hidden_ops.iter() {
+      params_len += op.params_len();
+    }
+    params_len
+  }
+
   pub fn data3d(&mut self, cfg: Data3dOperatorConfig) -> &mut Self {
     self.input_op = Some(OperatorConfig::Data3d(cfg));
     self
@@ -193,18 +201,22 @@ impl<Comm> OperatorWorkerBuilder<Comm> for PipelineOperatorWorkerBuilder<Comm> w
 
   fn into_worker(self, tid: usize, context: Rc<DeviceContext>, comm_worker: Rc<RefCell<Comm>>) -> PipelineOperatorWorker<Comm> {
     let config = self.config.clone();
+    let total_params_len = config.params_len();
     let input_op = config.input_op.unwrap().build_input_operator::<Comm>(self.batch_size, context.clone());
     let mut hidden_ops: Vec<Box<Operator>> = vec![];
+    let mut params_off = 0;
     for r in 0 .. config.hidden_ops.len() {
       let hidden_op = {
         let prev_op = match r {
           0 => input_op.downcast(),
           _ => &*hidden_ops[r-1],
         };
-        config.hidden_ops[r].build_operator(self.batch_size, self.capability, Some(prev_op), Some(comm_worker.clone()), context.clone())
+        config.hidden_ops[r].build_operator(self.batch_size, self.capability, params_off, Some(prev_op), Some(comm_worker.clone()), context.clone())
       };
       hidden_ops.push(hidden_op);
+      params_off += config.hidden_ops[r].params_len();
     }
+    assert_eq!(params_off, total_params_len);
     let loss_op = {
       let num_hidden_ops = hidden_ops.len();
       let prev_op = match num_hidden_ops {
@@ -278,23 +290,23 @@ impl<Comm> Operator for PipelineOperatorWorker<Comm> where Comm: 'static + CommW
 
   fn init_params(&mut self, shared_seed: [u64; 2]) {
     let mut rng = Xorshiftplus128Rng::from_seed(shared_seed);
-    for r in 0 .. self.hidden_ops.len() {
+    for op in self.hidden_ops.iter_mut() {
       let op_seed = [rng.next_u64(), rng.next_u64()];
-      self.hidden_ops[r].init_params(op_seed);
+      op.init_params(op_seed);
     }
   }
 
   fn load_params(&mut self, blob: &[u8]) -> usize {
     let mut offset = 0;
-    for r in 0 .. self.hidden_ops.len() {
-      offset += self.hidden_ops[r].load_params(&blob[offset .. ]);
+    for op in self.hidden_ops.iter_mut() {
+      offset += op.load_params(&blob[offset .. ]);
     }
     offset
   }
 
   fn save_params(&mut self, blob: &mut Vec<u8>) {
-    for r in 0 .. self.hidden_ops.len() {
-      self.hidden_ops[r].save_params(blob);
+    for op in self.hidden_ops.iter_mut() {
+      op.save_params(blob);
     }
   }
 
@@ -314,15 +326,13 @@ impl<Comm> Operator for PipelineOperatorWorker<Comm> where Comm: 'static + CommW
   }
 
   fn update_params(&mut self, step_size: f32, l2_reg_coef: f32) {
-    for r in 0 .. self.hidden_ops.len() {
-      self.hidden_ops[r].update_params(step_size, l2_reg_coef);
+    for op in self.hidden_ops.iter_mut() {
+      op.update_params(step_size, l2_reg_coef);
     }
   }
 
   fn sync_grads(&mut self) {
-    for r in 0 .. self.hidden_ops.len() {
-      self.hidden_ops[r].sync_grads();
-    }
+    unimplemented!();
   }
 
   fn stage_params(&mut self) {
@@ -332,16 +342,18 @@ impl<Comm> Operator for PipelineOperatorWorker<Comm> where Comm: 'static + CommW
   }
 
   fn sync_params(&mut self) {
-    let ctx = &(*self.context).as_ref();
-    self.comm_worker.borrow_mut().communicate(ctx);
+    {
+      let ctx = &(*self.context).as_ref();
+      self.comm_worker.borrow_mut().communicate(ctx);
+    }
     for op in self.hidden_ops.iter_mut() {
       op.sync_params();
     }
   }
 
   fn reset_grads(&mut self, scale: f32) {
-    for r in 0 .. self.hidden_ops.len() {
-      self.hidden_ops[r].reset_grads(scale);
+    for op in self.hidden_ops.iter_mut() {
+      op.reset_grads(scale);
     }
   }
 }

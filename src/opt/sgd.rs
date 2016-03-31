@@ -115,7 +115,7 @@ impl SgdOpt {
           }
         }
         operator.loss_operator(0).stage_label(batch_idx, maybe_label.unwrap());
-        operator.loss_operator(0).stage_weight(batch_idx, 1.0); //minibatch_weight);
+        operator.loss_operator(0).stage_weight(batch_idx, minibatch_weight);
         local_idx += 1;
         batch_idx += 1;
 
@@ -124,8 +124,8 @@ impl SgdOpt {
           operator.loss_operator(0).load_labels(batch_size);
           operator.loss_operator(0).load_weights(batch_size);
           operator.forward(batch_size, OpPhase::Training);
-          operator.backward(batch_size);
           operator.loss_operator(0).store_output_categories(batch_size);
+          operator.backward(batch_size);
           acc_correct_count += operator.loss_operator(0).accuracy_count(batch_size);
           acc_total_count += batch_size;
           batch_idx = 0;
@@ -134,8 +134,11 @@ impl SgdOpt {
         if local_idx % local_minibatch_size == 0 {
           let step_size = sgd_opt_cfg.step_size.at_iter(iter_counter);
           let momentum = sgd_opt_cfg.momentum.at_iter(iter_counter);
-          operator.update_params(step_size / minibatch_size as f32, sgd_opt_cfg.l2_reg_coef);
-          operator.sync_params();
+          operator.update_params(step_size, sgd_opt_cfg.l2_reg_coef);
+          if num_workers > 1 {
+            operator.stage_params();
+            operator.sync_params();
+          }
           operator.reset_grads(momentum);
           iter_counter += 1;
 

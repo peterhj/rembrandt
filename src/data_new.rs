@@ -634,7 +634,7 @@ impl MnistDataSource {
 
   fn open_idx_file<R>(mut reader: R) -> (usize, Option<(usize, usize, usize)>, Vec<u8>) where R: Read {
     let magic: u32 = reader.read_u32::<BigEndian>().unwrap();
-    println!("DEBUG: mnist: magic: {:x}", magic);
+    //println!("DEBUG: mnist: magic: {:x}", magic);
     let magic2 = (magic >> 8) as u8;
     let magic3 = (magic >> 0) as u8;
     assert_eq!(magic2, 0x08);

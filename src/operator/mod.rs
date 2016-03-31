@@ -119,13 +119,21 @@ pub enum OperatorConfig {
 
 //impl<Comm2> OperatorConfig<Comm2> where Comm2: 'static + CommWorker {
 impl OperatorConfig {
-  pub fn build_node<Comm: 'static + CommWorker>(&self, batch_size: usize, capability: OpCapability, prev_op: Option<&Operator>, comm_worker: Option<Rc<RefCell<Comm>>>, context: Rc<DeviceContext>) -> OperatorNode {
+  pub fn params_len(&self) -> usize {
+    match self {
+      &OperatorConfig::Affine(ref cfg) => cfg.params_len(),
+      &OperatorConfig::Conv2d(ref cfg) => cfg.params_len(),
+      _ => 0,
+    }
+  }
+
+  pub fn build_node<Comm: 'static + CommWorker>(&self, batch_size: usize, capability: OpCapability, params_offset: Option<usize>, prev_op: Option<&Operator>, comm_worker: Option<Rc<RefCell<Comm>>>, context: Rc<DeviceContext>) -> OperatorNode {
     match self {
       &OperatorConfig::Affine(ref cfg) => {
-        OperatorNode::Hidden(Box::new(AffineOperator::new(batch_size, capability, *cfg, prev_op, comm_worker, context)))
+        OperatorNode::Hidden(Box::new(AffineOperator::new(batch_size, capability, params_offset.unwrap(), *cfg, prev_op, comm_worker, context)))
       }
       &OperatorConfig::Conv2d(ref cfg) => {
-        OperatorNode::Hidden(Box::new(Conv2dOperator::new(batch_size, capability, *cfg, prev_op, comm_worker, context)))
+        OperatorNode::Hidden(Box::new(Conv2dOperator::new(batch_size, capability, params_offset.unwrap(), *cfg, prev_op, comm_worker, context)))
       }
       &OperatorConfig::Pool2d(ref cfg) => {
         OperatorNode::Hidden(Box::new(Pool2dOperator::new(batch_size, *cfg, prev_op, context)))
@@ -146,15 +154,15 @@ impl OperatorConfig {
     }
   }
 
-  pub fn build_operator<Comm: 'static + CommWorker>(&self, batch_size: usize, capability: OpCapability, prev_op: Option<&Operator>, comm_worker: Option<Rc<RefCell<Comm>>>, context: Rc<DeviceContext>) -> Box<Operator> {
-    match self.build_node(batch_size, capability, prev_op, comm_worker, context) {
+  pub fn build_operator<Comm: 'static + CommWorker>(&self, batch_size: usize, capability: OpCapability, params_offset: usize, prev_op: Option<&Operator>, comm_worker: Option<Rc<RefCell<Comm>>>, context: Rc<DeviceContext>) -> Box<Operator> {
+    match self.build_node(batch_size, capability, Some(params_offset), prev_op, comm_worker, context) {
       OperatorNode::Hidden(op) => op,
       _ => unimplemented!(),
     }
   }
 
   pub fn build_input_operator<Comm: 'static + CommWorker>(&self, batch_size: usize, context: Rc<DeviceContext>) -> Box<InputOperator> {
-    match self.build_node::<Comm>(batch_size, OpCapability::Forward, None, None, context) {
+    match self.build_node::<Comm>(batch_size, OpCapability::Forward, None, None, None, context) {
       OperatorNode::Input(op) => op,
       _ => unimplemented!(),
     }
@@ -162,7 +170,7 @@ impl OperatorConfig {
 
   pub fn build_loss_operator<Comm: 'static + CommWorker>(&self, batch_size: usize, prev_op: Option<&Operator>, context: Rc<DeviceContext>) -> Box<LossOperator> {
     // FIXME(20160330): set proper `OpCapability`.
-    match self.build_node::<Comm>(batch_size, OpCapability::Backward, prev_op, None, context) {
+    match self.build_node::<Comm>(batch_size, OpCapability::Backward, None, prev_op, None, context) {
       OperatorNode::Loss(op) => op,
       _ => unimplemented!(),
     }
@@ -439,11 +447,17 @@ pub struct AffineOperatorConfig {
 }
 
 impl AffineOperatorConfig {
+  fn params_len(&self) -> usize {
+    let weights_len = self.in_channels * self.out_channels;
+    let bias_len = self.out_channels;
+    weights_len + bias_len
+  }
 }
 
 pub struct AffineOperator<Comm> {
   batch_cap:    usize,
   _capability:  OpCapability,
+  params_off:   usize,
   config:       AffineOperatorConfig,
 
   context:      Rc<DeviceContext>,
@@ -477,7 +491,7 @@ struct AffineHvBwdOperator {
 }
 
 impl<Comm> AffineOperator<Comm> where Comm: CommWorker {
-  pub fn new(batch_size: usize, capability: OpCapability, config: AffineOperatorConfig, prev_op: Option<&Operator>, comm_worker: Option<Rc<RefCell<Comm>>>, context: Rc<DeviceContext>) -> AffineOperator<Comm> {
+  pub fn new(batch_size: usize, capability: OpCapability, params_offset: usize, config: AffineOperatorConfig, prev_op: Option<&Operator>, comm_worker: Option<Rc<RefCell<Comm>>>, context: Rc<DeviceContext>) -> AffineOperator<Comm> {
     let in_channels = config.in_channels;
     let out_channels = config.out_channels;
 
@@ -504,6 +518,7 @@ impl<Comm> AffineOperator<Comm> where Comm: CommWorker {
     AffineOperator{
       batch_cap:    batch_size,
       _capability:  capability,
+      params_off:   params_offset,
       config:       config,
       context:      context.clone(),
       in_act:       match prev_op.unwrap().get_output_vars() {
@@ -717,9 +732,8 @@ impl<Comm> Operator for AffineOperator<Comm> where Comm: CommWorker {
     let ctx = &(*self.context).as_ref();
     let backward = self.backward.as_ref().unwrap();
     let mut comm_worker = backward.comm_worker.borrow_mut();
-    // FIXME(20160331)
-    comm_worker.load(0, &mut self.weights, ctx);
-    comm_worker.load(0, &mut self.bias, ctx);
+    comm_worker.load(self.params_off, &mut self.weights, ctx);
+    comm_worker.load(self.params_off, &mut self.bias, ctx);
   }
 
   fn sync_params(&mut self) {
@@ -727,9 +741,8 @@ impl<Comm> Operator for AffineOperator<Comm> where Comm: CommWorker {
     let ctx = &(*self.context).as_ref();
     let backward = self.backward.as_ref().unwrap();
     let mut comm_worker = backward.comm_worker.borrow_mut();
-    // FIXME(20160331)
-    comm_worker.store(0, &mut self.weights, ctx);
-    comm_worker.store(0, &mut self.bias, ctx);
+    comm_worker.store(self.params_off, &mut self.weights, ctx);
+    comm_worker.store(self.params_off, &mut self.bias, ctx);
   }
 
   fn reset_grads(&mut self, scale: f32) {
@@ -788,6 +801,7 @@ impl Conv2dOperatorConfig {
 pub struct Conv2dOperator<Comm> {
   batch_cap:    usize,
   _capability:  OpCapability,
+  params_off:   usize,
   config:       Conv2dOperatorConfig,
 
   context:      Rc<DeviceContext>,
@@ -824,7 +838,7 @@ struct Conv2dHvBwdOperator {
 }
 
 impl<Comm> Conv2dOperator<Comm> where Comm: CommWorker {
-  pub fn new(batch_size: usize, capability: OpCapability, config: Conv2dOperatorConfig, prev_op: Option<&Operator>, comm_worker: Option<Rc<RefCell<Comm>>>, context: Rc<DeviceContext>) -> Conv2dOperator<Comm> {
+  pub fn new(batch_size: usize, capability: OpCapability, params_offset: usize, config: Conv2dOperatorConfig, prev_op: Option<&Operator>, comm_worker: Option<Rc<RefCell<Comm>>>, context: Rc<DeviceContext>) -> Conv2dOperator<Comm> {
     let Conv2dOperatorConfig{
       in_dims, conv_size, conv_stride, conv_pad,
       .. } = config;
@@ -888,6 +902,7 @@ impl<Comm> Conv2dOperator<Comm> where Comm: CommWorker {
     Conv2dOperator{
       batch_cap:    batch_size,
       _capability:  capability,
+      params_off:   params_offset,
       config:       config,
       context:      context.clone(),
       in_act:       match prev_op.unwrap().get_output_vars() {
@@ -1130,9 +1145,8 @@ impl<Comm> Operator for Conv2dOperator<Comm> where Comm: CommWorker {
     let ctx = &(*self.context).as_ref();
     let backward = self.backward.as_ref().unwrap();
     let mut comm_worker = backward.comm_worker.borrow_mut();
-    // FIXME(20160331)
-    comm_worker.load(0, &mut self.weights, ctx);
-    comm_worker.load(0, &mut self.bias, ctx);
+    comm_worker.load(self.params_off, &mut self.weights, ctx);
+    comm_worker.load(self.params_off, &mut self.bias, ctx);
   }
 
   fn sync_params(&mut self) {
@@ -1140,9 +1154,8 @@ impl<Comm> Operator for Conv2dOperator<Comm> where Comm: CommWorker {
     let ctx = &(*self.context).as_ref();
     let backward = self.backward.as_ref().unwrap();
     let mut comm_worker = backward.comm_worker.borrow_mut();
-    // FIXME(20160331)
-    comm_worker.store(0, &mut self.weights, ctx);
-    comm_worker.store(0, &mut self.bias, ctx);
+    comm_worker.store(self.params_off, &mut self.weights, ctx);
+    comm_worker.store(self.params_off, &mut self.bias, ctx);
   }
 
   fn reset_grads(&mut self, scale: f32) {
