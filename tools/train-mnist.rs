@@ -39,90 +39,90 @@ use rand::{thread_rng};
 use std::cell::{RefCell};
 use std::rc::{Rc};
 use std::path::{PathBuf};
+use std::sync::{Arc, Barrier};
 
 fn main() {
   env_logger::init().unwrap();
 
-  let num_workers = 4;
-  let batch_size = 64;
+  let num_workers = 1;
+  let batch_size = 32;
 
   let sgd_opt_cfg = SgdOptConfig{
     init_t:         None,
     minibatch_size: num_workers * batch_size,
-    step_size:      StepSizeSchedule::Constant{
-      step_size:    0.01,
-    },
-    momentum:       MomentumSchedule::Constant{
-      momentum:     0.0,
-    },
+    step_size:      StepSizeSchedule::Constant{step_size: 0.01},
+    momentum:       MomentumSchedule::Constant{momentum: 0.0},
     l2_reg_coef:    0.0,
-    display_iters:  100,
-    valid_iters:    3000,
-    save_iters:     3000,
+    display_iters:  500,
+    valid_iters:    5000,
+    save_iters:     5000,
   };
   let datum_cfg = SampleDatumConfig::Bytes3d;
   let label_cfg = SampleLabelConfig::Category{
-    num_categories: 361,
+    num_categories: 10,
   };
 
   let data_op_cfg = Data3dOperatorConfig{
     dims:           (28, 28, 1),
+    //normalize:      false,
     normalize:      true,
   };
   let conv1_op_cfg = Conv2dOperatorConfig{
     in_dims:        (28, 28, 1),
-    conv_size:      3,
+    conv_size:      5,
     conv_stride:    1,
-    conv_pad:       1,
-    out_channels:   16,
-    act_func:       ActivationFunction::Rect,
+    conv_pad:       2,
+    out_channels:   20,
+    act_func:       ActivationFunction::Identity,
     init_weights:   ParamsInit::Uniform{half_range: 0.05},
     fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
     bwd_backend:    Conv2dBwdBackend::CudnnFastest,
   };
   let pool1_op_cfg = Pool2dOperatorConfig{
-    in_dims:        (28, 28, 16),
+    in_dims:        (28, 28, 20),
     pool_size:      2,
     pool_stride:    2,
     pool_pad:       0,
     pool_op:        PoolOperation::Max,
+    //pool_op:        PoolOperation::Average,
     act_func:       ActivationFunction::Identity,
   };
   let conv2_op_cfg = Conv2dOperatorConfig{
-    in_dims:        (14, 14, 16),
-    conv_size:      3,
+    in_dims:        (14, 14, 20),
+    conv_size:      5,
     conv_stride:    1,
-    conv_pad:       1,
-    out_channels:   16,
-    act_func:       ActivationFunction::Rect,
+    conv_pad:       2,
+    out_channels:   50,
+    act_func:       ActivationFunction::Identity,
     init_weights:   ParamsInit::Uniform{half_range: 0.05},
     fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
     bwd_backend:    Conv2dBwdBackend::CudnnFastest,
   };
   let pool2_op_cfg = Pool2dOperatorConfig{
-    in_dims:        (14, 14, 16),
+    in_dims:        (14, 14, 50),
     pool_size:      2,
     pool_stride:    2,
     pool_pad:       0,
     pool_op:        PoolOperation::Max,
+    //pool_op:        PoolOperation::Average,
     act_func:       ActivationFunction::Identity,
   };
   let aff1_op_cfg = AffineOperatorConfig{
-    in_channels:    784,
-    out_channels:   64,
+    in_channels:    2450,
+    out_channels:   500,
     act_func:       ActivationFunction::Rect,
     init_weights:   ParamsInit::Uniform{half_range: 0.05},
     backend:        AffineBackend::CublasGemm,
   };
   let aff2_op_cfg = AffineOperatorConfig{
-    in_channels:    64,
+    in_channels:    500,
     out_channels:   10,
     act_func:       ActivationFunction::Identity,
     init_weights:   ParamsInit::Uniform{half_range: 0.05},
     backend:        AffineBackend::CublasGemm,
   };
   let loss_cfg = CategoricalLossConfig{
-    category_count: 361,
+    category_count: 10,
   };
 
   let mut worker_cfg = PipelineOperatorWorkerConfig::new();
@@ -139,9 +139,11 @@ fn main() {
   let comm_worker_builder = DeviceGossipCommWorkerBuilder::new(num_workers);
   let worker_builder = PipelineOperatorWorkerBuilder::new(num_workers, batch_size, worker_cfg, OpCapability::Backward);
   let pool = ThreadPool::new(num_workers);
+  let barrier = Arc::new(Barrier::new(num_workers + 1));
   for tid in 0 .. num_workers {
     let comm_worker_builder = comm_worker_builder.clone();
     let worker_builder = worker_builder.clone();
+    let barrier = barrier.clone();
     pool.execute(move || {
       let context = Rc::new(DeviceContext::new(tid));
       let comm_worker = Rc::new(RefCell::new(comm_worker_builder.into_worker(tid)));
@@ -159,6 +161,8 @@ fn main() {
 
       let sgd_opt = SgdOpt;
       sgd_opt.train(sgd_opt_cfg, datum_cfg, label_cfg, &mut train_data, &mut valid_data, &mut worker);
+      barrier.wait();
     });
   }
+  barrier.wait();
 }

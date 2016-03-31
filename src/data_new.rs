@@ -634,8 +634,9 @@ impl MnistDataSource {
 
   fn open_idx_file<R>(mut reader: R) -> (usize, Option<(usize, usize, usize)>, Vec<u8>) where R: Read {
     let magic: u32 = reader.read_u32::<BigEndian>().unwrap();
-    let magic2 = (magic >> 16) as u8;
-    let magic3 = (magic >> 24) as u8;
+    println!("DEBUG: mnist: magic: {:x}", magic);
+    let magic2 = (magic >> 8) as u8;
+    let magic3 = (magic >> 0) as u8;
     assert_eq!(magic2, 0x08);
     let ndims = magic3 as usize;
     let mut dims = vec![];
@@ -665,12 +666,12 @@ impl DataSource for MnistDataSource {
     self.num_samples
   }
 
-  fn count_prefix_samples(&self, idx: usize) -> usize {
-    idx
+  fn count_prefix_samples(&self, ep_idx: usize) -> usize {
+    ep_idx
   }
 
-  fn count_suffix_samples(&self, idx: usize) -> usize {
-    idx + 1
+  fn count_suffix_samples(&self, ep_idx: usize) -> usize {
+    ep_idx + 1
   }
 
   fn num_episodes(&self) -> usize {
@@ -681,8 +682,9 @@ impl DataSource for MnistDataSource {
     (0, self.num_samples)
   }
 
-  fn get_episode_indices(&mut self, idx: usize) -> Option<(usize, usize)> {
-    Some((idx, idx + 1))
+  fn get_episode_indices(&mut self, ep_idx: usize) -> Option<(usize, usize)> {
+    //Some((idx, idx + 1))
+    Some((0, 1))
   }
 
   fn get_episode_sample(&mut self, datum_cfg: SampleDatumConfig, label_cfg: SampleLabelConfig, ep_idx: usize, sample_idx: usize) -> Option<(SampleDatum, Option<SampleLabel>)> {

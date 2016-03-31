@@ -117,13 +117,13 @@ impl<Comm> PipelineOperatorWorkerBuilder<Comm> where Comm: 'static + CommWorker 
     let config = self.config.clone();
     let input_op = config.input_op.unwrap().build_input_operator(self.batch_size, context.clone());
     let mut hidden_ops: Vec<Box<Operator>> = vec![];
-    for h in 0 .. config.hidden_ops.len() {
+    for r in 0 .. config.hidden_ops.len() {
       let hidden_op = {
-        let prev_op = match h {
+        let prev_op = match r {
           0 => input_op.downcast(),
-          _ => &*hidden_ops[h-1],
+          _ => &*hidden_ops[r-1],
         };
-        config.hidden_ops[h].build_operator(self.batch_size, self.capability, Some(prev_op), Some(comm_worker.clone()), context.clone())
+        config.hidden_ops[r].build_operator(self.batch_size, self.capability, Some(prev_op), Some(comm_worker.clone()), context.clone())
       };
       hidden_ops.push(hidden_op);
     }
@@ -187,6 +187,7 @@ impl<Comm> OperatorWorker for PipelineOperatorWorker<Comm> where Comm: 'static +
   }
 
   fn loss_operator(&mut self, rank: usize) -> &mut LossOperator {
+    assert_eq!(rank, 0);
     &mut *self.loss_op
   }
 }
@@ -214,22 +215,22 @@ impl<Comm> Operator for PipelineOperatorWorker<Comm> where Comm: 'static + CommW
 
   fn save_params(&mut self, blob: &mut Vec<u8>) {
     for r in 0 .. self.hidden_ops.len() {
-      self.save_params(blob);
+      self.hidden_ops[r].save_params(blob);
     }
   }
 
   fn forward(&mut self, batch_size: usize, phase: OpPhase) {
     self.input_op.forward(batch_size, phase);
-    for r in 0 .. self.hidden_ops.len() {
-      self.hidden_ops[r].forward(batch_size, phase);
+    for op in self.hidden_ops.iter_mut() {
+      op.forward(batch_size, phase);
     }
     self.loss_op.forward(batch_size, phase);
   }
 
   fn backward(&mut self, batch_size: usize) {
     self.loss_op.backward(batch_size);
-    for r in (0 .. self.hidden_ops.len()).rev() {
-      self.hidden_ops[r].backward(batch_size);
+    for op in self.hidden_ops.iter_mut().rev() {
+      op.backward(batch_size);
     }
   }
 

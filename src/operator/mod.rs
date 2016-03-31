@@ -12,10 +12,10 @@ use array_new::{
 };
 use cuda_dnn::v4::{
   CudnnConvFwdOp, CudnnConvBwdFilterOp, CudnnConvBwdDataOp,
-  CudnnAddOp, CudnnActKind, CudnnActOp, CudnnSoftmaxOp,
+  CudnnAddOp, CudnnActKind, CudnnActOp, CudnnSoftmaxOp, CudnnPoolingOp,
   CudnnTensorDesc, CudnnFilterDesc, CudnnConvDesc,
 };
-use cuda_dnn::v4::ffi::{cudnnConvolutionFwdAlgo_t};
+use cuda_dnn::v4::ffi::{cudnnConvolutionFwdAlgo_t, cudnnPoolingMode_t};
 use rembrandt_kernels::ffi::*;
 use rng::xorshift::{Xorshiftplus128Rng};
 
@@ -119,9 +119,8 @@ impl<Comm> OperatorConfig<Comm> where Comm: 'static + CommWorker {
       &OperatorConfig::Conv2d(ref cfg) => {
         OperatorNode::Hidden(Box::new(Conv2dOperator::new(batch_size, capability, *cfg, prev_op, comm_worker, context)))
       }
-      &OperatorConfig::Pool2d(ref _cfg) => {
-        // FIXME(20160330)
-        unimplemented!();
+      &OperatorConfig::Pool2d(ref cfg) => {
+        OperatorNode::Hidden(Box::new(Pool2dOperator::new(batch_size, *cfg, prev_op, context)))
       }
       &OperatorConfig::Data3d(ref cfg) => {
         OperatorNode::Input(Box::new(Data3dOperator::new(batch_size, *cfg, context)))
@@ -695,12 +694,10 @@ impl<Comm> Operator for AffineOperator<Comm> where Comm: CommWorker {
       backward.grad_bias.as_view_mut(ctx)
         .row_vector_sum(l2_reg_coef, &self.bias.as_view(ctx));
     }
-    {
-      self.weights.as_view_mut(ctx)
-        .matrix_sum(-step_size, &backward.grad_weights.as_view(ctx));
-      self.bias.as_view_mut(ctx)
-        .row_vector_sum(-step_size, &backward.grad_bias.as_view(ctx));
-    }
+    self.weights.as_view_mut(ctx)
+      .matrix_sum(-step_size, &backward.grad_weights.as_view(ctx));
+    self.bias.as_view_mut(ctx)
+      .row_vector_sum(-step_size, &backward.grad_bias.as_view(ctx));
   }
 
   fn sync_grads(&mut self) {
@@ -1104,12 +1101,10 @@ impl<Comm> Operator for Conv2dOperator<Comm> where Comm: CommWorker {
       backward.grad_bias.as_view_mut(ctx)
         .row_vector_sum(l2_reg_coef, &self.bias.as_view(ctx));
     }
-    {
-      self.weights.as_view_mut(ctx)
-        .matrix_sum(-step_size, &backward.grad_weights.as_view(ctx));
-      self.bias.as_view_mut(ctx)
-        .row_vector_sum(-step_size, &backward.grad_bias.as_view(ctx));
-    }
+    self.weights.as_view_mut(ctx)
+      .matrix_sum(-step_size, &backward.grad_weights.as_view(ctx));
+    self.bias.as_view_mut(ctx)
+      .row_vector_sum(-step_size, &backward.grad_bias.as_view(ctx));
   }
 
   fn sync_grads(&mut self) {
@@ -1171,16 +1166,34 @@ pub struct Pool2dOperator {
   out_act:      SharedDeviceBuf<f32>,
   out_delta:    SharedDeviceBuf<f32>,
 
-  pool_mask:    DeviceBuffer<f32>,
+  pooling:      CudnnPoolingOp,
 }
 
 impl Pool2dOperator {
   pub fn new(batch_size: usize, config: Pool2dOperatorConfig, prev_op: Option<&Operator>, context: Rc<DeviceContext>) -> Pool2dOperator {
     let in_dims = config.in_dims;
+    let (in_width, in_height, in_channels) = in_dims;
     let in_len = in_dims.len();
     let out_dims = config.get_out_dims();
+    let (out_width, out_height, out_channels) = out_dims;
     let out_len = out_dims.len();
     let ctx = &(*context).as_ref();
+    let pooling = match CudnnPoolingOp::create_2d_symmetric(
+        CudnnTensorDesc::<f32>::create_4d(in_width, in_height, in_channels, batch_size).unwrap(),
+        CudnnTensorDesc::<f32>::create_4d(in_width, in_height, in_channels, batch_size).unwrap(),
+        CudnnTensorDesc::<f32>::create_4d(out_width, out_height, out_channels, batch_size).unwrap(),
+        CudnnTensorDesc::<f32>::create_4d(out_width, out_height, out_channels, batch_size).unwrap(),
+        config.pool_size,
+        config.pool_stride,
+        config.pool_pad,
+        match config.pool_op {
+          PoolOperation::Max      => cudnnPoolingMode_t::Max,
+          PoolOperation::Average  => cudnnPoolingMode_t::AverageCountExcludingPadding,
+        },
+    ) {
+      Ok(pooling) => pooling,
+      Err(e) => panic!("Pool2dOperator failed to create CudnnPoolingOp: {:?}", e),
+    };
     Pool2dOperator{
       batch_cap:    batch_size,
       config:       config,
@@ -1192,7 +1205,7 @@ impl Pool2dOperator {
       in_delta:     prev_op.unwrap().get_output_deltas(),
       out_act:      Rc::new(RefCell::new(DeviceBuffer::<f32>::zeros(out_len * batch_size, ctx))),
       out_delta:    Rc::new(RefCell::new(DeviceBuffer::<f32>::zeros(out_len * batch_size, ctx))),
-      pool_mask:    DeviceBuffer::<f32>::zeros(in_len * batch_size, ctx),
+      pooling:      pooling,
     }
   }
 }
@@ -1213,15 +1226,27 @@ impl Operator for Pool2dOperator {
   fn forward(&mut self, batch_size: usize, phase: OpPhase) {
     assert!(batch_size <= self.batch_cap);
     let ctx = &(*self.context).as_ref();
-    // FIXME(20160330)
-    unimplemented!();
+    self.pooling.set_batch_size(batch_size).unwrap();
+    unsafe { self.pooling.forward(
+        self.in_act.borrow_mut().as_ref(ctx).as_ptr(),
+        self.out_act.borrow_mut().as_ref_mut(ctx).as_mut_ptr(),
+        &*ctx.get_dnn(),
+    ) }.unwrap();
   }
 
   fn backward(&mut self, batch_size: usize) {
-    assert!(batch_size <= self.batch_cap);
-    let ctx = &(*self.context).as_ref();
-    // FIXME(20160330)
-    unimplemented!();
+    if let Some(ref mut in_delta) = self.in_delta {
+      assert!(batch_size <= self.batch_cap);
+      let ctx = &(*self.context).as_ref();
+      self.pooling.set_batch_size(batch_size).unwrap();
+      unsafe { self.pooling.backward(
+          self.in_act.borrow_mut().as_ref(ctx).as_ptr(),
+          self.out_act.borrow_mut().as_ref(ctx).as_ptr(),
+          self.out_delta.borrow_mut().as_ref(ctx).as_ptr(),
+          in_delta.borrow_mut().as_ref_mut(ctx).as_mut_ptr(),
+          &*ctx.get_dnn(),
+      ) }.unwrap();
+    }
   }
 
   fn update_params(&mut self, _step_size: f32, _l2_reg_coef: f32) {
@@ -1318,7 +1343,7 @@ impl Operator for SoftmaxKLLossOperator {
     None
   }
 
-  fn forward(&mut self, batch_size: usize, phase: OpPhase) {
+  fn forward(&mut self, batch_size: usize, _phase: OpPhase) {
     assert!(batch_size <= self.batch_cap);
     let ctx = &(*self.context).as_ref();
     self.softmax.set_batch_size(batch_size).unwrap();
@@ -1393,6 +1418,8 @@ impl LossOperator for SoftmaxKLLossOperator {
   }
 
   fn store_output_values(&mut self, batch_size: usize) {
+    // FIXME(20160330)
+    unimplemented!();
   }
 
   fn get_output_values(&self, batch_size: usize) -> &Array2d<f32> {
@@ -1401,8 +1428,8 @@ impl LossOperator for SoftmaxKLLossOperator {
 
   fn store_output_categories(&mut self, batch_size: usize) {
     assert!(batch_size <= self.batch_cap);
-    assert!(self.loss_config.category_count <= 1024);
     let ctx = &(*self.context).as_ref();
+    assert!(self.loss_config.category_count <= 1024);
     unsafe { rembrandt_kernel_batch_blockreduce_argmax(
         self.out_values.as_view(ctx).as_ptr(),
         self.loss_config.category_count as i32,
@@ -1422,14 +1449,17 @@ impl LossOperator for SoftmaxKLLossOperator {
   fn accuracy_count(&self, batch_size: usize) -> usize {
     assert!(batch_size <= self.batch_cap);
     let mut correct_count = 0;
+    //print!("DEBUG: accuracy count: ");
     for (&y_label, &y_hat) in self.label_cats_h.as_slice().iter()
       .zip(self.out_cats_h.as_slice().iter())
       .take(batch_size)
     {
+      //print!("({} {}) ", y_label, y_hat);
       if y_label == y_hat {
         correct_count += 1;
       }
     }
+    //println!("");
     correct_count
   }
 }

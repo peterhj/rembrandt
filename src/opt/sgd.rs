@@ -40,7 +40,19 @@ pub enum StepSizeSchedule {
 
 impl StepSizeSchedule {
   pub fn at_iter(&self, t: usize) -> f32 {
-    unimplemented!();
+    match self {
+      &StepSizeSchedule::Constant{step_size} => {
+        step_size
+      }
+      &StepSizeSchedule::DecayOnce{..} => {
+        // FIXME(20160330)
+        unimplemented!();
+      }
+      &StepSizeSchedule::Decay{..} => {
+        // FIXME(20160330)
+        unimplemented!();
+      }
+    }
   }
 }
 
@@ -51,7 +63,11 @@ pub enum MomentumSchedule {
 
 impl MomentumSchedule {
   pub fn at_iter(&self, t: usize) -> f32 {
-    unimplemented!();
+    match self {
+      &MomentumSchedule::Constant{momentum} => {
+        momentum
+      }
+    }
   }
 }
 
@@ -79,23 +95,27 @@ impl SgdOpt {
       let mut acc_correct_count = 0;
       let mut acc_total_count = 0;
       train_data.each_sample(datum_cfg, label_cfg, &mut |epoch_idx, datum, maybe_label| {
+        if epoch_idx >= epoch_size {
+          return;
+        }
         match (label_cfg, maybe_label) {
           (SampleLabelConfig::Category{num_categories}, Some(&SampleLabel::Category{category})) => {
             assert!(category >= 0);
             assert!(category < num_categories);
           }
-          _ => {}
+          _ => panic!("SgdOpt: unsupported label"),
         }
         match datum {
-          &SampleDatum::WHCBytes(ref arr) => {
+          &SampleDatum::WHCBytes(ref frame_bytes) => {
+            //println!("DEBUG: frame: {:?}", frame_bytes.as_slice());
             copy_memory(
-                arr.as_slice(),
+                frame_bytes.as_slice(),
                 operator.input_operator().expose_host_frame_buf(batch_idx),
             );
           }
         }
         operator.loss_operator(0).stage_label(batch_idx, maybe_label.unwrap());
-        operator.loss_operator(0).stage_weight(batch_idx, minibatch_weight);
+        operator.loss_operator(0).stage_weight(batch_idx, 1.0); //minibatch_weight);
         local_idx += 1;
         batch_idx += 1;
 
@@ -114,7 +134,7 @@ impl SgdOpt {
         if local_idx % local_minibatch_size == 0 {
           let step_size = sgd_opt_cfg.step_size.at_iter(iter_counter);
           let momentum = sgd_opt_cfg.momentum.at_iter(iter_counter);
-          operator.update_params(step_size, sgd_opt_cfg.l2_reg_coef);
+          operator.update_params(step_size / minibatch_size as f32, sgd_opt_cfg.l2_reg_coef);
           operator.sync_params();
           operator.reset_grads(momentum);
           iter_counter += 1;
@@ -125,14 +145,16 @@ impl SgdOpt {
               let elapsed_ms = (lap_time - start_time).num_milliseconds();
               start_time = lap_time;
               let accuracy = acc_correct_count as f32 / acc_total_count as f32;
-              info!("SgdOpt: epoch: {} iter: {} sample {}/{} step: {} loss: {:.06} accuracy: {:.03} elapsed: {:.03} s",
+              info!("SgdOpt: epoch: {} iter: {} sample {}/{} step: {} momentum: {} loss: {:.06} accuracy: {:.03} elapsed: {:.03} s",
                   epoch_counter, iter_counter,
                   local_idx * num_workers, epoch_size,
-                  step_size,
+                  step_size, momentum,
                   0.0, //avg_loss,
                   accuracy,
                   elapsed_ms as f32 * 0.001,
               );
+              acc_correct_count = 0;
+              acc_total_count = 0;
             }
           }
 
@@ -143,6 +165,7 @@ impl SgdOpt {
           }
         }
       });
+      epoch_counter += 1;
     }
   }
 }

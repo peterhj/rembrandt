@@ -73,9 +73,13 @@ pub struct DeviceGossipCommWorker {
 
 impl CommWorker for DeviceGossipCommWorker {
   fn communicate(&mut self, data: &mut DeviceArray2d<f32>, ctx: &DeviceCtxRef) {
+    let num_workers = self.worker_data.num_workers();
+    if num_workers <= 1 {
+      return;
+    }
+
     self.rng.shuffle(&mut self.tids_perm);
 
-    let num_workers = self.worker_data.num_workers();
     let src_tid = self.worker_data.tid();
     let dst_tid = self.tids_perm[src_tid];
 
