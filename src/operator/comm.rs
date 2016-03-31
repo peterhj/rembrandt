@@ -23,6 +23,25 @@ pub trait CommWorker {
 }
 
 #[derive(Clone)]
+pub struct NullCommWorkerBuilder;
+
+impl CommWorkerBuilder for NullCommWorkerBuilder {
+  type Worker = NullCommWorker;
+
+  fn into_worker(self, tid: usize) -> Self::Worker {
+    NullCommWorker
+  }
+}
+
+pub struct NullCommWorker;
+
+impl CommWorker for NullCommWorker {
+  fn load(&mut self, offset: usize, data: &mut DeviceArray2d<f32>, ctx: &DeviceCtxRef) {}
+  fn communicate(&mut self, ctx: &DeviceCtxRef) {}
+  fn store(&mut self, offset: usize, data: &mut DeviceArray2d<f32>, ctx: &DeviceCtxRef) {}
+}
+
+#[derive(Clone)]
 pub struct DeviceAllReduceCommWorkerBuilder;
 
 pub struct DeviceAllReduceCommWorker;
@@ -42,16 +61,17 @@ impl CommWorker for DeviceAllReduceCommWorker {
 }
 
 #[derive(Clone)]
-pub struct DeviceGossipCommWorkerBuilder {
+pub struct DeviceSyncGossipCommWorkerBuilder {
   num_workers:  usize,
+  num_rounds:   usize,
   barrier:      Arc<Barrier>,
   shared_bufs:  Vec<Arc<RawDeviceBuffer<f32>>>,
   //shared_rns:   Arc<Vec<AtomicUsize>>,
   shared_seed:  [u64; 2],
 }
 
-impl DeviceGossipCommWorkerBuilder {
-  pub fn new(num_workers: usize, buf_size: usize, /*contexts: &[DeviceContext]*/) -> DeviceGossipCommWorkerBuilder {
+impl DeviceSyncGossipCommWorkerBuilder {
+  pub fn new(num_workers: usize, num_rounds: usize, buf_size: usize, /*contexts: &[DeviceContext]*/) -> DeviceSyncGossipCommWorkerBuilder {
     //let num_workers = contexts.len();
     let mut shared_bufs = Vec::with_capacity(2 * num_workers);
     for_all_devices(num_workers, |contexts| {
@@ -64,8 +84,9 @@ impl DeviceGossipCommWorkerBuilder {
         shared_bufs.push(Arc::new(unsafe { RawDeviceBuffer::new(buf_size, &ctx) }));
       }
     });
-    DeviceGossipCommWorkerBuilder{
+    DeviceSyncGossipCommWorkerBuilder{
       num_workers:  num_workers,
+      num_rounds:   num_rounds,
       barrier:      Arc::new(Barrier::new(num_workers)),
       shared_bufs:  shared_bufs,
       //shared_rns:   Arc::new(vec![]), // FIXME(20160325)
@@ -75,12 +96,13 @@ impl DeviceGossipCommWorkerBuilder {
   }
 }
 
-impl CommWorkerBuilder for DeviceGossipCommWorkerBuilder {
-  type Worker = DeviceGossipCommWorker;
+impl CommWorkerBuilder for DeviceSyncGossipCommWorkerBuilder {
+  type Worker = DeviceSyncGossipCommWorker;
 
-  fn into_worker(self, tid: usize) -> DeviceGossipCommWorker {
-    DeviceGossipCommWorker{
+  fn into_worker(self, tid: usize) -> DeviceSyncGossipCommWorker {
+    DeviceSyncGossipCommWorker{
       worker_data:  WorkerData::new(self.num_workers, tid),
+      num_rounds:   self.num_rounds,
       barrier:      self.barrier,
       shared_bufs:  self.shared_bufs,
       //shared_rns:   self.shared_rns,
@@ -91,8 +113,9 @@ impl CommWorkerBuilder for DeviceGossipCommWorkerBuilder {
   }
 }
 
-pub struct DeviceGossipCommWorker {
+pub struct DeviceSyncGossipCommWorker {
   worker_data:  WorkerData,
+  num_rounds:   usize,
   barrier:      Arc<Barrier>,
   shared_bufs:  Vec<Arc<RawDeviceBuffer<f32>>>,
   //shared_rns:   Arc<Vec<AtomicUsize>>,
@@ -102,7 +125,7 @@ pub struct DeviceGossipCommWorker {
   rng:          Xorshiftplus128Rng,
 }
 
-impl CommWorker for DeviceGossipCommWorker {
+impl CommWorker for DeviceSyncGossipCommWorker {
   fn load(&mut self, offset: usize, data: &mut DeviceArray2d<f32>, ctx: &DeviceCtxRef) {
     let src_tid = self.worker_data.tid();
     let data = data.as_view(ctx).data;
@@ -117,11 +140,6 @@ impl CommWorker for DeviceGossipCommWorker {
       return;
     }
 
-    self.rng.shuffle(&mut self.tids_perm);
-
-    let src_tid = self.worker_data.tid();
-    let dst_tid = self.tids_perm[src_tid];
-
     /*let src_rn = self.shared_rns[src_tid].load(Ordering::Acquire);
     // FIXME(20160325): exponential backoff.
     loop {
@@ -131,21 +149,28 @@ impl CommWorker for DeviceGossipCommWorker {
       }
     }*/
 
-    self.shared_bufs[dst_tid].as_ref().raw_send(
-        //&(*self.shared_bufs[num_workers + src_tid]).as_ref(),
-        &self.shared_bufs[num_workers + src_tid],
-        ctx,
-    );
-    self.avg_reduce.reduce(
-        &(*self.shared_bufs[src_tid]).as_ref(),
-        &(*self.shared_bufs[num_workers + src_tid]).as_ref(),
-        ctx,
-    );
-    ctx.sync();
+    for _ in 0 .. self.num_rounds {
+      self.rng.shuffle(&mut self.tids_perm);
 
-    // FIXME(20160329): should generally replace barriers w/ round numbers,
-    // but this is less important for device-only communication.
-    self.barrier.wait();
+      let src_tid = self.worker_data.tid();
+      let dst_tid = self.tids_perm[src_tid];
+
+      self.shared_bufs[dst_tid].as_ref().raw_send(
+          //&(*self.shared_bufs[num_workers + src_tid]).as_ref(),
+          &self.shared_bufs[num_workers + src_tid],
+          ctx,
+      );
+      self.avg_reduce.reduce(
+          &(*self.shared_bufs[src_tid]).as_ref(),
+          &(*self.shared_bufs[num_workers + src_tid]).as_ref(),
+          ctx,
+      );
+      ctx.sync();
+
+      // FIXME(20160329): should generally replace barriers w/ round numbers,
+      // but this is less important for device-only communication.
+      self.barrier.wait();
+    }
   }
 
   fn store(&mut self, offset: usize, data: &mut DeviceArray2d<f32>, ctx: &DeviceCtxRef) {
