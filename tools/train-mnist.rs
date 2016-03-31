@@ -47,8 +47,10 @@ fn main() {
 
   //let num_workers = 1;
   //let batch_size = 32;
-  let num_workers = 2;
-  let batch_size = 16;
+  //let num_workers = 2;
+  //let batch_size = 16;
+  let num_workers = 4;
+  let batch_size = 8;
 
   let sgd_opt_cfg = SgdOptConfig{
     init_t:         None,
@@ -67,8 +69,8 @@ fn main() {
 
   let data_op_cfg = Data3dOperatorConfig{
     dims:           (28, 28, 1),
-    //normalize:      false,
     normalize:      true,
+    preprocs:       vec![],
   };
   let conv1_op_cfg = Conv2dOperatorConfig{
     in_dims:        (28, 28, 1),

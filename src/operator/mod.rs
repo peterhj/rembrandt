@@ -139,7 +139,7 @@ impl OperatorConfig {
         OperatorNode::Hidden(Box::new(Pool2dOperator::new(batch_size, *cfg, prev_op, context)))
       }
       &OperatorConfig::Data3d(ref cfg) => {
-        OperatorNode::Input(Box::new(Data3dOperator::new(batch_size, *cfg, context)))
+        OperatorNode::Input(Box::new(Data3dOperator::new(batch_size, cfg.clone(), context)))
       }
       &OperatorConfig::SoftmaxKLLoss(ref cfg) => {
         OperatorNode::Loss(Box::new(SoftmaxKLLossOperator::new(batch_size, *cfg, prev_op, context)))
@@ -231,6 +231,14 @@ pub enum ParamsInit {
   Disabled,
   Normal{std: f32},
   Uniform{half_range: f32},
+}
+
+#[derive(Clone, Copy)]
+pub enum Data3dPreproc {
+  Crop{
+    crop_width:     usize,
+    crop_height:    usize,
+  },
 }
 
 #[derive(Clone, Copy)]
@@ -330,10 +338,11 @@ impl Operator for SplitOperator {
 
 pub struct JoinOperator;
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct Data3dOperatorConfig {
-  pub dims: (usize, usize, usize),
+  pub dims:         (usize, usize, usize),
   pub normalize:    bool,
+  pub preprocs:     Vec<Data3dPreproc>,
 }
 
 pub struct Data3dOperator {
@@ -345,6 +354,7 @@ pub struct Data3dOperator {
   in_buf_h:     Vec<u8>,
   in_buf:       DeviceBuffer<u8>,
   out_buf:      SharedDeviceBuf<f32>,
+  tmp_buf:      DeviceBuffer<f32>,
 }
 
 impl Data3dOperator {
@@ -358,6 +368,7 @@ impl Data3dOperator {
       in_buf_h:     repeat(0).take(batch_size * frame_len).collect(),
       in_buf:       DeviceBuffer::zeros(batch_size * frame_len, ctx),
       out_buf:      Rc::new(RefCell::new(DeviceBuffer::zeros(batch_size * frame_len, ctx))),
+      tmp_buf:      DeviceBuffer::zeros(batch_size * frame_len, ctx),
     }
   }
 }
@@ -380,11 +391,32 @@ impl Operator for Data3dOperator {
     let ctx = &(*self.context).as_ref();
     //let length = self.config.dims.len();
     let in_buf = self.in_buf.as_ref(ctx);
-    let mut out_buf = self.out_buf.borrow_mut().as_ref_mut(ctx);
-    if self.config.normalize {
-      in_buf.cast_bytes_normalized(&mut out_buf);
-    } else {
-      in_buf.cast_bytes(&mut out_buf);
+    let mut out_buf = self.out_buf.borrow_mut();
+    let num_preprocs = self.config.preprocs.len();
+    {
+      let mut dst_buf = if num_preprocs % 2 == 0 {
+        out_buf.as_ref_mut(ctx)
+      } else {
+        self.tmp_buf.as_ref_mut(ctx)
+      };
+      if self.config.normalize {
+        in_buf.cast_bytes_normalized(&mut dst_buf);
+      } else {
+        in_buf.cast_bytes(&mut dst_buf);
+      }
+    }
+    for (r, preproc) in self.config.preprocs.iter().enumerate() {
+      let (src_buf, target_buf) = if (num_preprocs - r - 1) % 2 == 0 {
+        (self.tmp_buf.as_ref(ctx), out_buf.as_ref_mut(ctx))
+      } else {
+        (out_buf.as_ref(ctx), self.tmp_buf.as_ref_mut(ctx))
+      };
+      match preproc {
+        &Data3dPreproc::Crop{crop_width, crop_height} => {
+          // FIXME(20160331)
+          unimplemented!();
+        }
+      }
     }
   }
 

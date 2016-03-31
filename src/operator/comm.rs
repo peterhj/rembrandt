@@ -152,17 +152,20 @@ impl CommWorker for DeviceSyncGossipCommWorker {
     for _ in 0 .. self.num_rounds {
       self.rng.shuffle(&mut self.tids_perm);
 
-      let src_tid = self.worker_data.tid();
-      let dst_tid = self.tids_perm[src_tid];
+      let self_tid = self.worker_data.tid();
+      let other_tid = self.tids_perm[self_tid];
 
-      self.shared_bufs[dst_tid].as_ref().raw_send(
-          //&(*self.shared_bufs[num_workers + src_tid]).as_ref(),
-          &self.shared_bufs[num_workers + src_tid],
+      // FIXME(20160331): flip the sense of the buffers.
+      let src_offset = 0;
+      let dst_offset = num_workers;
+
+      self.shared_bufs[src_offset + other_tid].as_ref().raw_send(
+          &self.shared_bufs[dst_offset + self_tid],
           ctx,
       );
       self.avg_reduce.reduce(
-          &(*self.shared_bufs[src_tid]).as_ref(),
-          &(*self.shared_bufs[num_workers + src_tid]).as_ref(),
+          &(*self.shared_bufs[src_offset + self_tid]).as_ref(),
+          &(*self.shared_bufs[dst_offset + self_tid]).as_ref(),
           ctx,
       );
       ctx.sync();
@@ -178,6 +181,7 @@ impl CommWorker for DeviceSyncGossipCommWorker {
     let src_tid = self.worker_data.tid();
     let mut data = data.as_view_mut(ctx).data;
     let data_len = data.len();
+    // FIXME(20160331): flip the sense of the buffers.
     data.raw_recv(
         &(*self.shared_bufs[num_workers + src_tid]).as_ref_range(offset, offset + data_len),
     );
