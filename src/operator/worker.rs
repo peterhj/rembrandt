@@ -6,9 +6,11 @@ use operator::{
   AffineOperatorConfig,
   Conv2dOperatorConfig,
   Pool2dOperatorConfig,
-  CategoricalLossConfig,
 };
 use operator::comm::{CommWorkerBuilder, CommWorker};
+use operator::loss::{
+  CategoricalLossConfig,
+};
 
 use array_cuda::device::context::{DeviceContext, DeviceCtxRef};
 use rng::xorshift::{Xorshiftplus128Rng};

@@ -20,6 +20,8 @@ use rembrandt::operator::{
   AffineOperatorConfig,
   Conv2dOperatorConfig,
   Pool2dOperatorConfig,
+};
+use rembrandt::operator::loss::{
   CategoricalLossConfig,
 };
 use rembrandt::operator::comm::{
