@@ -1,5 +1,5 @@
 use operator::{
-  Operator, InputOperator, LossOperator,
+  Operator, InputOperator,
   OperatorNode, OperatorConfig,
   OpCapability, OpPhase,
   Data3dOperatorConfig,
@@ -9,11 +9,13 @@ use operator::{
 };
 use operator::comm::{CommWorkerBuilder, CommWorker};
 use operator::loss::{
+  LossOperator,
   CategoricalLossConfig,
 };
 
 use array_cuda::device::context::{DeviceContext, DeviceCtxRef};
 use rng::xorshift::{Xorshiftplus128Rng};
+use procgroup::{ProcGroup};
 use threadpool::{ThreadPool};
 use worker::{WorkerData};
 
@@ -33,33 +35,149 @@ pub trait OperatorWorkerBuilder<Comm>: Send + Clone where Comm: 'static + CommWo
 
 pub trait OperatorWorker: Operator {
   fn num_workers(&self) -> usize;
-  fn tid(&self) -> usize;
+  fn worker_rank(&self) -> usize;
   fn shared_seed(&self) -> [u64; 2];
   fn input_operator(&mut self) -> &mut InputOperator;
   fn loss_count(&self) -> usize;
   fn loss_operator(&mut self, rank: usize) -> &mut LossOperator;
+  fn wait_barrier(&self);
 }
 
-pub struct OperatorServer<Comm, CBuilder, WBuilder>
+pub struct DistOperatorWorkerBuilder<Comm, B>: Send + Clone
+where Comm: 'static + CommWorker,
+      B: OperatorWorkerBuilder<Comm>,
+{
+  inner_builder:    B,
+}
+
+pub struct DistOperatorWorker<W, Pg>
+where W: OperatorWorker, Pg: ProcGroup<Pid=usize> {
+  inner_worker: W,
+  _marker:      PhantomData<Pg>,
+}
+
+impl<W, Pg> DistOperatorWorker<W, Pg>
+where W: OperatorWorker, Pg: ProcGroup<Pid=usize> {
+  pub fn new(inner_worker: W) -> DistOperatorWorker<W, Pg> {
+    DistOperatorWorker{
+      inner_worker: inner_worker,
+      _marker:      PhantomData,
+    }
+  }
+}
+
+impl<W, Pg> OperatorWorker for DistOperatorWorker<W, Pg>
+where W: OperatorWorker, Pg: ProcGroup<Pid=usize> {
+  fn num_workers(&self) -> usize {
+    // FIXME(20160402): this is absolutely false, since different nodes may
+    // have different numbers of workers.
+    let num_local_workers = self.inner_worker.num_workers();
+    let num_proc_peers = 0;
+    unimplemented!()
+    //num_local_workers * num_proc_peers
+  }
+
+  fn worker_rank(&self) -> usize {
+    // FIXME(20160402)
+    unimplemented!();
+  }
+
+  fn shared_seed(&self) -> [u64; 2] {
+    self.inner_worker.shared_seed()
+  }
+
+  fn input_operator(&mut self) -> &mut InputOperator {
+    self.inner_worker.input_operator()
+  }
+
+  fn loss_count(&self) -> usize {
+    self.inner_worker.loss_count()
+  }
+
+  fn loss_operator(&mut self, rank: usize) -> &mut LossOperator {
+    self.inner_worker.loss_operator(rank)
+  }
+
+  fn wait_barrier(&self) {
+  }
+}
+
+impl<W, Pg> Operator for DistOperatorWorker<W, Pg>
+where W: OperatorWorker, Pg: ProcGroup<Pid=usize> {
+  fn batch_size(&self) -> usize {
+    // FIXME(20160402)
+    unimplemented!();
+  }
+
+  fn init_params(&mut self, shared_seed: [u64; 2]) {
+    self.inner_worker.init_params(shared_seed);
+  }
+
+  fn load_params(&mut self, blob: &[u8]) -> usize {
+    self.inner_worker.load_params(blob)
+  }
+
+  fn save_params(&mut self, blob: &mut Vec<u8>) {
+    self.inner_worker.save_params(blob)
+  }
+
+  fn forward(&mut self, batch_size: usize, phase: OpPhase) {
+    self.inner_worker.forward(batch_size, phase);
+  }
+
+  fn backward(&mut self, batch_size: usize) {
+    self.inner_worker.backward(batch_size);
+  }
+
+  fn update_params(&mut self, step_size: f32, l2_reg_coef: f32) {
+    self.inner_worker.update_params(step_size, l2_reg_coef);
+  }
+
+  fn sync_grads(&mut self) {
+    unimplemented!();
+  }
+
+  fn stage_params(&mut self) {
+    self.inner_worker.stage_params();
+  }
+
+  fn sync_params(&mut self) {
+    self.inner_worker.sync_params();
+    // FIXME(20160402): additionally sync across nodes, and wait on a local
+    // barrier b/w device workers.
+    if self.inner_worker.worker_rank() == 0 {
+      unimplemented!();
+    }
+    self.inner_worker.wait_barrier();
+  }
+
+  fn reset_grads(&mut self, scale: f32) {
+    self.inner_worker.reset_grads(scale);
+  }
+}
+
+pub struct DeviceParallelOperatorServer<Comm, CBuilder, WBuilder>
 where Comm: 'static + CommWorker,
       CBuilder: CommWorkerBuilder<Worker=Comm>,
       WBuilder: OperatorWorkerBuilder<Comm>,
 {
   num_workers:  usize,
+  worker_pool:  ThreadPool,
   comm_worker_builder:  CBuilder,
   op_worker_builder:    WBuilder,
   join_barrier: Arc<Barrier>,
   _marker:      PhantomData<(Comm)>,
 }
 
-impl<Comm, CBuilder, WBuilder> OperatorServer<Comm, CBuilder, WBuilder>
-where Comm: 'static + CommWorker,
+impl<Comm, CBuilder, WBuilder> DeviceParallelOperatorServer<Comm, CBuilder, WBuilder>
+where Comm: 'static + CommWorker + Sync,
       CBuilder: 'static + CommWorkerBuilder<Worker=Comm>,
       WBuilder: 'static + OperatorWorkerBuilder<Comm>,
 {
-  pub fn new(num_workers: usize, comm_worker_builder: CBuilder, op_worker_builder: WBuilder) -> OperatorServer<Comm, CBuilder, WBuilder> {
-    OperatorServer{
+  pub fn new(num_workers: usize, comm_worker_builder: CBuilder, op_worker_builder: WBuilder) -> DeviceParallelOperatorServer<Comm, CBuilder, WBuilder> {
+    DeviceParallelOperatorServer{
       num_workers:  num_workers,
+      worker_pool:  ThreadPool::new(num_workers),
       comm_worker_builder:    comm_worker_builder,
       op_worker_builder:      op_worker_builder,
       join_barrier: Arc::new(Barrier::new(num_workers + 1)),
@@ -67,21 +185,17 @@ where Comm: 'static + CommWorker,
     }
   }
 
-  pub fn fork<F>(&self) {
-    let pool = ThreadPool::new(self.num_workers);
-    for tid in 0 .. self.num_workers {
-      let comm_worker_builder = self.comm_worker_builder.clone();
-      let op_worker_builder = self.op_worker_builder.clone();
-      let join_barrier = self.join_barrier.clone();
-      pool.execute(move || {
-        let context = Rc::new(DeviceContext::new(tid));
-        let comm_worker = Rc::new(RefCell::new(comm_worker_builder.into_worker(tid)));
-        let mut op_worker = op_worker_builder.into_worker(tid, context, comm_worker);
-        // FIXME(20160331): invoke user defined worker.
-        //f(&mut op_worker);
-        join_barrier.wait();
-      });
-    }
+  pub fn fork<F>(&self, tid: usize, f: F) where F: FnOnce(WBuilder::Worker) + Send + 'static {
+    let comm_worker_builder = self.comm_worker_builder.clone();
+    let op_worker_builder = self.op_worker_builder.clone();
+    let join_barrier = self.join_barrier.clone();
+    self.worker_pool.execute(move || {
+      let context = Rc::new(DeviceContext::new(tid));
+      let comm_worker = Rc::new(RefCell::new(comm_worker_builder.into_worker(tid)));
+      let mut op_worker = op_worker_builder.into_worker(tid, context, comm_worker);
+      f(op_worker);
+      join_barrier.wait();
+    });
   }
 
   pub fn join(self) {
@@ -263,7 +377,7 @@ impl<Comm> OperatorWorker for PipelineOperatorWorker<Comm> where Comm: 'static +
     self.worker_data.num_workers()
   }
 
-  fn tid(&self) -> usize {
+  fn worker_rank(&self) -> usize {
     self.worker_data.tid()
   }
 
@@ -282,6 +396,11 @@ impl<Comm> OperatorWorker for PipelineOperatorWorker<Comm> where Comm: 'static +
   fn loss_operator(&mut self, rank: usize) -> &mut LossOperator {
     assert_eq!(rank, 0);
     &mut *self.loss_op
+  }
+
+  fn wait_barrier(&self) {
+    // FIXME(20160402)
+    unimplemented!();
   }
 }
 

@@ -1,6 +1,7 @@
 use data_new::{SampleLabel};
 use operator::comm::{CommWorker};
 use operator::loss::{
+  LossOperator,
   CategoricalLossConfig,
   SoftmaxKLLossOperator,
 };
@@ -67,20 +68,6 @@ pub trait InputOperator: Operator {
   fn downcast(&self) -> &Operator;
   fn expose_host_frame_buf(&mut self, batch_idx: usize) -> &mut [u8];
   fn load_frames(&mut self, batch_size: usize);
-}
-
-pub trait LossOperator: Operator {
-  fn downcast(&self) -> &Operator;
-  fn stage_label(&mut self, batch_idx: usize, label: &SampleLabel);
-  fn load_labels(&mut self, batch_size: usize);
-  fn stage_weight(&mut self, batch_idx: usize, weight: f32);
-  fn load_weights(&mut self, batch_size: usize);
-  fn store_output_values(&mut self, batch_size: usize);
-  fn get_output_values(&self, batch_size: usize) -> &Array2d<f32>;
-  fn store_output_categories(&mut self, batch_size: usize);
-  fn get_output_categories(&self, batch_size: usize) -> &Array2d<i32>;
-  fn accuracy_count(&self, batch_size: usize) -> usize;
-  //fn reset_loss(&mut self);
 }
 
 pub enum OperatorNode {

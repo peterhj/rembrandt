@@ -1,5 +1,5 @@
 use data_new::{SampleLabel};
-use operator::{Operator, LossOperator, SharedDeviceBuf, OpPhase};
+use operator::{Operator, SharedDeviceBuf, OpPhase};
 
 use array_cuda::device::array::{DeviceArray2d};
 use array_cuda::device::context::{DeviceContext};
@@ -16,6 +16,20 @@ use rembrandt_kernels::ffi::*;
 
 use std::cell::{RefCell};
 use std::rc::{Rc};
+
+pub trait LossOperator: Operator {
+  fn downcast(&self) -> &Operator;
+  fn stage_label(&mut self, batch_idx: usize, label: &SampleLabel);
+  fn load_labels(&mut self, batch_size: usize);
+  fn stage_weight(&mut self, batch_idx: usize, weight: f32);
+  fn load_weights(&mut self, batch_size: usize);
+  fn store_output_values(&mut self, batch_size: usize);
+  fn get_output_values(&self, batch_size: usize) -> &Array2d<f32>;
+  fn store_output_categories(&mut self, batch_size: usize);
+  fn get_output_categories(&self, batch_size: usize) -> &Array2d<i32>;
+  fn accuracy_count(&self, batch_size: usize) -> usize;
+  //fn reset_loss(&mut self);
+}
 
 #[derive(Clone, Copy)]
 pub struct CategoricalLossConfig {
@@ -213,4 +227,35 @@ impl LossOperator for SoftmaxKLLossOperator {
     //println!("");
     correct_count
   }
+}
+
+pub struct MarginalizedSoftmaxKLLossOperator {
+  batch_cap:    usize,
+  loss_config:  CategoricalLossConfig,
+
+  context:      Rc<DeviceContext>,
+
+  in_act:       SharedDeviceBuf<f32>,
+  in_delta:     SharedDeviceBuf<f32>,
+
+  label_cats:   DeviceArray2d<i32>,
+  label_cats_h: Array2d<i32>,
+  weights:      DeviceArray2d<f32>,
+  weights_h:    Array2d<f32>,
+  c_weights:    DeviceArray2d<f32>,
+  c_weights_h:  Array2d<f32>,
+
+  out_values:   DeviceArray2d<f32>,
+  out_values_h: Array2d<f32>,
+  max_value:    DeviceArray2d<f32>,
+  out_cats:     DeviceArray2d<i32>,
+  out_cats_h:   Array2d<i32>,
+  out_loss1:    DeviceArray2d<f32>,
+  out_loss:     DeviceBuffer<f32>,
+  out_loss_h:   Vec<f32>,
+
+  softmax:      CudnnSoftmaxOp,
+}
+
+impl MarginalizedSoftmaxKLLossOperator {
 }

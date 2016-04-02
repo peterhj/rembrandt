@@ -71,13 +71,20 @@ impl MomentumSchedule {
   }
 }
 
+pub struct Validation;
+
+impl Validation {
+  pub fn validate(&self, datum_cfg: SampleDatumConfig, label_cfg: SampleLabelConfig, valid_data: &mut DataIterator, operator: &mut OperatorWorker) {
+  }
+}
+
 pub struct SgdOpt;
 
 impl SgdOpt {
   pub fn train(&self, sgd_opt_cfg: SgdOptConfig, datum_cfg: SampleDatumConfig, label_cfg: SampleLabelConfig, train_data: &mut DataIterator, valid_data: &mut DataIterator, operator: &mut OperatorWorker) {
     let batch_size = operator.batch_size();
     let num_workers = operator.num_workers();
-    let tid = operator.tid();
+    let tid = operator.worker_rank();
     let minibatch_size = sgd_opt_cfg.minibatch_size;
     let minibatch_weight = 1.0 / minibatch_size as f32;
     let local_minibatch_size = minibatch_size / num_workers;
@@ -165,6 +172,8 @@ impl SgdOpt {
           }
 
           if iter_counter % sgd_opt_cfg.valid_iters == 0 {
+            let validation = Validation;
+            validation.validate(datum_cfg, label_cfg, valid_data, operator);
           }
         }
       });

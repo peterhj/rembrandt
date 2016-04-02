@@ -12,6 +12,7 @@ extern crate cuda_dnn;
 extern crate episodb;
 //extern crate linalg;
 extern crate lmdb;
+extern crate procgroup;
 extern crate protobuf;
 extern crate rembrandt_kernels;
 extern crate rng;
