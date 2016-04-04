@@ -52,7 +52,7 @@ fn main() {
   //let num_workers = 2;
   //let batch_size = 16;
   let num_workers = 4;
-  let batch_size = 8;
+  let batch_size = 32;
 
   let sgd_opt_cfg = SgdOptConfig{
     init_t:         None,
@@ -130,7 +130,7 @@ fn main() {
     backend:        AffineBackend::CublasGemm,
   };
   let loss_cfg = CategoricalLossConfig{
-    category_count: 10,
+    num_categories: 10,
   };
 
   let mut worker_cfg = PipelineOperatorWorkerConfig::new();

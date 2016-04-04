@@ -43,11 +43,19 @@ pub trait OperatorWorker: Operator {
   fn wait_barrier(&self);
 }
 
-pub struct DistOperatorWorkerBuilder<Comm, B>: Send + Clone
+#[derive(Clone)]
+pub struct DistOperatorWorkerBuilder<Comm, B>
 where Comm: 'static + CommWorker,
       B: OperatorWorkerBuilder<Comm>,
 {
   inner_builder:    B,
+  _marker:          PhantomData<Comm>,
+}
+
+impl<Comm, B> DistOperatorWorkerBuilder<Comm, B>
+where Comm: 'static + CommWorker,
+      B: OperatorWorkerBuilder<Comm>,
+{
 }
 
 pub struct DistOperatorWorker<W, Pg>
