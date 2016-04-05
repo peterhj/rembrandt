@@ -1,6 +1,7 @@
 use array_new::{Shape, Array, ArrayViewMut, NdArraySerialize, Array3d, BitArray3d};
 use byteorder::{LittleEndian, BigEndian, ReadBytesExt};
 use episodb::{EpisoDb};
+use memmap::{Mmap, Protection};
 //use random::{XorShift128Plus};
 use rng::xorshift::{Xorshiftplus128Rng};
 use toml::{Parser};
@@ -603,18 +604,21 @@ pub struct MnistDataSource {
   num_samples:  usize,
   frame_size:   usize,
   data_dims:    (usize, usize, usize),
-  data_buf:     Vec<u8>,
+  //data_buf:     Vec<u8>,
+  data_file:    File,
+  data_buf:     Mmap,
   labels_buf:   Vec<u8>,
 }
 
 impl MnistDataSource {
   pub fn open(config: DataSourceConfig) -> MnistDataSource {
-    let data_file = match File::open(&config.data_path) {
+    let mut data_file = match File::open(&config.data_path) {
       Ok(file) => file,
       Err(e) => panic!("failed to open mnist data file: {:?}", e),
     };
-    let mut data_reader = BufReader::new(data_file);
-    let (n, data_dims, data_buf) = Self::open_idx_file(data_reader);
+    //let mut data_reader = BufReader::new(data_file);
+    //let (n, data_dims, data_buf) = Self::open_idx_file(data_reader);
+    let (n, data_dims, data_buf) = Self::mmap_idx_file(&mut data_file);
     let data_dims = data_dims.unwrap();
     let labels_file = match File::open(config.maybe_labels_path.as_ref().unwrap()) {
       Ok(file) => file,
@@ -627,6 +631,7 @@ impl MnistDataSource {
       num_samples:  n,
       frame_size:   data_dims.len(),
       data_dims:    data_dims,
+      data_file:    data_file,
       data_buf:     data_buf,
       labels_buf:   labels_buf,
     }
@@ -650,6 +655,38 @@ impl MnistDataSource {
     }
     let mut buf = Vec::with_capacity(n * frame_size);
     reader.read_to_end(&mut buf);
+    assert_eq!(buf.len(), n * frame_size);
+    if ndims == 3 {
+      (n, Some((dims[2], dims[1], 1)), buf)
+    } else if ndims == 1 {
+      (n, None, buf)
+    } else {
+      unimplemented!();
+    }
+  }
+
+  fn mmap_idx_file(file: &mut File) -> (usize, Option<(usize, usize, usize)>, Mmap) {
+    let magic: u32 = file.read_u32::<BigEndian>().unwrap();
+    //println!("DEBUG: mnist: magic: {:x}", magic);
+    let magic2 = (magic >> 8) as u8;
+    let magic3 = (magic >> 0) as u8;
+    assert_eq!(magic2, 0x08);
+    let ndims = magic3 as usize;
+    let mut dims = vec![];
+    for d in 0 .. ndims {
+      dims.push(file.read_u32::<BigEndian>().unwrap() as usize);
+    }
+    let n = dims[0] as usize;
+    let mut frame_size = 1;
+    for d in 1 .. ndims {
+      frame_size *= dims[d] as usize;
+    }
+    //let mut buf = Vec::with_capacity(n * frame_size);
+    let buf = match Mmap::open_with_offset(file, Protection::Read, (1 + ndims) * 4, frame_size * n) {
+      Ok(buf) => buf,
+      Err(e) => panic!("failed to mmap buffer: {:?}", e),
+    };
+    //reader.read_to_end(&mut buf);
     assert_eq!(buf.len(), n * frame_size);
     if ndims == 3 {
       (n, Some((dims[2], dims[1], 1)), buf)
@@ -692,7 +729,8 @@ impl DataSource for MnistDataSource {
     if ep_idx >= self.num_samples {
       return None;
     }
-    let datum_value = (&self.data_buf[ep_idx * self.frame_size .. (ep_idx + 1) * self.frame_size]).to_vec();
+    //let datum_value = (&self.data_buf[ep_idx * self.frame_size .. (ep_idx + 1) * self.frame_size]).to_vec();
+    let datum_value = (&unsafe { self.data_buf.as_slice() }[ep_idx * self.frame_size .. (ep_idx + 1) * self.frame_size]).to_vec();
     let sample_datum = match datum_cfg {
       SampleDatumConfig::Bytes3d => {
         SampleDatum::WHCBytes(Array3d::with_data(datum_value, self.data_dims))

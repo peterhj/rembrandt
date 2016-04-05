@@ -127,11 +127,15 @@ pub struct DeviceSyncGossipCommWorker {
 
 impl CommWorker for DeviceSyncGossipCommWorker {
   fn load(&mut self, offset: usize, data: &mut DeviceArray2d<f32>, ctx: &DeviceCtxRef) {
-    let src_tid = self.worker_data.tid();
+    let self_tid = self.worker_data.tid();
     let data = data.as_view(ctx).data;
     data.raw_send(
-        &(*self.shared_bufs[src_tid]).as_ref_range(offset, offset + data.len()),
+        &(*self.shared_bufs[self_tid]).as_ref_range(offset, offset + data.len()),
     );
+    ctx.sync();
+    // FIXME(20160329): should generally replace barriers w/ round numbers,
+    // but this is less important for device-only communication.
+    self.barrier.wait();
   }
 
   fn communicate(&mut self, ctx: &DeviceCtxRef) {
@@ -149,6 +153,7 @@ impl CommWorker for DeviceSyncGossipCommWorker {
       }
     }*/
 
+    assert_eq!(self.num_rounds, 1);
     for _ in 0 .. self.num_rounds {
       self.rng.shuffle(&mut self.tids_perm);
 
@@ -159,17 +164,16 @@ impl CommWorker for DeviceSyncGossipCommWorker {
       let src_offset = 0;
       let dst_offset = num_workers;
 
-      self.shared_bufs[src_offset + other_tid].as_ref().raw_send(
+      self.shared_bufs[src_offset + self_tid].as_ref().raw_send(
           &self.shared_bufs[dst_offset + self_tid],
           ctx,
       );
       self.avg_reduce.reduce(
-          &(*self.shared_bufs[src_offset + self_tid]).as_ref(),
+          &(*self.shared_bufs[src_offset + other_tid]).as_ref(),
           &(*self.shared_bufs[dst_offset + self_tid]).as_ref(),
           ctx,
       );
       ctx.sync();
-
       // FIXME(20160329): should generally replace barriers w/ round numbers,
       // but this is less important for device-only communication.
       self.barrier.wait();
@@ -178,12 +182,16 @@ impl CommWorker for DeviceSyncGossipCommWorker {
 
   fn store(&mut self, offset: usize, data: &mut DeviceArray2d<f32>, ctx: &DeviceCtxRef) {
     let num_workers = self.worker_data.num_workers();
-    let src_tid = self.worker_data.tid();
+    let self_tid = self.worker_data.tid();
     let mut data = data.as_view_mut(ctx).data;
     let data_len = data.len();
     // FIXME(20160331): flip the sense of the buffers.
     data.raw_recv(
-        &(*self.shared_bufs[num_workers + src_tid]).as_ref_range(offset, offset + data_len),
+        &(*self.shared_bufs[num_workers + self_tid]).as_ref_range(offset, offset + data_len),
     );
+    ctx.sync();
+    // FIXME(20160329): should generally replace barriers w/ round numbers,
+    // but this is less important for device-only communication.
+    self.barrier.wait();
   }
 }

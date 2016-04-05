@@ -47,12 +47,8 @@ use std::sync::{Arc, Barrier};
 fn main() {
   env_logger::init().unwrap();
 
-  //let num_workers = 1;
-  //let batch_size = 32;
-  //let num_workers = 2;
-  //let batch_size = 16;
   let num_workers = 4;
-  let batch_size = 32;
+  let batch_size = 16;
 
   let sgd_opt_cfg = SgdOptConfig{
     init_t:         None,

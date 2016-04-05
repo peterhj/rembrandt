@@ -23,6 +23,7 @@ extern crate worker;
 extern crate log;
 extern crate byteorder;
 extern crate env_logger;
+extern crate memmap;
 extern crate rand;
 extern crate threadpool;
 extern crate time;

@@ -62,7 +62,7 @@ pub enum MomentumSchedule {
 }
 
 impl MomentumSchedule {
-  pub fn at_iter(&self, t: usize) -> f32 {
+  pub fn at_iter(&self, _t: usize) -> f32 {
     match self {
       &MomentumSchedule::Constant{momentum} => {
         momentum
@@ -75,6 +75,7 @@ pub struct Validation;
 
 impl Validation {
   pub fn validate(&self, datum_cfg: SampleDatumConfig, label_cfg: SampleLabelConfig, valid_data: &mut DataIterator, operator: &mut OperatorWorker) {
+    // FIXME(20160404)
   }
 }
 
@@ -86,8 +87,8 @@ impl SgdOpt {
     let num_workers = operator.num_workers();
     let tid = operator.worker_rank();
     let minibatch_size = sgd_opt_cfg.minibatch_size;
-    let minibatch_weight = 1.0 / minibatch_size as f32;
     let local_minibatch_size = minibatch_size / num_workers;
+    let local_minibatch_weight = 1.0 / local_minibatch_size as f32;
     let epoch_size = (train_data.max_num_samples() / local_minibatch_size) * local_minibatch_size;
 
     let shared_seed = operator.shared_seed();
@@ -122,7 +123,7 @@ impl SgdOpt {
           }
         }
         operator.loss_operator(0).stage_label(batch_idx, maybe_label.unwrap());
-        operator.loss_operator(0).stage_weight(batch_idx, minibatch_weight);
+        operator.loss_operator(0).stage_weight(batch_idx, local_minibatch_weight);
         local_idx += 1;
         batch_idx += 1;
 

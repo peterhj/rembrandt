@@ -33,6 +33,7 @@ byteorder = "*"
 env_logger = "*"
 libc = "*"
 log = "*"
+memmap = "*"
 protobuf = { path = "../rust-protobuf" }
 rand = "*"
 threadpool = "*"
