@@ -2,6 +2,7 @@ use operator::{
   Operator, InputOperator,
   OperatorNode, OperatorConfig,
   OpCapability, OpPhase,
+  Regularization,
   Data3dOperatorConfig,
   AffineOperatorConfig,
   Conv2dOperatorConfig,
@@ -137,8 +138,20 @@ where W: OperatorWorker, Pg: ProcGroup<Pid=usize> {
     self.inner_worker.backward(batch_size);
   }
 
-  fn update_params(&mut self, step_size: f32, l2_reg_coef: f32) {
-    self.inner_worker.update_params(step_size, l2_reg_coef);
+  fn regularize_grads(&mut self, reg: Regularization) {
+    self.inner_worker.regularize_grads(reg);
+  }
+
+  fn accumulate_grads(&mut self, step_size: f32, momentum: f32) {
+    self.inner_worker.accumulate_grads(step_size, momentum);
+  }
+
+  fn update_params(&mut self, momentum: f32, nesterov: bool) {
+    self.inner_worker.update_params(momentum, nesterov);
+  }
+
+  fn reset_params(&mut self, momentum: f32, nesterov: bool) {
+    self.inner_worker.reset_params(momentum, nesterov);
   }
 
   fn sync_grads(&mut self) {
@@ -454,9 +467,27 @@ impl<Comm> Operator for PipelineOperatorWorker<Comm> where Comm: 'static + CommW
     }
   }
 
-  fn update_params(&mut self, step_size: f32, l2_reg_coef: f32) {
+  fn regularize_grads(&mut self, reg: Regularization) {
     for op in self.hidden_ops.iter_mut() {
-      op.update_params(step_size, l2_reg_coef);
+      op.regularize_grads(reg);
+    }
+  }
+
+  fn accumulate_grads(&mut self, step_size: f32, momentum: f32) {
+    for op in self.hidden_ops.iter_mut() {
+      op.accumulate_grads(step_size, momentum);
+    }
+  }
+
+  fn update_params(&mut self, momentum: f32, nesterov: bool) {
+    for op in self.hidden_ops.iter_mut() {
+      op.update_params(momentum, nesterov);
+    }
+  }
+
+  fn reset_params(&mut self, momentum: f32, nesterov: bool) {
+    for op in self.hidden_ops.iter_mut() {
+      op.reset_params(momentum, nesterov);
     }
   }
 

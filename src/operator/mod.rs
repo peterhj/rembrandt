@@ -50,8 +50,11 @@ pub trait Operator {
 
   // Requires `Backward` capability.
   fn backward(&mut self, batch_size: usize);
-  fn update_params(&mut self, step_size: f32, l2_reg_coef: f32);
-  fn sync_grads(&mut self);
+  fn regularize_grads(&mut self, _reg: Regularization) {}
+  fn accumulate_grads(&mut self, _step_size: f32, _momentum: f32) {}
+  fn update_params(&mut self, _momentum: f32, _nesterov: bool) {}
+  fn reset_params(&mut self, _momentum: f32, _nesterov: bool) {}
+  fn sync_grads(&mut self) { unimplemented!(); }
   fn stage_params(&mut self) {}
   fn sync_params(&mut self) {}
   fn reset_grads(&mut self, scale: f32);
@@ -201,6 +204,11 @@ pub enum OpPhase {
 }
 
 #[derive(Clone, Copy)]
+pub enum Regularization {
+  L2{l2_reg_coef: f32},
+}
+
+#[derive(Clone, Copy)]
 pub enum HvDirectionInit {
   Gradient,
 }
@@ -311,10 +319,6 @@ impl Operator for SplitOperator {
     }
   }
 
-  fn update_params(&mut self, _step_size: f32, _l2_reg_coef: f32) {
-    // Do nothing.
-  }
-
   fn sync_grads(&mut self) {
     // Do nothing.
   }
@@ -416,10 +420,6 @@ impl Operator for Data3dOperator {
     // Do nothing.
   }
 
-  fn update_params(&mut self, _step_size: f32, _l2_reg_coef: f32) {
-    // Do nothing.
-  }
-
   fn sync_grads(&mut self) {
     // Do nothing.
   }
@@ -503,6 +503,8 @@ pub struct AffineOperator<Comm> {
 struct AffineBwdOperator<Comm> {
   grad_weights: DeviceArray2d<f32>,
   grad_bias:    DeviceArray2d<f32>,
+  acc_grad_weights: DeviceArray2d<f32>,
+  acc_grad_bias:    DeviceArray2d<f32>,
 
   unit_bias:    DeviceArray2d<f32>,
 
@@ -527,6 +529,8 @@ impl<Comm> AffineOperator<Comm> where Comm: CommWorker {
       Some(AffineBwdOperator{
         grad_weights: DeviceArray2d::<f32>::zeros((in_channels, out_channels), ctx),
         grad_bias:    DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
+        acc_grad_weights: DeviceArray2d::<f32>::zeros((in_channels, out_channels), ctx),
+        acc_grad_bias:    DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
         unit_bias:    unit_bias,
         comm_worker:  comm_worker.unwrap(),
       })
@@ -730,21 +734,66 @@ impl<Comm> Operator for AffineOperator<Comm> where Comm: CommWorker {
     }
   }
 
-  fn update_params(&mut self, step_size: f32, l2_reg_coef: f32) {
+  fn regularize_grads(&mut self, reg: Regularization) {
     assert!(self.backward.is_some());
-    assert!(l2_reg_coef >= 0.0);
     let ctx = &(*self.context).as_ref();
     let mut backward = self.backward.as_mut().unwrap();
-    if l2_reg_coef > 0.0 {
-      backward.grad_weights.as_view_mut(ctx)
-        .matrix_sum(l2_reg_coef, &self.weights.as_view(ctx));
-      backward.grad_bias.as_view_mut(ctx)
-        .row_vector_sum(l2_reg_coef, &self.bias.as_view(ctx));
+    match reg {
+      Regularization::L2{l2_reg_coef} => {
+        assert!(l2_reg_coef >= 0.0);
+        if l2_reg_coef > 0.0 {
+          backward.grad_weights.as_view_mut(ctx)
+            .matrix_sum(l2_reg_coef, &self.weights.as_view(ctx));
+          backward.grad_bias.as_view_mut(ctx)
+            .row_vector_sum(l2_reg_coef, &self.bias.as_view(ctx));
+        }
+      }
     }
-    self.weights.as_view_mut(ctx)
+  }
+
+  fn accumulate_grads(&mut self, step_size: f32, momentum: f32) {
+    assert!(self.backward.is_some());
+    let ctx = &(*self.context).as_ref();
+    let mut backward = self.backward.as_mut().unwrap();
+    assert!(step_size >= 0.0);
+    assert!(momentum >= 0.0);
+    backward.acc_grad_weights.as_view_mut(ctx)
+      .matrix_scale(momentum);
+    backward.acc_grad_bias.as_view_mut(ctx)
+      .row_vector_scale(momentum);
+    backward.acc_grad_weights.as_view_mut(ctx)
       .matrix_sum(-step_size, &backward.grad_weights.as_view(ctx));
-    self.bias.as_view_mut(ctx)
+    backward.acc_grad_bias.as_view_mut(ctx)
       .row_vector_sum(-step_size, &backward.grad_bias.as_view(ctx));
+  }
+
+  fn update_params(&mut self, momentum: f32, nesterov: bool) {
+    assert!(self.backward.is_some());
+    let ctx = &(*self.context).as_ref();
+    let mut backward = self.backward.as_mut().unwrap();
+    let scale = if nesterov {
+      assert!(momentum >= 0.0);
+      1.0 - momentum
+    } else {
+      1.0
+    };
+    self.weights.as_view_mut(ctx)
+      .matrix_sum(scale, &backward.acc_grad_weights.as_view(ctx));
+    self.bias.as_view_mut(ctx)
+      .row_vector_sum(scale, &backward.acc_grad_bias.as_view(ctx));
+  }
+
+  fn reset_params(&mut self, momentum: f32, nesterov: bool) {
+    assert!(self.backward.is_some());
+    if nesterov {
+      let ctx = &(*self.context).as_ref();
+      let mut backward = self.backward.as_mut().unwrap();
+      assert!(momentum >= 0.0);
+      self.weights.as_view_mut(ctx)
+        .matrix_sum(momentum, &backward.acc_grad_weights.as_view(ctx));
+      self.bias.as_view_mut(ctx)
+        .row_vector_sum(momentum, &backward.acc_grad_bias.as_view(ctx));
+    }
   }
 
   fn sync_grads(&mut self) {
@@ -849,6 +898,8 @@ pub struct Conv2dOperator<Comm> {
 struct Conv2dBwdOperator<Comm> {
   grad_weights: DeviceArray2d<f32>,
   grad_bias:    DeviceArray2d<f32>,
+  acc_grad_weights: DeviceArray2d<f32>,
+  acc_grad_bias:    DeviceArray2d<f32>,
 
   conv_bwd_w:   CudnnConvBwdFilterOp,
   conv_bwd_d:   CudnnConvBwdDataOp,
@@ -910,6 +961,8 @@ impl<Comm> Conv2dOperator<Comm> where Comm: CommWorker {
       Some(Conv2dBwdOperator{
         grad_weights: DeviceArray2d::<f32>::zeros((conv_size * conv_size * in_channels, out_channels), ctx),
         grad_bias:    DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
+        acc_grad_weights: DeviceArray2d::<f32>::zeros((conv_size * conv_size * in_channels, out_channels), ctx),
+        acc_grad_bias:    DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
         conv_bwd_w:   conv_bwd_w,
         conv_bwd_d:   conv_bwd_d,
         comm_worker:  comm_worker.unwrap(),
@@ -1143,7 +1196,69 @@ impl<Comm> Operator for Conv2dOperator<Comm> where Comm: CommWorker {
     }
   }
 
-  fn update_params(&mut self, step_size: f32, l2_reg_coef: f32) {
+  fn regularize_grads(&mut self, reg: Regularization) {
+    assert!(self.backward.is_some());
+    let ctx = &(*self.context).as_ref();
+    let mut backward = self.backward.as_mut().unwrap();
+    match reg {
+      Regularization::L2{l2_reg_coef} => {
+        assert!(l2_reg_coef >= 0.0);
+        if l2_reg_coef > 0.0 {
+          backward.grad_weights.as_view_mut(ctx)
+            .matrix_sum(l2_reg_coef, &self.weights.as_view(ctx));
+          backward.grad_bias.as_view_mut(ctx)
+            .row_vector_sum(l2_reg_coef, &self.bias.as_view(ctx));
+        }
+      }
+    }
+  }
+
+  fn accumulate_grads(&mut self, step_size: f32, momentum: f32) {
+    assert!(self.backward.is_some());
+    let ctx = &(*self.context).as_ref();
+    let mut backward = self.backward.as_mut().unwrap();
+    assert!(step_size >= 0.0);
+    assert!(momentum >= 0.0);
+    backward.acc_grad_weights.as_view_mut(ctx)
+      .matrix_scale(momentum);
+    backward.acc_grad_bias.as_view_mut(ctx)
+      .row_vector_scale(momentum);
+    backward.acc_grad_weights.as_view_mut(ctx)
+      .matrix_sum(-step_size, &backward.grad_weights.as_view(ctx));
+    backward.acc_grad_bias.as_view_mut(ctx)
+      .row_vector_sum(-step_size, &backward.grad_bias.as_view(ctx));
+  }
+
+  fn update_params(&mut self, momentum: f32, nesterov: bool) {
+    assert!(self.backward.is_some());
+    let ctx = &(*self.context).as_ref();
+    let mut backward = self.backward.as_mut().unwrap();
+    let scale = if nesterov {
+      assert!(momentum >= 0.0);
+      1.0 - momentum
+    } else {
+      1.0
+    };
+    self.weights.as_view_mut(ctx)
+      .matrix_sum(scale, &backward.acc_grad_weights.as_view(ctx));
+    self.bias.as_view_mut(ctx)
+      .row_vector_sum(scale, &backward.acc_grad_bias.as_view(ctx));
+  }
+
+  fn reset_params(&mut self, momentum: f32, nesterov: bool) {
+    assert!(self.backward.is_some());
+    if nesterov {
+      let ctx = &(*self.context).as_ref();
+      let mut backward = self.backward.as_mut().unwrap();
+      assert!(momentum >= 0.0);
+      self.weights.as_view_mut(ctx)
+        .matrix_sum(momentum, &backward.acc_grad_weights.as_view(ctx));
+      self.bias.as_view_mut(ctx)
+        .row_vector_sum(momentum, &backward.acc_grad_bias.as_view(ctx));
+    }
+  }
+
+  /*fn update_params(&mut self, step_size: f32, l2_reg_coef: f32) {
     assert!(self.backward.is_some());
     assert!(l2_reg_coef >= 0.0);
     let ctx = &(*self.context).as_ref();
@@ -1158,7 +1273,7 @@ impl<Comm> Operator for Conv2dOperator<Comm> where Comm: CommWorker {
       .matrix_sum(-step_size, &backward.grad_weights.as_view(ctx));
     self.bias.as_view_mut(ctx)
       .row_vector_sum(-step_size, &backward.grad_bias.as_view(ctx));
-  }
+  }*/
 
   fn sync_grads(&mut self) {
     unimplemented!();
@@ -1304,10 +1419,6 @@ impl Operator for Pool2dOperator {
           &*ctx.get_dnn(),
       ) }.unwrap();
     }
-  }
-
-  fn update_params(&mut self, _step_size: f32, _l2_reg_coef: f32) {
-    // Do nothing.
   }
 
   fn sync_grads(&mut self) {

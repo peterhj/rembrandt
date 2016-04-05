@@ -135,7 +135,8 @@ impl Operator for SoftmaxKLLossOperator {
     ) };
   }
 
-  fn update_params(&mut self, _step_size: f32, _l2_reg_coef: f32) {
+  //fn update_params(&mut self, _step_size: f32, _l2_reg_coef: f32) {
+  fn update_params(&mut self, _momentum: f32, _nesterov: bool) {
     // Do nothing.
   }
 
@@ -300,7 +301,8 @@ impl Operator for MarginalizedSoftmaxIndLossOperator {
     ) };
   }
 
-  fn update_params(&mut self, _step_size: f32, _l2_reg_coef: f32) {
+  //fn update_params(&mut self, _step_size: f32, _l2_reg_coef: f32) {
+  fn update_params(&mut self, _momentum: f32, _nesterov: bool) {
     // Do nothing.
   }
 

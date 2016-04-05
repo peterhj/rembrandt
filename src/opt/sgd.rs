@@ -2,7 +2,7 @@ use data_new::{
   DataIterator,
   SampleDatum, SampleDatumConfig, SampleLabel, SampleLabelConfig, 
 };
-use operator::{Operator, OpPhase};
+use operator::{Operator, OpPhase, Regularization};
 use operator::worker::{OperatorWorker};
 
 //use array_cuda::device::context::{DeviceCtxRef};
@@ -58,14 +58,22 @@ impl StepSizeSchedule {
 
 #[derive(Clone, Copy, Debug)]
 pub enum MomentumSchedule {
-  Constant{momentum: f32},
+  Constant{momentum: f32, nesterov: bool},
 }
 
 impl MomentumSchedule {
   pub fn at_iter(&self, _t: usize) -> f32 {
     match self {
-      &MomentumSchedule::Constant{momentum} => {
+      &MomentumSchedule::Constant{momentum, ..} => {
         momentum
+      }
+    }
+  }
+
+  pub fn is_nesterov(&self) -> bool {
+    match self {
+      &MomentumSchedule::Constant{nesterov, ..} => {
+        nesterov
       }
     }
   }
@@ -142,12 +150,16 @@ impl SgdOpt {
         if local_idx % local_minibatch_size == 0 {
           let step_size = sgd_opt_cfg.step_size.at_iter(iter_counter);
           let momentum = sgd_opt_cfg.momentum.at_iter(iter_counter);
-          operator.update_params(step_size, sgd_opt_cfg.l2_reg_coef);
+          let nesterov = sgd_opt_cfg.momentum.is_nesterov();
+          operator.regularize_grads(Regularization::L2{l2_reg_coef: sgd_opt_cfg.l2_reg_coef});
+          operator.accumulate_grads(step_size, momentum);
+          operator.update_params(momentum, nesterov);
           if num_workers > 1 {
             operator.stage_params();
             operator.sync_params();
           }
-          operator.reset_grads(momentum);
+          operator.reset_params(momentum, nesterov);
+          operator.reset_grads(0.0);
           iter_counter += 1;
 
           if iter_counter % sgd_opt_cfg.display_iters == 0 {

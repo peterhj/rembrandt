@@ -54,7 +54,7 @@ fn main() {
     init_t:         None,
     minibatch_size: num_workers * batch_size,
     step_size:      StepSizeSchedule::Constant{step_size: 0.01},
-    momentum:       MomentumSchedule::Constant{momentum: 0.0},
+    momentum:       MomentumSchedule::Constant{momentum: 0.0, nesterov: false},
     l2_reg_coef:    0.0,
     display_iters:  500,
     valid_iters:    5000,
