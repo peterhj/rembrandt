@@ -1,11 +1,11 @@
 # CIFAR-10.
 
 [dataset.train]
-source      = "cifar"
+source      = "cifar10"
 data_path   = "examples/cifar10/train.bin"
 normalize   = true
 
 [dataset.valid]
-source      = "cifar"
+source      = "cifar10"
 data_path   = "examples/cifar10/test.bin"
 normalize   = true

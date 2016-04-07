@@ -36,7 +36,7 @@ use rembrandt::operator::worker::{
   PipelineOperatorWorkerBuilder,
 };
 use rembrandt::opt::sgd::{
-  SgdOptConfig, StepSizeSchedule, MomentumStyle, SgdOpt,
+  SgdOptConfig, StepSizeSchedule, MomentumStyle, OptSharedData, SgdOpt,
 };
 use threadpool::{ThreadPool};
 
@@ -49,8 +49,8 @@ use std::sync::{Arc, Barrier};
 fn main() {
   env_logger::init().unwrap();
 
-  let num_workers = 16;
-  let batch_size = 16;
+  let num_workers = 8;
+  let batch_size = 128;
   info!("num workers: {} batch size: {}",
       num_workers, batch_size);
 
@@ -61,7 +61,7 @@ fn main() {
     momentum:       MomentumStyle::Nesterov{momentum: 0.9},
     l2_reg_coef:    1.0e-4,
     display_iters:  100,
-    valid_iters:    5000,
+    valid_iters:    500,
     save_iters:     5000,
   };
   info!("sgd: {:?}", sgd_opt_cfg);
@@ -81,14 +81,14 @@ fn main() {
     conv_size:      5,
     conv_stride:    1,
     conv_pad:       2,
-    out_channels:   20,
+    out_channels:   64,
     act_func:       ActivationFunction::Identity,
     init_weights:   ParamsInit::Uniform{half_range: 0.05},
     fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
     bwd_backend:    Conv2dBwdBackend::CudnnFastest,
   };
   let pool1_op_cfg = Pool2dOperatorConfig{
-    in_dims:        (32, 32, 20),
+    in_dims:        (32, 32, 64),
     pool_size:      2,
     pool_stride:    2,
     pool_pad:       0,
@@ -97,18 +97,18 @@ fn main() {
     act_func:       ActivationFunction::Identity,
   };
   let conv2_op_cfg = Conv2dOperatorConfig{
-    in_dims:        (16, 16, 20),
+    in_dims:        (16, 16, 64),
     conv_size:      5,
     conv_stride:    1,
     conv_pad:       2,
-    out_channels:   50,
+    out_channels:   128,
     act_func:       ActivationFunction::Identity,
     init_weights:   ParamsInit::Uniform{half_range: 0.05},
     fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
     bwd_backend:    Conv2dBwdBackend::CudnnFastest,
   };
   let pool2_op_cfg = Pool2dOperatorConfig{
-    in_dims:        (16, 16, 50),
+    in_dims:        (16, 16, 128),
     pool_size:      2,
     pool_stride:    2,
     pool_pad:       0,
@@ -117,14 +117,14 @@ fn main() {
     act_func:       ActivationFunction::Identity,
   };
   let aff1_op_cfg = AffineOperatorConfig{
-    in_channels:    3200,
-    out_channels:   500,
+    in_channels:    8192,
+    out_channels:   256,
     act_func:       ActivationFunction::Rect,
     init_weights:   ParamsInit::Uniform{half_range: 0.05},
     backend:        AffineBackend::CublasGemm,
   };
   let aff2_op_cfg = AffineOperatorConfig{
-    in_channels:    500,
+    in_channels:    256,
     out_channels:   10,
     act_func:       ActivationFunction::Identity,
     init_weights:   ParamsInit::Uniform{half_range: 0.05},
@@ -150,10 +150,12 @@ fn main() {
   let worker_builder = PipelineOperatorWorkerBuilder::new(num_workers, batch_size, worker_cfg, OpCapability::Backward);
   let pool = ThreadPool::new(num_workers);
   let join_barrier = Arc::new(Barrier::new(num_workers + 1));
+  let opt_shared = Arc::new(OptSharedData::new(num_workers));
   for tid in 0 .. num_workers {
     let comm_worker_builder = comm_worker_builder.clone();
     let worker_builder = worker_builder.clone();
     let join_barrier = join_barrier.clone();
+    let opt_shared = opt_shared.clone();
     pool.execute(move || {
       let context = Rc::new(DeviceContext::new(tid));
       let comm_worker = Rc::new(RefCell::new(comm_worker_builder.into_worker(tid)));
@@ -169,7 +171,7 @@ fn main() {
             Box::new(PartitionDataSource::new(tid, num_workers, dataset_cfg.build_with_cfg(datum_cfg, label_cfg, "valid")))
           );
 
-      let sgd_opt = SgdOpt::new();
+      let sgd_opt = SgdOpt::new(opt_shared);
       sgd_opt.train(sgd_opt_cfg, datum_cfg, label_cfg, &mut train_data, &mut valid_data, &mut worker);
       join_barrier.wait();
     });

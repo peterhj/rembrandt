@@ -36,7 +36,7 @@ use rembrandt::operator::worker::{
   PipelineOperatorWorkerBuilder,
 };
 use rembrandt::opt::sgd::{
-  SgdOptConfig, StepSizeSchedule, MomentumStyle, SgdOpt,
+  SgdOptConfig, StepSizeSchedule, MomentumStyle, OptSharedData, SgdOpt,
 };
 use threadpool::{ThreadPool};
 
@@ -59,9 +59,9 @@ fn main() {
     minibatch_size: num_workers * batch_size,
     step_size:      StepSizeSchedule::Constant{step_size: 0.01},
     momentum:       MomentumStyle::Nesterov{momentum: 0.9},
-    l2_reg_coef:    1.0e-5,
+    l2_reg_coef:    1.0e-4,
     display_iters:  100,
-    valid_iters:    5000,
+    valid_iters:    500,
     save_iters:     5000,
   };
   info!("sgd: {:?}", sgd_opt_cfg);
@@ -151,10 +151,12 @@ fn main() {
   let worker_builder = PipelineOperatorWorkerBuilder::new(num_workers, batch_size, worker_cfg, OpCapability::Backward);
   let pool = ThreadPool::new(num_workers);
   let join_barrier = Arc::new(Barrier::new(num_workers + 1));
+  let opt_shared = Arc::new(OptSharedData::new(num_workers));
   for tid in 0 .. num_workers {
     let comm_worker_builder = comm_worker_builder.clone();
     let worker_builder = worker_builder.clone();
     let join_barrier = join_barrier.clone();
+    let opt_shared = opt_shared.clone();
     pool.execute(move || {
       let context = Rc::new(DeviceContext::new(tid));
       let comm_worker = Rc::new(RefCell::new(comm_worker_builder.into_worker(tid)));
@@ -170,7 +172,7 @@ fn main() {
             Box::new(PartitionDataSource::new(tid, num_workers, dataset_cfg.build_with_cfg(datum_cfg, label_cfg, "valid")))
           );
 
-      let sgd_opt = SgdOpt::new();
+      let sgd_opt = SgdOpt::new(opt_shared);
       sgd_opt.train(sgd_opt_cfg, datum_cfg, label_cfg, &mut train_data, &mut valid_data, &mut worker);
       join_barrier.wait();
     });

@@ -341,7 +341,7 @@ impl DatasetConfig {
         match src_name as &str {
           "episodb" => Box::new(EpisoDbDataSource::open(data_cfg.clone())),
           "mnist"   => Box::new(MnistDataSource::open(data_cfg.clone())),
-          "cifar"   => Box::new(CifarDataSource::open(data_cfg.clone())),
+          "cifar10" => Box::new(Cifar10DataSource::open(data_cfg.clone())),
           _ => panic!("unknown data source: '{}'", src_name),
         }
       }
@@ -358,7 +358,7 @@ impl DatasetConfig {
         match src_name as &str {
           "episodb" => Box::new(EpisoDbDataSource::open(data_cfg)),
           "mnist"   => Box::new(MnistDataSource::open(data_cfg)),
-          "cifar"   => Box::new(CifarDataSource::open(data_cfg)),
+          "cifar10" => Box::new(Cifar10DataSource::open(data_cfg)),
           _ => panic!("unknown data source: '{}'", src_name),
         }
       }
@@ -750,7 +750,7 @@ impl DataSource for MnistDataSource {
   }
 }
 
-pub struct CifarDataSource {
+pub struct Cifar10DataSource {
   config:       DataSourceConfig,
   num_samples:  usize,
   frame_size:   usize,
@@ -759,14 +759,14 @@ pub struct CifarDataSource {
   data_buf:     Mmap,
 }
 
-impl CifarDataSource {
-  pub fn open(config: DataSourceConfig) -> CifarDataSource {
+impl Cifar10DataSource {
+  pub fn open(config: DataSourceConfig) -> Cifar10DataSource {
     let mut data_file = match File::open(&config.data_path) {
       Ok(file) => file,
-      Err(e) => panic!("failed to open cifar data file: {:?}", e),
+      Err(e) => panic!("failed to open cifar10 data file: {:?}", e),
     };
     let (n, data_dims, data_buf) = Self::mmap_bin_file(&mut data_file);
-    CifarDataSource{
+    Cifar10DataSource{
       config:       config,
       num_samples:  n,
       frame_size:   1 + data_dims.len(),
@@ -790,7 +790,7 @@ impl CifarDataSource {
   }
 }
 
-impl DataSource for CifarDataSource {
+impl DataSource for Cifar10DataSource {
   fn num_samples(&self) -> usize {
     self.num_samples
   }
