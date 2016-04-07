@@ -64,7 +64,7 @@ pub trait Operator {
   fn _stage_params_v2(&mut self, _comm_worker: &mut CommWorker) {}
   fn _sync_params_v2(&mut self, _comm_worker: &mut CommWorker) {}
   fn _unstage_params_v2(&mut self, _comm_worker: &mut CommWorker) {}
-  fn reset_grads(&mut self, scale: f32);
+  fn reset_grads(&mut self, _scale: f32) {}
   fn reset(&mut self) {}
 
   // Requires `HvBackward` capability.
@@ -96,6 +96,7 @@ pub enum OperatorConfig {
   Affine(AffineOperatorConfig),
   Conv2d(Conv2dOperatorConfig),
   Pool2d(Pool2dOperatorConfig),
+  Dropout(DropoutOperatorConfig),
   SoftmaxKLLoss(CategoricalLossConfig),
   Split((usize, usize, usize)),
   //Join((usize, usize, usize)),
@@ -140,6 +141,9 @@ impl OperatorConfig {
       }
       &OperatorConfig::Pool2d(ref cfg) => {
         OperatorNode::Hidden(Box::new(Pool2dOperator::new(batch_size, *cfg, prev_op, context)))
+      }
+      &OperatorConfig::Dropout(ref cfg) => {
+        OperatorNode::Hidden(Box::new(DropoutOperator::new(batch_size, *cfg, prev_op, context)))
       }
       &OperatorConfig::Data3d(ref cfg) => {
         OperatorNode::Input(Box::new(Data3dOperator::new(batch_size, cfg.clone(), context)))
@@ -1513,8 +1517,106 @@ impl Operator for Pool2dOperator {
   fn sync_params(&mut self) {
     // Do nothing.
   }
+}
 
-  fn reset_grads(&mut self, _scale: f32) {
+#[derive(Clone, Copy)]
+pub struct DropoutOperatorConfig {
+  pub channels:     usize,
+  pub drop_ratio:   f32,
+}
+
+pub struct DropoutOperator {
+  batch_cap:    usize,
+  config:       DropoutOperatorConfig,
+
+  context:      Rc<DeviceContext>,
+
+  in_act:       SharedDeviceBuf<f32>,
+  in_delta:     Option<SharedDeviceBuf<f32>>,
+  out_act:      SharedDeviceBuf<f32>,
+  out_delta:    SharedDeviceBuf<f32>,
+
+  //state:        DeviceBuffer<u8>,
+  //dropout:      CudnnDropoutOp,
+}
+
+impl DropoutOperator {
+  pub fn new(batch_size: usize, config: DropoutOperatorConfig, prev_op: Option<&Operator>, context: Rc<DeviceContext>) -> DropoutOperator {
+    let channels = config.channels;
+    let ctx = &(*context).as_ref();
+    /*let pooling = match CudnnPoolingOp::create_2d_symmetric(
+        CudnnTensorDesc::<f32>::create_4d(in_width, in_height, in_channels, batch_size).unwrap(),
+        CudnnTensorDesc::<f32>::create_4d(in_width, in_height, in_channels, batch_size).unwrap(),
+        CudnnTensorDesc::<f32>::create_4d(out_width, out_height, out_channels, batch_size).unwrap(),
+        CudnnTensorDesc::<f32>::create_4d(out_width, out_height, out_channels, batch_size).unwrap(),
+        config.pool_size,
+        config.pool_stride,
+        config.pool_pad,
+        match config.pool_op {
+          PoolOperation::Max      => cudnnPoolingMode_t::Max,
+          PoolOperation::Average  => cudnnPoolingMode_t::AverageCountExcludingPadding,
+        },
+    ) {
+      Ok(pooling) => pooling,
+      Err(e) => panic!("Pool2dOperator failed to create CudnnPoolingOp: {:?}", e),
+    };*/
+    DropoutOperator{
+      batch_cap:    batch_size,
+      config:       config,
+      context:      context.clone(),
+      in_act:       match prev_op.unwrap().get_output_vars() {
+        Some(vars) => vars,
+        None => panic!("DropoutOperator missing required prev operator output vars"),
+      },
+      in_delta:     prev_op.unwrap().get_output_deltas(),
+      out_act:      Rc::new(RefCell::new(DeviceBuffer::<f32>::zeros(channels * batch_size, ctx))),
+      out_delta:    Rc::new(RefCell::new(DeviceBuffer::<f32>::zeros(channels * batch_size, ctx))),
+    }
+  }
+}
+
+impl Operator for DropoutOperator {
+  fn batch_size(&self) -> usize {
+    self.batch_cap
+  }
+
+  fn get_output_vars(&self) -> Option<SharedDeviceBuf<f32>> {
+    Some(self.out_act.clone())
+  }
+
+  fn get_output_deltas(&self) -> Option<SharedDeviceBuf<f32>> {
+    Some(self.out_delta.clone())
+  }
+
+  fn forward(&mut self, batch_size: usize, phase: OpPhase) {
+    match phase {
+      OpPhase::Inference => {
+        // FIXME(20160407): Identity.
+        unimplemented!();
+      }
+      OpPhase::Training => {
+        assert!(batch_size <= self.batch_cap);
+        let ctx = &(*self.context).as_ref();
+        // FIXME(20160407)
+        unimplemented!();
+      }
+    }
+  }
+
+  fn backward(&mut self, batch_size: usize) {
+    if let Some(ref mut in_delta) = self.in_delta {
+      assert!(batch_size <= self.batch_cap);
+      let ctx = &(*self.context).as_ref();
+      // FIXME(20160407)
+      unimplemented!();
+    }
+  }
+
+  fn sync_grads(&mut self) {
+    // Do nothing.
+  }
+
+  fn sync_params(&mut self) {
     // Do nothing.
   }
 }
