@@ -12,6 +12,10 @@ path = "src/lib.rs"
 name = "train-mnist"
 path = "tools/train-mnist.rs"
 
+[[bin]]
+name = "train-cifar10"
+path = "tools/train-cifar10.rs"
+
 #[[bin]]
 #name = "bench-kernels"
 #path = "tools/bench-kernels.rs"

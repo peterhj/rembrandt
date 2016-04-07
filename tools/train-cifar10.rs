@@ -49,7 +49,7 @@ use std::sync::{Arc, Barrier};
 fn main() {
   env_logger::init().unwrap();
 
-  let num_workers = 8;
+  let num_workers = 16;
   let batch_size = 16;
   info!("num workers: {} batch size: {}",
       num_workers, batch_size);
@@ -59,7 +59,7 @@ fn main() {
     minibatch_size: num_workers * batch_size,
     step_size:      StepSizeSchedule::Constant{step_size: 0.01},
     momentum:       MomentumStyle::Nesterov{momentum: 0.9},
-    l2_reg_coef:    1.0e-5,
+    l2_reg_coef:    1.0e-4,
     display_iters:  100,
     valid_iters:    5000,
     save_iters:     5000,
@@ -72,12 +72,12 @@ fn main() {
   };
 
   let data_op_cfg = Data3dOperatorConfig{
-    dims:           (28, 28, 1),
+    dims:           (32, 32, 3),
     normalize:      true,
     preprocs:       vec![],
   };
   let conv1_op_cfg = Conv2dOperatorConfig{
-    in_dims:        (28, 28, 1),
+    in_dims:        (32, 32, 3),
     conv_size:      5,
     conv_stride:    1,
     conv_pad:       2,
@@ -88,7 +88,7 @@ fn main() {
     bwd_backend:    Conv2dBwdBackend::CudnnFastest,
   };
   let pool1_op_cfg = Pool2dOperatorConfig{
-    in_dims:        (28, 28, 20),
+    in_dims:        (32, 32, 20),
     pool_size:      2,
     pool_stride:    2,
     pool_pad:       0,
@@ -97,7 +97,7 @@ fn main() {
     act_func:       ActivationFunction::Identity,
   };
   let conv2_op_cfg = Conv2dOperatorConfig{
-    in_dims:        (14, 14, 20),
+    in_dims:        (16, 16, 20),
     conv_size:      5,
     conv_stride:    1,
     conv_pad:       2,
@@ -108,7 +108,7 @@ fn main() {
     bwd_backend:    Conv2dBwdBackend::CudnnFastest,
   };
   let pool2_op_cfg = Pool2dOperatorConfig{
-    in_dims:        (14, 14, 50),
+    in_dims:        (16, 16, 50),
     pool_size:      2,
     pool_stride:    2,
     pool_pad:       0,
@@ -117,8 +117,7 @@ fn main() {
     act_func:       ActivationFunction::Identity,
   };
   let aff1_op_cfg = AffineOperatorConfig{
-    //in_channels:    784,
-    in_channels:    2450,
+    in_channels:    3200,
     out_channels:   500,
     act_func:       ActivationFunction::Rect,
     init_weights:   ParamsInit::Uniform{half_range: 0.05},
@@ -160,7 +159,7 @@ fn main() {
       let comm_worker = Rc::new(RefCell::new(comm_worker_builder.into_worker(tid)));
       let mut worker = worker_builder.into_worker(tid, context, comm_worker);
 
-      let dataset_cfg = DatasetConfig::open(&PathBuf::from("examples/mnist.data"));
+      let dataset_cfg = DatasetConfig::open(&PathBuf::from("examples/cifar10.data"));
       let mut train_data =
           RandomEpisodeIterator::new(
             dataset_cfg.build_with_cfg(datum_cfg, label_cfg, "train"),

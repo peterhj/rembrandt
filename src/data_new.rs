@@ -341,6 +341,7 @@ impl DatasetConfig {
         match src_name as &str {
           "episodb" => Box::new(EpisoDbDataSource::open(data_cfg.clone())),
           "mnist"   => Box::new(MnistDataSource::open(data_cfg.clone())),
+          "cifar"   => Box::new(CifarDataSource::open(data_cfg.clone())),
           _ => panic!("unknown data source: '{}'", src_name),
         }
       }
@@ -357,6 +358,7 @@ impl DatasetConfig {
         match src_name as &str {
           "episodb" => Box::new(EpisoDbDataSource::open(data_cfg)),
           "mnist"   => Box::new(MnistDataSource::open(data_cfg)),
+          "cifar"   => Box::new(CifarDataSource::open(data_cfg)),
           _ => panic!("unknown data source: '{}'", src_name),
         }
       }
@@ -741,6 +743,94 @@ impl DataSource for MnistDataSource {
       SampleLabelConfig::Category{num_categories} => {
         let category = self.labels_buf[ep_idx] as i32;
         SampleLabel::Category{category: category}
+      }
+      _ => unimplemented!(),
+    };
+    Some((sample_datum, Some(sample_label)))
+  }
+}
+
+pub struct CifarDataSource {
+  config:       DataSourceConfig,
+  num_samples:  usize,
+  frame_size:   usize,
+  data_dims:    (usize, usize, usize),
+  data_file:    File,
+  data_buf:     Mmap,
+}
+
+impl CifarDataSource {
+  pub fn open(config: DataSourceConfig) -> CifarDataSource {
+    let mut data_file = match File::open(&config.data_path) {
+      Ok(file) => file,
+      Err(e) => panic!("failed to open cifar data file: {:?}", e),
+    };
+    let (n, data_dims, data_buf) = Self::mmap_bin_file(&mut data_file);
+    CifarDataSource{
+      config:       config,
+      num_samples:  n,
+      frame_size:   1 + data_dims.len(),
+      data_dims:    data_dims,
+      data_file:    data_file,
+      data_buf:     data_buf,
+    }
+  }
+
+  fn mmap_bin_file(file: &mut File) -> (usize, (usize, usize, usize), Mmap) {
+    let dims = (32, 32, 3);
+    let buf = match Mmap::open(file, Protection::Read) {
+      Ok(buf) => buf,
+      Err(e) => panic!("failed to mmap buffer: {:?}", e),
+    };
+    let buf_len = buf.len();
+    let frame_size = 1 + dims.len();
+    let n = buf_len / frame_size;
+    assert_eq!(0, buf_len % frame_size);
+    (n, dims, buf)
+  }
+}
+
+impl DataSource for CifarDataSource {
+  fn num_samples(&self) -> usize {
+    self.num_samples
+  }
+
+  fn count_prefix_samples(&self, ep_idx: usize) -> usize {
+    ep_idx
+  }
+
+  fn count_suffix_samples(&self, ep_idx: usize) -> usize {
+    ep_idx + 1
+  }
+
+  fn num_episodes(&self) -> usize {
+    self.num_samples
+  }
+
+  fn get_episodes_range(&self) -> (usize, usize) {
+    (0, self.num_samples)
+  }
+
+  fn get_episode_indices(&mut self, ep_idx: usize) -> Option<(usize, usize)> {
+    Some((0, 1))
+  }
+
+  fn get_episode_sample(&mut self, datum_cfg: SampleDatumConfig, label_cfg: SampleLabelConfig, ep_idx: usize, sample_idx: usize) -> Option<(SampleDatum, Option<SampleLabel>)> {
+    assert_eq!(sample_idx, 0);
+    if ep_idx >= self.num_samples {
+      return None;
+    }
+    let datum_value = (&unsafe { self.data_buf.as_slice() }[ep_idx * self.frame_size + 1 .. (ep_idx + 1) * self.frame_size]).to_vec();
+    let sample_datum = match datum_cfg {
+      SampleDatumConfig::Bytes3d => {
+        SampleDatum::WHCBytes(Array3d::with_data(datum_value, self.data_dims))
+      }
+      _ => unimplemented!(),
+    };
+    let label_value = &unsafe { self.data_buf.as_slice() }[ep_idx * self.frame_size .. ep_idx * self.frame_size + 1];
+    let sample_label = match label_cfg {
+      SampleLabelConfig::Category{num_categories} => {
+        SampleLabel::Category{category: label_value[0] as i32}
       }
       _ => unimplemented!(),
     };
