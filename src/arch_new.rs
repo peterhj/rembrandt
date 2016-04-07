@@ -213,6 +213,11 @@ impl PipelineArchConfig {
     self
   }
 
+  pub fn softmax_ind_loss(&mut self, layer_cfg: CategoricalLossLayerConfig) -> &mut PipelineArchConfig {
+    self.loss = Some(LayerConfig::SoftmaxIndicatorLoss(layer_cfg));
+    self
+  }
+
   pub fn logistic_ind_loss(&mut self, layer_cfg: CategoricalLossLayerConfig) -> &mut PipelineArchConfig {
     self.loss = Some(LayerConfig::LogisticIndicatorLoss(layer_cfg));
     self

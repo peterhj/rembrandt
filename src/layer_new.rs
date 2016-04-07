@@ -192,6 +192,7 @@ pub enum LayerConfig {
   /*ResidualConv2d(Conv2dLayerConfig),
   AffineConv2d(AffineConv2dLayerConfig),*/
   SoftmaxKLLoss(CategoricalLossLayerConfig),
+  SoftmaxIndicatorLoss(CategoricalLossLayerConfig),
   LogisticIndicatorLoss(CategoricalLossLayerConfig),
   AntilogisticKLLoss(CategoricalLossLayerConfig),
   AntilogisticIndicatorLoss(CategoricalLossLayerConfig),
@@ -236,6 +237,9 @@ impl LayerConfig {
     match *self {
       LayerConfig::SoftmaxKLLoss(cfg) => {
         Box::new(SoftmaxKLLossLayer::new(batch_size, cfg, prev_layer, ctx))
+      }
+      LayerConfig::SoftmaxIndicatorLoss(cfg) => {
+        Box::new(SoftmaxIndicatorLossLayer::new(batch_size, cfg, prev_layer, ctx))
       }
       LayerConfig::LogisticIndicatorLoss(cfg) => {
         Box::new(LogisticIndicatorLossLayer::new(batch_size, cfg, prev_layer, ctx))
@@ -1923,6 +1927,311 @@ impl Layer for SoftmaxKLLossLayer<Disable<SoftmaxKLLossHvData>> {
 }
 
 impl LossLayer for SoftmaxKLLossLayer<Disable<SoftmaxKLLossHvData>> {
+  fn downcast(&self) -> &Layer {
+    self
+  }
+
+  fn preload_label(&mut self, batch_idx: usize, label: &SampleLabel, phase: Phase) {
+    match label {
+      &SampleLabel::Category{category} => {
+        self.true_cats_h.as_mut_slice()[batch_idx] = category;
+      }
+      _ => unimplemented!(),
+    }
+  }
+
+  fn load_labels(&mut self, batch_size: usize, ctx: &DeviceCtxRef) {
+    assert!(batch_size <= self.batch_limit);
+    self.true_cats.as_view_mut(ctx)
+      .sync_load(&self.true_cats_h.as_view());
+  }
+
+  fn preload_weight(&mut self, batch_idx: usize, weight: f32) {
+    self.weights_h.as_mut_slice()[batch_idx] = weight;
+  }
+
+  fn load_weights(&mut self, batch_size: usize, ctx: &DeviceCtxRef) {
+    assert!(batch_size <= self.batch_limit);
+    self.weights.as_view_mut(ctx)
+      .sync_load(&self.weights_h.as_view());
+  }
+
+  fn store_labels(&mut self, batch_size: usize, phase: Phase, ctx: &DeviceCtxRef) {
+    assert!(batch_size <= self.batch_limit);
+    assert!(self.config.num_categories <= 1024);
+    unsafe { rembrandt_kernel_batch_blockreduce_argmax(
+        self.out_probs.as_view(ctx).as_ptr(),
+        self.config.num_categories as i32,
+        batch_size as i32,
+        self.max_prob.as_view_mut(ctx).as_mut_ptr(),
+        self.pred_cats.as_view_mut(ctx).as_mut_ptr(),
+        ctx.stream.ptr,
+    ) };
+    self.pred_cats.as_view(ctx)
+      .sync_store(&mut self.pred_cats_h.as_view_mut());
+  }
+
+  fn get_labels(&self, batch_size: usize) -> &Array2d<i32> {
+    &self.pred_cats_h
+  }
+
+  fn count_accuracy(&self, batch_size: usize, phase: Phase) -> (usize, usize) {
+    assert!(batch_size <= self.batch_limit);
+    let mut num_correct = 0;
+    for (&y_truth, &y_hat) in self.true_cats_h.as_slice().iter().zip(self.pred_cats_h.as_slice().iter()).take(batch_size) {
+      if y_truth == y_hat {
+        num_correct += 1;
+      }
+    }
+    //println!("DEBUG: count accuracy ({}): true: {:?}", batch_size, self.true_cats_h.as_slice());
+    //println!("DEBUG: count accuracy ({}): pred: {:?}", batch_size, self.pred_cats_h.as_slice());
+    (num_correct, batch_size)
+  }
+
+  fn store_probs(&mut self, batch_size: usize, ctx: &DeviceCtxRef) {
+    self.out_probs.as_view(ctx)
+      .sync_store(&mut self.out_probs_h.as_view_mut());
+  }
+
+  fn get_probs(&self, batch_size: usize) -> &Array2d<f32> {
+    &self.out_probs_h
+  }
+
+  fn preload_mask(&mut self, batch_idx: usize, bytemask: &[u8]) {
+    assert!(batch_idx < self.batch_limit);
+    let size = self.config.num_categories;
+    assert_eq!(size, bytemask.len());
+    copy_memory(
+        bytemask,
+        &mut self.bytemasks_h[batch_idx * size .. (batch_idx + 1) * size],
+    );
+  }
+
+  fn expose_host_mask_buf(&mut self, batch_idx: usize) -> &mut [u8] {
+    assert!(batch_idx < self.batch_limit);
+    let size = self.config.num_categories;
+    &mut self.bytemasks_h[batch_idx * size .. (batch_idx + 1) * size]
+  }
+
+  fn load_masks(&mut self, batch_size: usize, ctx: &DeviceCtxRef) {
+    assert!(batch_size <= self.batch_limit);
+    {
+      let bytemasks_h = &self.bytemasks_h;
+      let mut bytemasks = self.bytemasks.as_ref_mut(ctx);
+      bytemasks.sync_load(bytemasks_h);
+    }
+    {
+      let bytemasks = self.bytemasks.as_ref(ctx);
+      let mut masks = self.masks.as_ref_mut(ctx);
+      bytemasks.cast_bytes(&mut masks);
+    }
+  }
+
+  fn apply_masks(&mut self, batch_size: usize, ctx: &DeviceCtxRef) {
+    assert!(batch_size <= self.batch_limit);
+    // XXX(20160211): First zero out the masked probs, then renormalize.
+    let len = self.config.num_categories;
+    {
+      let masks = self.masks.as_ref(ctx);
+      let mut out_probs = self.out_probs.as_view_mut(ctx);
+      unsafe { rembrandt_kernel_map_multiply_float(
+          masks.as_ptr(),
+          (len * batch_size) as i32,
+          out_probs.as_mut_ptr(),
+          ctx.stream.ptr,
+      ) };
+    }
+    {
+      let out_probs = self.out_probs.as_view(ctx);
+      let mut sum_prob = self.sum_prob.as_view_mut(ctx);
+      assert!(len <= 1024);
+      unsafe { rembrandt_kernel_batch_blockreduce_sum(
+          out_probs.as_ptr(),
+          len as i32,
+          batch_size as i32,
+          sum_prob.as_mut_ptr(),
+          0.0,
+          ctx.stream.ptr,
+      ) };
+    }
+    {
+      let sum_prob = self.sum_prob.as_view(ctx);
+      let mut out_probs = self.out_probs.as_view_mut(ctx);
+      assert!(len <= 1024);
+      unsafe { rembrandt_kernel_batch_blockmap_normalize(
+          out_probs.as_mut_ptr(),
+          len as i32,
+          batch_size as i32,
+          sum_prob.as_ptr(),
+          ctx.stream.ptr,
+      ) };
+    }
+  }
+
+  fn reset_loss(&mut self, batch_size: usize, ctx: &DeviceCtxRef) {
+    self.out_loss1.as_view_mut(ctx).set_constant(0.0);
+    self.out_loss.as_ref_mut(ctx).set_constant(0.0);
+  }
+
+  fn accumulate_loss(&mut self, batch_size: usize, ctx: &DeviceCtxRef) {
+    assert!(batch_size <= self.batch_limit);
+    assert!(self.config.num_categories <= 1024);
+    unsafe { rembrandt_kernel_batch_map_softmax_cross_entropy_loss(
+        self.out_probs.as_view(ctx).as_ptr(),
+        self.config.num_categories as i32,
+        batch_size as i32,
+        self.true_cats.as_view(ctx).as_ptr(),
+        self.out_loss1.as_view_mut(ctx).as_mut_ptr(),
+        1.0,
+        ctx.stream.ptr,
+    ) };
+    assert!(batch_size <= 1024);
+    unsafe { rembrandt_kernel_batch_blockreduce_sum(
+        self.out_loss1.as_view(ctx).as_ptr(),
+        batch_size as i32,
+        1,
+        self.out_loss.as_ref_mut(ctx).as_mut_ptr(),
+        1.0,
+        ctx.stream.ptr,
+    ) };
+  }
+
+  fn store_loss(&mut self, ctx: &DeviceCtxRef) {
+    self.out_loss.as_ref(ctx)
+      .sync_store(&mut self.out_loss_h);
+  }
+
+  fn get_loss(&self) -> f32 {
+    self.out_loss_h[0]
+  }
+}
+
+pub struct SoftmaxIndicatorLossLayer {
+  batch_limit:  usize,
+  config:       CategoricalLossLayerConfig,
+
+  in_act:       SharedDeviceBuf<f32>,
+  in_delta:     SharedDeviceBuf<f32>,
+
+  max_logit:    DeviceArray2d<f32>,
+  norm_logits:  DeviceArray2d<f32>,
+  factors:      DeviceArray2d<f32>,
+  sum_factor:   DeviceArray2d<f32>,
+  max_prob:     DeviceArray2d<f32>,
+  sum_prob:     DeviceArray2d<f32>,
+  out_probs:    DeviceArray2d<f32>,
+  out_probs_h:  Array2d<f32>,
+
+  bytemasks_h:  Vec<u8>,
+  bytemasks:    DeviceBuffer<u8>,
+  masks:        DeviceBuffer<f32>,
+
+  out_loss1:    DeviceArray2d<f32>,
+  out_loss:     DeviceBuffer<f32>,
+  out_loss_h:   Vec<f32>,
+
+  pred_cats:    DeviceArray2d<i32>,
+  pred_cats_h:  Array2d<i32>,
+  true_cats:    DeviceArray2d<i32>,
+  true_cats_h:  Array2d<i32>,
+
+  weights:      DeviceArray2d<f32>,
+  weights_h:    Array2d<f32>,
+
+  softmax:      CudnnSoftmaxOp,
+}
+
+impl SoftmaxIndicatorLossLayer{
+  pub fn new(batch_size: usize, config: CategoricalLossLayerConfig, prev_layer: Option<&Layer>, ctx: &DeviceCtxRef) -> SoftmaxIndicatorLossLayer {
+    let softmax = CudnnSoftmaxOp::new(
+        CudnnTensorDesc::<f32>::create_4d(1, 1, config.num_categories, batch_size).unwrap(),
+        CudnnTensorDesc::<f32>::create_4d(1, 1, config.num_categories, batch_size).unwrap(),
+    );
+    SoftmaxIndicatorLossLayer{
+      batch_limit:  batch_size,
+      config:       config,
+
+      in_act:       prev_layer.unwrap().output_activation().unwrap(),
+      in_delta:     prev_layer.unwrap().output_delta().unwrap(),
+
+      max_logit:    DeviceArray2d::<f32>::zeros((1, batch_size), ctx),
+      norm_logits:  DeviceArray2d::<f32>::zeros((config.num_categories, batch_size), ctx),
+      factors:      DeviceArray2d::<f32>::zeros((config.num_categories, batch_size), ctx),
+      sum_factor:   DeviceArray2d::<f32>::zeros((1, batch_size), ctx),
+      max_prob:     DeviceArray2d::<f32>::zeros((1, batch_size), ctx),
+      sum_prob:     DeviceArray2d::<f32>::zeros((1, batch_size), ctx),
+      out_probs:    DeviceArray2d::<f32>::zeros((config.num_categories, batch_size), ctx),
+      out_probs_h:  Array2d::zeros((config.num_categories, batch_size)),
+
+      bytemasks_h:  repeat(0).take(config.num_categories * batch_size).collect(),
+      bytemasks:    DeviceBuffer::<u8>::zeros(config.num_categories * batch_size, ctx),
+      masks:        DeviceBuffer::<f32>::zeros(config.num_categories * batch_size, ctx),
+
+      out_loss1:    DeviceArray2d::<f32>::zeros((1, batch_size), ctx),
+      out_loss:     DeviceBuffer::<f32>::zeros(1, ctx),
+      out_loss_h:   vec![0.0],
+
+      pred_cats:    DeviceArray2d::<i32>::zeros((1, batch_size), ctx),
+      pred_cats_h:  Array2d::<i32>::zeros((1, batch_size)),
+      true_cats:    DeviceArray2d::<i32>::zeros((1, batch_size), ctx),
+      true_cats_h:  Array2d::<i32>::zeros((1, batch_size)),
+
+      weights:      DeviceArray2d::<f32>::zeros((1, batch_size), ctx),
+      weights_h:    Array2d::<f32>::zeros((1, batch_size)),
+
+      softmax:      softmax,
+    }
+  }
+}
+
+impl Layer for SoftmaxIndicatorLossLayer {
+  fn config(&self) -> LayerConfig {
+    LayerConfig::SoftmaxIndicatorLoss(self.config)
+  }
+
+  fn output_activation(&self) -> Option<SharedDeviceBuf<f32>> {
+    None
+  }
+
+  fn output_delta(&self) -> Option<SharedDeviceBuf<f32>> {
+    None
+  }
+
+  fn forward(&mut self, batch_size: usize, phase: Phase, ctx: &DeviceCtxRef) {
+    assert!(batch_size <= self.batch_limit);
+
+    self.softmax.set_batch_size(batch_size).unwrap();
+    unsafe { self.softmax.forward(
+        self.in_act.borrow_mut().as_ref(ctx).as_ptr(),
+        self.out_probs.as_view_mut(ctx).as_mut_ptr(),
+        &*ctx.get_dnn(),
+    ) }.unwrap();
+  }
+
+  fn backward(&mut self, batch_size: usize, _loss_scale: f32, ctx: &DeviceCtxRef) {
+    assert!(batch_size <= self.batch_limit);
+    /*unsafe { rembrandt_kernel_batch_map_softmax_kl_backward(
+        self.out_probs.as_view(ctx).as_ptr(),
+        self.config.num_categories as i32,
+        batch_size as i32,
+        self.true_cats.as_view(ctx).as_ptr(),
+        self.weights.as_view(ctx).as_ptr(),
+        self.in_delta.borrow_mut().as_ref_mut(ctx).as_mut_ptr(),
+        ctx.stream.ptr,
+    ) };*/
+    unsafe { rembrandt_kernel_batch_map_softmax_ind_backward(
+        self.out_probs.as_view(ctx).as_ptr(),
+        self.config.num_categories as i32,
+        batch_size as i32,
+        self.true_cats.as_view(ctx).as_ptr(),
+        self.weights.as_view(ctx).as_ptr(),
+        self.in_delta.borrow_mut().as_ref_mut(ctx).as_mut_ptr(),
+        ctx.stream.ptr,
+    ) };
+  }
+}
+
+impl LossLayer for SoftmaxIndicatorLossLayer {
   fn downcast(&self) -> &Layer {
     self
   }
