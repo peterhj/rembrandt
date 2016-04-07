@@ -8,6 +8,8 @@ use operator::worker::{OperatorWorker};
 //use array_cuda::device::context::{DeviceCtxRef};
 
 use std::slice::bytes::{copy_memory};
+use std::sync::{Arc};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use time::{get_time};
 
 #[derive(Clone, Copy, Debug)]
@@ -15,7 +17,7 @@ pub struct SgdOptConfig {
   pub init_t:         Option<usize>,
   pub minibatch_size: usize,
   pub step_size:      StepSizeSchedule,
-  pub momentum:       MomentumSchedule,
+  pub momentum:       MomentumStyle,
   pub l2_reg_coef:    f32,
 
   pub display_iters:  usize,
@@ -57,14 +59,22 @@ impl StepSizeSchedule {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub enum MomentumSchedule {
-  Constant{momentum: f32, nesterov: bool},
+pub enum MomentumStyle {
+  Zero,
+  Sgd{momentum: f32},
+  Nesterov{momentum: f32},
 }
 
-impl MomentumSchedule {
+impl MomentumStyle {
   pub fn at_iter(&self, _t: usize) -> f32 {
     match self {
-      &MomentumSchedule::Constant{momentum, ..} => {
+      &MomentumStyle::Zero => {
+        0.0
+      }
+      &MomentumStyle::Sgd{momentum} => {
+        momentum
+      }
+      &MomentumStyle::Nesterov{momentum} => {
         momentum
       }
     }
@@ -72,8 +82,11 @@ impl MomentumSchedule {
 
   pub fn is_nesterov(&self) -> bool {
     match self {
-      &MomentumSchedule::Constant{nesterov, ..} => {
-        nesterov
+      &MomentumStyle::Nesterov{..} => {
+        true
+      }
+      _ => {
+        false
       }
     }
   }
@@ -87,9 +100,31 @@ impl Validation {
   }
 }
 
-pub struct SgdOpt;
+pub struct OptSharedData {
+  pub acc_correct_count:    AtomicUsize,
+  pub acc_total_count:      AtomicUsize,
+}
+
+impl OptSharedData {
+  pub fn new() -> OptSharedData {
+    OptSharedData{
+      acc_correct_count:    AtomicUsize::new(0),
+      acc_total_count:      AtomicUsize::new(0),
+    }
+  }
+}
+
+pub struct SgdOpt {
+  shared:   Arc<OptSharedData>,
+}
 
 impl SgdOpt {
+  pub fn new() -> SgdOpt {
+    SgdOpt{
+      shared:   Arc::new(OptSharedData::new()),
+    }
+  }
+
   pub fn train(&self, sgd_opt_cfg: SgdOptConfig, datum_cfg: SampleDatumConfig, label_cfg: SampleLabelConfig, train_data: &mut DataIterator, valid_data: &mut DataIterator, operator: &mut OperatorWorker) {
     let batch_size = operator.batch_size();
     let num_workers = operator.num_workers();
@@ -105,11 +140,9 @@ impl SgdOpt {
     let mut start_time = get_time();
     let mut epoch_counter = 0;
     let mut iter_counter = 0;
+    let mut local_counter = 0;
     loop {
-      let mut local_idx = 0;
-      let mut batch_idx = 0;
-      let mut acc_correct_count = 0;
-      let mut acc_total_count = 0;
+      let mut batch_counter = 0;
       train_data.each_sample(datum_cfg, label_cfg, &mut |epoch_idx, datum, maybe_label| {
         if epoch_idx >= epoch_size {
           return;
@@ -126,40 +159,53 @@ impl SgdOpt {
             //println!("DEBUG: frame: {:?}", frame_bytes.as_slice());
             copy_memory(
                 frame_bytes.as_slice(),
-                operator.input_operator().expose_host_frame_buf(batch_idx),
+                operator.input_operator().expose_host_frame_buf(batch_counter),
             );
           }
         }
-        operator.loss_operator(0).stage_label(batch_idx, maybe_label.unwrap());
-        operator.loss_operator(0).stage_weight(batch_idx, local_minibatch_weight);
-        local_idx += 1;
-        batch_idx += 1;
+        operator.loss_operator(0).stage_label(batch_counter, maybe_label.unwrap());
+        operator.loss_operator(0).stage_weight(batch_counter, local_minibatch_weight);
+        local_counter += 1;
+        epoch_counter = local_counter * num_workers / epoch_size;
+        let epoch_offset = local_counter * num_workers % epoch_size;
+        batch_counter += 1;
 
-        if batch_idx == batch_size {
+        if batch_counter == batch_size {
           operator.input_operator().load_frames(batch_size);
           operator.loss_operator(0).load_labels(batch_size);
           operator.loss_operator(0).load_weights(batch_size);
           operator.forward(batch_size, OpPhase::Training);
           operator.loss_operator(0).store_output_categories(batch_size);
           operator.backward(batch_size);
-          acc_correct_count += operator.loss_operator(0).accuracy_count(batch_size);
-          acc_total_count += batch_size;
-          batch_idx = 0;
+          let local_correct_count = operator.loss_operator(0).accuracy_count(batch_size);
+          self.shared.acc_correct_count.fetch_add(local_correct_count, Ordering::AcqRel);
+          self.shared.acc_total_count.fetch_add(batch_size, Ordering::AcqRel);
+          batch_counter = 0;
         }
 
-        if local_idx % local_minibatch_size == 0 {
+        if local_counter % local_minibatch_size == 0 {
+          let l2_reg_coef = sgd_opt_cfg.l2_reg_coef;
           let step_size = sgd_opt_cfg.step_size.at_iter(iter_counter);
           let momentum = sgd_opt_cfg.momentum.at_iter(iter_counter);
           let nesterov = sgd_opt_cfg.momentum.is_nesterov();
-          operator.regularize_grads(Regularization::L2{l2_reg_coef: sgd_opt_cfg.l2_reg_coef});
-          operator.accumulate_grads(step_size, momentum);
-          operator.update_params(momentum, nesterov);
+          operator.regularize(Regularization::L2{l2_reg_coef: l2_reg_coef});
+          if nesterov {
+            operator.update_params(-momentum);
+          }
+          operator.accumulate_grads(-step_size, momentum);
+          //operator.save_params();
+          operator.update_params(1.0);
           if num_workers > 1 {
             operator.stage_params();
             operator.sync_params();
           }
-          operator.reset_params(momentum, nesterov);
-          operator.reset_grads(0.0);
+          // XXX(20160406): Interestingly, we should use the local update rather
+          // than the communicated update with momentum.
+          //operator.set_grads_with_params_diff();
+          if nesterov {
+            operator.update_params(momentum);
+          }
+          operator.reset();
           iter_counter += 1;
 
           if iter_counter % sgd_opt_cfg.display_iters == 0 {
@@ -167,17 +213,19 @@ impl SgdOpt {
               let lap_time = get_time();
               let elapsed_ms = (lap_time - start_time).num_milliseconds();
               start_time = lap_time;
+              let acc_correct_count = self.shared.acc_correct_count.load(Ordering::Acquire);
+              let acc_total_count = self.shared.acc_total_count.load(Ordering::Acquire);
               let accuracy = acc_correct_count as f32 / acc_total_count as f32;
-              info!("SgdOpt: epoch: {} iter: {} sample {}/{} step: {} momentum: {} loss: {:.06} accuracy: {:.03} elapsed: {:.03} s",
-                  epoch_counter, iter_counter,
-                  local_idx * num_workers, epoch_size,
+              info!("SgdOpt: iter: {} epoch: {} sample {}/{} step: {} momentum: {} loss: {:.06} train accuracy: {:.03} elapsed: {:.03} s",
+                  iter_counter, epoch_counter,
+                  epoch_offset, epoch_size,
                   step_size, momentum,
                   0.0, //avg_loss,
                   accuracy,
                   elapsed_ms as f32 * 0.001,
               );
-              acc_correct_count = 0;
-              acc_total_count = 0;
+              self.shared.acc_correct_count.store(0, Ordering::Release);
+              self.shared.acc_total_count.store(0, Ordering::Release);
             }
           }
 
@@ -190,7 +238,8 @@ impl SgdOpt {
           }
         }
       });
-      epoch_counter += 1;
+
+      //epoch_counter += 1;
     }
   }
 }

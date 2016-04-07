@@ -1,6 +1,8 @@
 extern crate array_cuda;
 extern crate rembrandt;
 
+#[macro_use]
+extern crate log;
 extern crate env_logger;
 extern crate rand;
 extern crate threadpool;
@@ -10,7 +12,7 @@ use rembrandt::data_new::{
   SampleDatumConfig, SampleLabelConfig,
   DatasetConfig,
   SampleIterator, RandomEpisodeIterator,
-  AugmentDataSource, PartitionDataSource,
+  PartitionDataSource,
 };
 use rembrandt::operator::{
   OpCapability,
@@ -34,11 +36,11 @@ use rembrandt::operator::worker::{
   PipelineOperatorWorkerBuilder,
 };
 use rembrandt::opt::sgd::{
-  SgdOptConfig, StepSizeSchedule, MomentumSchedule, SgdOpt,
+  SgdOptConfig, StepSizeSchedule, MomentumStyle, SgdOpt,
 };
 use threadpool::{ThreadPool};
 
-use rand::{thread_rng};
+//use rand::{thread_rng};
 use std::cell::{RefCell};
 use std::rc::{Rc};
 use std::path::{PathBuf};
@@ -47,19 +49,23 @@ use std::sync::{Arc, Barrier};
 fn main() {
   env_logger::init().unwrap();
 
-  let num_workers = 4;
+  let num_workers = 16;
   let batch_size = 16;
+  info!("num workers: {} batch size: {}",
+      num_workers, batch_size);
 
   let sgd_opt_cfg = SgdOptConfig{
     init_t:         None,
     minibatch_size: num_workers * batch_size,
     step_size:      StepSizeSchedule::Constant{step_size: 0.01},
-    momentum:       MomentumSchedule::Constant{momentum: 0.0, nesterov: false},
-    l2_reg_coef:    0.0,
-    display_iters:  500,
+    momentum:       MomentumStyle::Nesterov{momentum: 0.9},
+    l2_reg_coef:    1.0e-5,
+    display_iters:  100,
     valid_iters:    5000,
     save_iters:     5000,
   };
+  info!("sgd: {:?}", sgd_opt_cfg);
+
   let datum_cfg = SampleDatumConfig::Bytes3d;
   let label_cfg = SampleLabelConfig::Category{
     num_categories: 10,
@@ -144,11 +150,11 @@ fn main() {
   let comm_worker_builder = DeviceSyncGossipCommWorkerBuilder::new(num_workers, 1, worker_cfg.params_len());
   let worker_builder = PipelineOperatorWorkerBuilder::new(num_workers, batch_size, worker_cfg, OpCapability::Backward);
   let pool = ThreadPool::new(num_workers);
-  let barrier = Arc::new(Barrier::new(num_workers + 1));
+  let join_barrier = Arc::new(Barrier::new(num_workers + 1));
   for tid in 0 .. num_workers {
     let comm_worker_builder = comm_worker_builder.clone();
     let worker_builder = worker_builder.clone();
-    let barrier = barrier.clone();
+    let join_barrier = join_barrier.clone();
     pool.execute(move || {
       let context = Rc::new(DeviceContext::new(tid));
       let comm_worker = Rc::new(RefCell::new(comm_worker_builder.into_worker(tid)));
@@ -164,10 +170,10 @@ fn main() {
             Box::new(PartitionDataSource::new(tid, num_workers, dataset_cfg.build_with_cfg(datum_cfg, label_cfg, "valid")))
           );
 
-      let sgd_opt = SgdOpt;
+      let sgd_opt = SgdOpt::new();
       sgd_opt.train(sgd_opt_cfg, datum_cfg, label_cfg, &mut train_data, &mut valid_data, &mut worker);
-      barrier.wait();
+      join_barrier.wait();
     });
   }
-  barrier.wait();
+  join_barrier.wait();
 }

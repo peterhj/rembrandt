@@ -122,12 +122,12 @@ where W: OperatorWorker, Pg: ProcGroup<Pid=usize> {
     self.inner_worker.init_params(shared_seed);
   }
 
-  fn load_params(&mut self, blob: &[u8]) -> usize {
-    self.inner_worker.load_params(blob)
+  fn read_params(&mut self, blob: &[u8]) -> usize {
+    self.inner_worker.read_params(blob)
   }
 
-  fn save_params(&mut self, blob: &mut Vec<u8>) {
-    self.inner_worker.save_params(blob)
+  fn write_params(&mut self, blob: &mut Vec<u8>) {
+    self.inner_worker.write_params(blob)
   }
 
   fn forward(&mut self, batch_size: usize, phase: OpPhase) {
@@ -138,20 +138,35 @@ where W: OperatorWorker, Pg: ProcGroup<Pid=usize> {
     self.inner_worker.backward(batch_size);
   }
 
-  fn regularize_grads(&mut self, reg: Regularization) {
-    self.inner_worker.regularize_grads(reg);
+  fn regularize(&mut self, reg: Regularization) {
+    self.inner_worker.regularize(reg);
   }
 
-  fn accumulate_grads(&mut self, step_size: f32, momentum: f32) {
-    self.inner_worker.accumulate_grads(step_size, momentum);
+  fn accumulate_grads(&mut self, scale: f32, momentum: f32) {
+    self.inner_worker.accumulate_grads(scale, momentum);
   }
 
-  fn update_params(&mut self, momentum: f32, nesterov: bool) {
-    self.inner_worker.update_params(momentum, nesterov);
+  fn update_params(&mut self, scale: f32) {
+    self.inner_worker.update_params(scale);
   }
 
-  fn reset_params(&mut self, momentum: f32, nesterov: bool) {
+  /*fn reset_params(&mut self, momentum: f32, nesterov: bool) {
     self.inner_worker.reset_params(momentum, nesterov);
+  }*/
+
+  fn save_params(&mut self) {
+    // FIXME(20160406)
+    unimplemented!();
+  }
+
+  fn restore_params(&mut self) {
+    // FIXME(20160406)
+    unimplemented!();
+  }
+
+  fn set_grads_with_params_diff(&mut self) {
+    // FIXME(20160406)
+    unimplemented!();
   }
 
   fn sync_grads(&mut self) {
@@ -174,6 +189,10 @@ where W: OperatorWorker, Pg: ProcGroup<Pid=usize> {
 
   fn reset_grads(&mut self, scale: f32) {
     self.inner_worker.reset_grads(scale);
+  }
+
+  fn reset(&mut self) {
+    self.inner_worker.reset();
   }
 }
 
@@ -438,17 +457,17 @@ impl<Comm> Operator for PipelineOperatorWorker<Comm> where Comm: 'static + CommW
     }
   }
 
-  fn load_params(&mut self, blob: &[u8]) -> usize {
+  fn read_params(&mut self, blob: &[u8]) -> usize {
     let mut offset = 0;
     for op in self.hidden_ops.iter_mut() {
-      offset += op.load_params(&blob[offset .. ]);
+      offset += op.read_params(&blob[offset .. ]);
     }
     offset
   }
 
-  fn save_params(&mut self, blob: &mut Vec<u8>) {
+  fn write_params(&mut self, blob: &mut Vec<u8>) {
     for op in self.hidden_ops.iter_mut() {
-      op.save_params(blob);
+      op.write_params(blob);
     }
   }
 
@@ -467,27 +486,45 @@ impl<Comm> Operator for PipelineOperatorWorker<Comm> where Comm: 'static + CommW
     }
   }
 
-  fn regularize_grads(&mut self, reg: Regularization) {
+  fn regularize(&mut self, reg: Regularization) {
     for op in self.hidden_ops.iter_mut() {
-      op.regularize_grads(reg);
+      op.regularize(reg);
     }
   }
 
-  fn accumulate_grads(&mut self, step_size: f32, momentum: f32) {
+  fn accumulate_grads(&mut self, scale: f32, momentum: f32) {
     for op in self.hidden_ops.iter_mut() {
-      op.accumulate_grads(step_size, momentum);
+      op.accumulate_grads(scale, momentum);
     }
   }
 
-  fn update_params(&mut self, momentum: f32, nesterov: bool) {
+  fn update_params(&mut self, scale: f32) {
     for op in self.hidden_ops.iter_mut() {
-      op.update_params(momentum, nesterov);
+      op.update_params(scale);
     }
   }
 
-  fn reset_params(&mut self, momentum: f32, nesterov: bool) {
+  /*fn reset_params(&mut self, momentum: f32, nesterov: bool) {
     for op in self.hidden_ops.iter_mut() {
       op.reset_params(momentum, nesterov);
+    }
+  }*/
+
+  fn save_params(&mut self) {
+    for op in self.hidden_ops.iter_mut() {
+      op.save_params();
+    }
+  }
+
+  fn restore_params(&mut self) {
+    for op in self.hidden_ops.iter_mut() {
+      op.restore_params();
+    }
+  }
+
+  fn set_grads_with_params_diff(&mut self) {
+    for op in self.hidden_ops.iter_mut() {
+      op.set_grads_with_params_diff();
     }
   }
 
@@ -514,6 +551,12 @@ impl<Comm> Operator for PipelineOperatorWorker<Comm> where Comm: 'static + CommW
   fn reset_grads(&mut self, scale: f32) {
     for op in self.hidden_ops.iter_mut() {
       op.reset_grads(scale);
+    }
+  }
+
+  fn reset(&mut self) {
+    for op in self.hidden_ops.iter_mut() {
+      op.reset();
     }
   }
 }

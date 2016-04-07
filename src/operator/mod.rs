@@ -44,27 +44,35 @@ pub trait Operator {
   fn get_output_vars(&self) -> Option<SharedDeviceBuf<f32>> { None }
   fn get_output_deltas(&self) -> Option<SharedDeviceBuf<f32>> { None }
   fn init_params(&mut self, _shared_seed: [u64; 2]) {}
-  fn load_params(&mut self, _blob: &[u8]) -> usize { 0 }
-  fn save_params(&mut self, _blob: &mut Vec<u8>) {}
+  fn read_params(&mut self, _blob: &[u8]) -> usize { 0 }
+  fn write_params(&mut self, _blob: &mut Vec<u8>) {}
   fn forward(&mut self, batch_size: usize, phase: OpPhase);
 
   // Requires `Backward` capability.
   fn backward(&mut self, batch_size: usize);
-  fn regularize_grads(&mut self, _reg: Regularization) {}
-  fn accumulate_grads(&mut self, _step_size: f32, _momentum: f32) {}
-  fn update_params(&mut self, _momentum: f32, _nesterov: bool) {}
-  fn reset_params(&mut self, _momentum: f32, _nesterov: bool) {}
+  fn regularize(&mut self, _reg: Regularization) {}
+  fn accumulate_grads(&mut self, _scale: f32, _momentum: f32) {}
+  //fn update_params(&mut self, _momentum: f32, _nesterov: bool) {}
+  fn update_params(&mut self, _scale: f32) {}
+  //fn reset_params(&mut self, _momentum: f32) {}
+  fn save_params(&mut self) {}
+  fn restore_params(&mut self) {}
+  fn set_grads_with_params_diff(&mut self) {}
   fn sync_grads(&mut self) { unimplemented!(); }
   fn stage_params(&mut self) {}
   fn sync_params(&mut self) {}
+  fn _stage_params_v2(&mut self, _comm_worker: &mut CommWorker) {}
+  fn _sync_params_v2(&mut self, _comm_worker: &mut CommWorker) {}
+  fn _unstage_params_v2(&mut self, _comm_worker: &mut CommWorker) {}
   fn reset_grads(&mut self, scale: f32);
+  fn reset(&mut self) {}
 
   // Requires `HvBackward` capability.
   fn hv_reset_direction(&mut self, _init: HvDirectionInit) { unimplemented!(); }
   fn hv_solve_direction(&mut self, _solver: HvDirectionSolver) { unimplemented!(); }
   fn hv_forward(&mut self, _batch_size: usize) { unimplemented!(); }
   fn hv_backward(&mut self, _batch_size: usize) { unimplemented!(); }
-  fn hv_update_params(&mut self, _step_size: f32) { unimplemented!(); }
+  fn hv_update_params(&mut self, _scale: f32) { unimplemented!(); }
 }
 
 pub trait InputOperator: Operator {
@@ -505,6 +513,8 @@ struct AffineBwdOperator<Comm> {
   grad_bias:    DeviceArray2d<f32>,
   acc_grad_weights: DeviceArray2d<f32>,
   acc_grad_bias:    DeviceArray2d<f32>,
+  save_weights: DeviceArray2d<f32>,
+  save_bias:    DeviceArray2d<f32>,
 
   unit_bias:    DeviceArray2d<f32>,
 
@@ -531,6 +541,8 @@ impl<Comm> AffineOperator<Comm> where Comm: CommWorker {
         grad_bias:    DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
         acc_grad_weights: DeviceArray2d::<f32>::zeros((in_channels, out_channels), ctx),
         acc_grad_bias:    DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
+        save_weights: DeviceArray2d::<f32>::zeros((in_channels, out_channels), ctx),
+        save_bias:    DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
         unit_bias:    unit_bias,
         comm_worker:  comm_worker.unwrap(),
       })
@@ -605,7 +617,7 @@ impl<Comm> Operator for AffineOperator<Comm> where Comm: CommWorker {
     self.bias.as_view_mut(ctx).sync_load(&init_bias.as_view());
   }
 
-  fn load_params(&mut self, blob: &[u8]) -> usize {
+  fn read_params(&mut self, blob: &[u8]) -> usize {
     let AffineOperatorConfig{in_channels, out_channels, ..} = self.config;
     let ctx = &(*self.context).as_ref();
     let mut reader = Cursor::new(blob);
@@ -621,7 +633,7 @@ impl<Comm> Operator for AffineOperator<Comm> where Comm: CommWorker {
     progress
   }
 
-  fn save_params(&mut self, blob: &mut Vec<u8>) {
+  fn write_params(&mut self, blob: &mut Vec<u8>) {
     let ctx = &(*self.context).as_ref();
     let weights = self.weights.as_view(ctx);
     let bias = self.bias.as_view(ctx);
@@ -734,7 +746,7 @@ impl<Comm> Operator for AffineOperator<Comm> where Comm: CommWorker {
     }
   }
 
-  fn regularize_grads(&mut self, reg: Regularization) {
+  fn regularize(&mut self, reg: Regularization) {
     assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
     let mut backward = self.backward.as_mut().unwrap();
@@ -751,49 +763,74 @@ impl<Comm> Operator for AffineOperator<Comm> where Comm: CommWorker {
     }
   }
 
-  fn accumulate_grads(&mut self, step_size: f32, momentum: f32) {
+  fn accumulate_grads(&mut self, scale: f32, momentum: f32) {
     assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
     let mut backward = self.backward.as_mut().unwrap();
-    assert!(step_size >= 0.0);
-    assert!(momentum >= 0.0);
     backward.acc_grad_weights.as_view_mut(ctx)
       .matrix_scale(momentum);
     backward.acc_grad_bias.as_view_mut(ctx)
       .row_vector_scale(momentum);
     backward.acc_grad_weights.as_view_mut(ctx)
-      .matrix_sum(-step_size, &backward.grad_weights.as_view(ctx));
+      .matrix_sum(scale, &backward.grad_weights.as_view(ctx));
     backward.acc_grad_bias.as_view_mut(ctx)
-      .row_vector_sum(-step_size, &backward.grad_bias.as_view(ctx));
+      .row_vector_sum(scale, &backward.grad_bias.as_view(ctx));
   }
 
-  fn update_params(&mut self, momentum: f32, nesterov: bool) {
+  //fn update_params(&mut self, momentum: f32, nesterov: bool) {
+  fn update_params(&mut self, scale: f32) {
     assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
     let mut backward = self.backward.as_mut().unwrap();
-    let scale = if nesterov {
-      assert!(momentum >= 0.0);
-      1.0 - momentum
-    } else {
-      1.0
-    };
     self.weights.as_view_mut(ctx)
       .matrix_sum(scale, &backward.acc_grad_weights.as_view(ctx));
     self.bias.as_view_mut(ctx)
       .row_vector_sum(scale, &backward.acc_grad_bias.as_view(ctx));
   }
 
-  fn reset_params(&mut self, momentum: f32, nesterov: bool) {
+  /*fn reset_params(&mut self, momentum: f32) {
     assert!(self.backward.is_some());
-    if nesterov {
-      let ctx = &(*self.context).as_ref();
-      let mut backward = self.backward.as_mut().unwrap();
-      assert!(momentum >= 0.0);
-      self.weights.as_view_mut(ctx)
-        .matrix_sum(momentum, &backward.acc_grad_weights.as_view(ctx));
-      self.bias.as_view_mut(ctx)
-        .row_vector_sum(momentum, &backward.acc_grad_bias.as_view(ctx));
-    }
+    let ctx = &(*self.context).as_ref();
+    let mut backward = self.backward.as_mut().unwrap();
+    assert!(momentum >= 0.0);
+    self.weights.as_view_mut(ctx)
+      .matrix_sum(momentum, &backward.acc_grad_weights.as_view(ctx));
+    self.bias.as_view_mut(ctx)
+      .row_vector_sum(momentum, &backward.acc_grad_bias.as_view(ctx));
+  }*/
+
+  fn save_params(&mut self) {
+    assert!(self.backward.is_some());
+    let ctx = &(*self.context).as_ref();
+    let mut backward = self.backward.as_mut().unwrap();
+    self.weights.as_view(ctx)
+      .send(&mut backward.save_weights.as_view_mut(ctx));
+    self.bias.as_view(ctx)
+      .send(&mut backward.save_bias.as_view_mut(ctx));
+  }
+
+  fn restore_params(&mut self) {
+    assert!(self.backward.is_some());
+    let ctx = &(*self.context).as_ref();
+    let mut backward = self.backward.as_mut().unwrap();
+    backward.save_weights.as_view(ctx)
+      .send(&mut self.weights.as_view_mut(ctx));
+    backward.save_bias.as_view(ctx)
+      .send(&mut self.bias.as_view_mut(ctx));
+  }
+
+  fn set_grads_with_params_diff(&mut self) {
+    assert!(self.backward.is_some());
+    let ctx = &(*self.context).as_ref();
+    let mut backward = self.backward.as_mut().unwrap();
+    self.weights.as_view(ctx)
+      .send(&mut backward.acc_grad_weights.as_view_mut(ctx));
+    self.bias.as_view(ctx)
+      .send(&mut backward.acc_grad_bias.as_view_mut(ctx));
+    backward.acc_grad_weights.as_view_mut(ctx)
+      .matrix_sum(-1.0, &backward.save_weights.as_view(ctx));
+    backward.acc_grad_bias.as_view_mut(ctx)
+      .row_vector_sum(-1.0, &backward.save_bias.as_view(ctx));
   }
 
   fn sync_grads(&mut self) {
@@ -826,6 +863,16 @@ impl<Comm> Operator for AffineOperator<Comm> where Comm: CommWorker {
       .matrix_scale(scale);
     backward.grad_bias.as_view_mut(ctx)
       .row_vector_scale(scale);
+  }
+
+  fn reset(&mut self) {
+    assert!(self.backward.is_some());
+    let ctx = &(*self.context).as_ref();
+    let mut backward = self.backward.as_mut().unwrap();
+    backward.grad_weights.as_view_mut(ctx)
+      .matrix_scale(0.0);
+    backward.grad_bias.as_view_mut(ctx)
+      .row_vector_scale(0.0);
   }
 }
 
@@ -900,6 +947,8 @@ struct Conv2dBwdOperator<Comm> {
   grad_bias:    DeviceArray2d<f32>,
   acc_grad_weights: DeviceArray2d<f32>,
   acc_grad_bias:    DeviceArray2d<f32>,
+  save_weights: DeviceArray2d<f32>,
+  save_bias:    DeviceArray2d<f32>,
 
   conv_bwd_w:   CudnnConvBwdFilterOp,
   conv_bwd_d:   CudnnConvBwdDataOp,
@@ -963,6 +1012,8 @@ impl<Comm> Conv2dOperator<Comm> where Comm: CommWorker {
         grad_bias:    DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
         acc_grad_weights: DeviceArray2d::<f32>::zeros((conv_size * conv_size * in_channels, out_channels), ctx),
         acc_grad_bias:    DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
+        save_weights: DeviceArray2d::<f32>::zeros((conv_size * conv_size * in_channels, out_channels), ctx),
+        save_bias:    DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
         conv_bwd_w:   conv_bwd_w,
         conv_bwd_d:   conv_bwd_d,
         comm_worker:  comm_worker.unwrap(),
@@ -1041,7 +1092,7 @@ impl<Comm> Operator for Conv2dOperator<Comm> where Comm: CommWorker {
     self.bias.as_view_mut(ctx).sync_load(&init_bias.as_view());
   }
 
-  fn load_params(&mut self, blob: &[u8]) -> usize {
+  fn read_params(&mut self, blob: &[u8]) -> usize {
     let Conv2dOperatorConfig{in_dims, conv_size, out_channels, ..} = self.config;
     let ctx = &(*self.context).as_ref();
     let (_, _, in_channels) = in_dims;
@@ -1058,7 +1109,7 @@ impl<Comm> Operator for Conv2dOperator<Comm> where Comm: CommWorker {
     progress
   }
 
-  fn save_params(&mut self, blob: &mut Vec<u8>) {
+  fn write_params(&mut self, blob: &mut Vec<u8>) {
     let ctx = &(*self.context).as_ref();
     let weights = self.weights.as_view(ctx);
     let bias = self.bias.as_view(ctx);
@@ -1196,7 +1247,7 @@ impl<Comm> Operator for Conv2dOperator<Comm> where Comm: CommWorker {
     }
   }
 
-  fn regularize_grads(&mut self, reg: Regularization) {
+  fn regularize(&mut self, reg: Regularization) {
     assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
     let mut backward = self.backward.as_mut().unwrap();
@@ -1213,50 +1264,40 @@ impl<Comm> Operator for Conv2dOperator<Comm> where Comm: CommWorker {
     }
   }
 
-  fn accumulate_grads(&mut self, step_size: f32, momentum: f32) {
+  fn accumulate_grads(&mut self, scale: f32, momentum: f32) {
     assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
     let mut backward = self.backward.as_mut().unwrap();
-    assert!(step_size >= 0.0);
-    assert!(momentum >= 0.0);
     backward.acc_grad_weights.as_view_mut(ctx)
       .matrix_scale(momentum);
     backward.acc_grad_bias.as_view_mut(ctx)
       .row_vector_scale(momentum);
     backward.acc_grad_weights.as_view_mut(ctx)
-      .matrix_sum(-step_size, &backward.grad_weights.as_view(ctx));
+      .matrix_sum(scale, &backward.grad_weights.as_view(ctx));
     backward.acc_grad_bias.as_view_mut(ctx)
-      .row_vector_sum(-step_size, &backward.grad_bias.as_view(ctx));
+      .row_vector_sum(scale, &backward.grad_bias.as_view(ctx));
   }
 
-  fn update_params(&mut self, momentum: f32, nesterov: bool) {
+  fn update_params(&mut self, scale: f32) {
     assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
     let mut backward = self.backward.as_mut().unwrap();
-    let scale = if nesterov {
-      assert!(momentum >= 0.0);
-      1.0 - momentum
-    } else {
-      1.0
-    };
     self.weights.as_view_mut(ctx)
       .matrix_sum(scale, &backward.acc_grad_weights.as_view(ctx));
     self.bias.as_view_mut(ctx)
       .row_vector_sum(scale, &backward.acc_grad_bias.as_view(ctx));
   }
 
-  fn reset_params(&mut self, momentum: f32, nesterov: bool) {
+  /*fn reset_params(&mut self, momentum: f32) {
     assert!(self.backward.is_some());
-    if nesterov {
-      let ctx = &(*self.context).as_ref();
-      let mut backward = self.backward.as_mut().unwrap();
-      assert!(momentum >= 0.0);
-      self.weights.as_view_mut(ctx)
-        .matrix_sum(momentum, &backward.acc_grad_weights.as_view(ctx));
-      self.bias.as_view_mut(ctx)
-        .row_vector_sum(momentum, &backward.acc_grad_bias.as_view(ctx));
-    }
-  }
+    let ctx = &(*self.context).as_ref();
+    let mut backward = self.backward.as_mut().unwrap();
+    assert!(momentum >= 0.0);
+    self.weights.as_view_mut(ctx)
+      .matrix_sum(momentum, &backward.acc_grad_weights.as_view(ctx));
+    self.bias.as_view_mut(ctx)
+      .row_vector_sum(momentum, &backward.acc_grad_bias.as_view(ctx));
+  }*/
 
   /*fn update_params(&mut self, step_size: f32, l2_reg_coef: f32) {
     assert!(self.backward.is_some());
@@ -1274,6 +1315,40 @@ impl<Comm> Operator for Conv2dOperator<Comm> where Comm: CommWorker {
     self.bias.as_view_mut(ctx)
       .row_vector_sum(-step_size, &backward.grad_bias.as_view(ctx));
   }*/
+
+  fn save_params(&mut self) {
+    assert!(self.backward.is_some());
+    let ctx = &(*self.context).as_ref();
+    let mut backward = self.backward.as_mut().unwrap();
+    self.weights.as_view(ctx)
+      .send(&mut backward.save_weights.as_view_mut(ctx));
+    self.bias.as_view(ctx)
+      .send(&mut backward.save_bias.as_view_mut(ctx));
+  }
+
+  fn restore_params(&mut self) {
+    assert!(self.backward.is_some());
+    let ctx = &(*self.context).as_ref();
+    let mut backward = self.backward.as_mut().unwrap();
+    backward.save_weights.as_view(ctx)
+      .send(&mut self.weights.as_view_mut(ctx));
+    backward.save_bias.as_view(ctx)
+      .send(&mut self.bias.as_view_mut(ctx));
+  }
+
+  fn set_grads_with_params_diff(&mut self) {
+    assert!(self.backward.is_some());
+    let ctx = &(*self.context).as_ref();
+    let mut backward = self.backward.as_mut().unwrap();
+    self.weights.as_view(ctx)
+      .send(&mut backward.acc_grad_weights.as_view_mut(ctx));
+    self.bias.as_view(ctx)
+      .send(&mut backward.acc_grad_bias.as_view_mut(ctx));
+    backward.acc_grad_weights.as_view_mut(ctx)
+      .matrix_sum(-1.0, &backward.save_weights.as_view(ctx));
+    backward.acc_grad_bias.as_view_mut(ctx)
+      .row_vector_sum(-1.0, &backward.save_bias.as_view(ctx));
+  }
 
   fn sync_grads(&mut self) {
     unimplemented!();
@@ -1305,6 +1380,16 @@ impl<Comm> Operator for Conv2dOperator<Comm> where Comm: CommWorker {
       .matrix_scale(scale);
     backward.grad_bias.as_view_mut(ctx)
       .row_vector_scale(scale);
+  }
+
+  fn reset(&mut self) {
+    assert!(self.backward.is_some());
+    let ctx = &(*self.context).as_ref();
+    let mut backward = self.backward.as_mut().unwrap();
+    backward.grad_weights.as_view_mut(ctx)
+      .matrix_scale(0.0);
+    backward.grad_bias.as_view_mut(ctx)
+      .row_vector_scale(0.0);
   }
 }
 
