@@ -17,6 +17,7 @@ pub trait CommWorkerBuilder: Send + Clone {
 }
 
 pub trait CommWorker {
+  fn update(&mut self) -> bool;
   fn load(&mut self, offset: usize, data: &mut DeviceArray2d<f32>, ctx: &DeviceCtxRef);
   fn communicate(&mut self, ctx: &DeviceCtxRef);
   fn store(&mut self, offset: usize, data: &mut DeviceArray2d<f32>, ctx: &DeviceCtxRef);
@@ -36,6 +37,7 @@ impl CommWorkerBuilder for NullCommWorkerBuilder {
 pub struct NullCommWorker;
 
 impl CommWorker for NullCommWorker {
+  fn update(&mut self) -> bool { false }
   fn load(&mut self, offset: usize, data: &mut DeviceArray2d<f32>, ctx: &DeviceCtxRef) {}
   fn communicate(&mut self, ctx: &DeviceCtxRef) {}
   fn store(&mut self, offset: usize, data: &mut DeviceArray2d<f32>, ctx: &DeviceCtxRef) {}
@@ -47,6 +49,10 @@ pub struct DeviceAllReduceCommWorkerBuilder;
 pub struct DeviceAllReduceCommWorker;
 
 impl CommWorker for DeviceAllReduceCommWorker {
+  fn update(&mut self) -> bool {
+    unimplemented!();
+  }
+
   fn load(&mut self, offset: usize, data: &mut DeviceArray2d<f32>, ctx: &DeviceCtxRef) {
     unimplemented!();
   }
@@ -64,6 +70,7 @@ impl CommWorker for DeviceAllReduceCommWorker {
 pub struct DeviceSyncGossipCommWorkerBuilder {
   num_workers:  usize,
   num_rounds:   usize,
+  period:       usize,
   barrier:      Arc<Barrier>,
   shared_bufs:  Vec<Arc<RawDeviceBuffer<f32>>>,
   //shared_rns:   Arc<Vec<AtomicUsize>>,
@@ -73,6 +80,8 @@ pub struct DeviceSyncGossipCommWorkerBuilder {
 impl DeviceSyncGossipCommWorkerBuilder {
   pub fn new(num_workers: usize, num_rounds: usize, buf_size: usize, /*contexts: &[DeviceContext]*/) -> DeviceSyncGossipCommWorkerBuilder {
     //let num_workers = contexts.len();
+    let period = 1;
+    assert!(period >= 1);
     let mut shared_bufs = Vec::with_capacity(2 * num_workers);
     for_all_devices(num_workers, |contexts| {
       for tid in 0 .. num_workers {
@@ -87,6 +96,7 @@ impl DeviceSyncGossipCommWorkerBuilder {
     DeviceSyncGossipCommWorkerBuilder{
       num_workers:  num_workers,
       num_rounds:   num_rounds,
+      period:       period,
       barrier:      Arc::new(Barrier::new(num_workers)),
       shared_bufs:  shared_bufs,
       //shared_rns:   Arc::new(vec![]), // FIXME(20160325)
@@ -103,12 +113,14 @@ impl CommWorkerBuilder for DeviceSyncGossipCommWorkerBuilder {
     DeviceSyncGossipCommWorker{
       worker_data:  WorkerData::new(self.num_workers, tid),
       num_rounds:   self.num_rounds,
+      period:       self.period,
       barrier:      self.barrier,
+      avg_reduce:   AverageReduceOperation::new(self.num_workers),
+      rng:          Xorshiftplus128Rng::from_seed(self.shared_seed),
       shared_bufs:  self.shared_bufs,
       //shared_rns:   self.shared_rns,
       tids_perm:    (0 .. self.num_workers).collect(),
-      avg_reduce:   AverageReduceOperation::new(self.num_workers),
-      rng:          Xorshiftplus128Rng::from_seed(self.shared_seed),
+      iter_counter: 0,
     }
   }
 }
@@ -116,16 +128,29 @@ impl CommWorkerBuilder for DeviceSyncGossipCommWorkerBuilder {
 pub struct DeviceSyncGossipCommWorker {
   worker_data:  WorkerData,
   num_rounds:   usize,
+  period:       usize,
   barrier:      Arc<Barrier>,
-  shared_bufs:  Vec<Arc<RawDeviceBuffer<f32>>>,
-  //shared_rns:   Arc<Vec<AtomicUsize>>,
-  tids_perm:    Vec<usize>,
   avg_reduce:   AverageReduceOperation<f32>,
   // FIXME(20160324): for larger populations, should use a larger RNG.
   rng:          Xorshiftplus128Rng,
+  shared_bufs:  Vec<Arc<RawDeviceBuffer<f32>>>,
+  //shared_rns:   Arc<Vec<AtomicUsize>>,
+  tids_perm:    Vec<usize>,
+  iter_counter: usize,
 }
 
 impl CommWorker for DeviceSyncGossipCommWorker {
+  fn update(&mut self) -> bool {
+    self.iter_counter += 1;
+    let should_comm = if self.iter_counter == self.period {
+      self.iter_counter = 0;
+      true
+    } else {
+      false
+    };
+    should_comm
+  }
+
   fn load(&mut self, offset: usize, data: &mut DeviceArray2d<f32>, ctx: &DeviceCtxRef) {
     let self_tid = self.worker_data.tid();
     let data = data.as_view(ctx).data;

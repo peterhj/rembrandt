@@ -7,6 +7,7 @@ use operator::{
   AffineOperatorConfig,
   Conv2dOperatorConfig,
   Pool2dOperatorConfig,
+  DropoutOperatorConfig,
 };
 use operator::comm::{CommWorkerBuilder, CommWorker};
 use operator::loss::{
@@ -304,6 +305,11 @@ impl PipelineOperatorWorkerConfig {
 
   pub fn pool2d(&mut self, cfg: Pool2dOperatorConfig) -> &mut Self  {
     self.hidden_ops.push(OperatorConfig::Pool2d(cfg));
+    self
+  }
+
+  pub fn dropout(&mut self, cfg: DropoutOperatorConfig) -> &mut Self {
+    self.hidden_ops.push(OperatorConfig::Dropout(cfg));
     self
   }
 

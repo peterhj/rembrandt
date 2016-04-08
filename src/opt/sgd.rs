@@ -113,86 +113,13 @@ impl OptSharedData {
   }
 }
 
-pub struct Validation;
-
-impl Validation {
-  pub fn validate(&self, shared: Arc<OptSharedData>, sgd_opt_cfg: SgdOptConfig, datum_cfg: SampleDatumConfig, label_cfg: SampleLabelConfig, valid_data: &mut DataIterator, operator: &mut OperatorWorker) {
-    let batch_size = operator.batch_size();
-    let num_workers = operator.num_workers();
-    let tid = operator.worker_rank();
-
-    let mut start_time = get_time();
-    let mut batch_counter = 0;
-    valid_data.each_sample(datum_cfg, label_cfg, &mut |epoch_idx, datum, maybe_label| {
-      match (label_cfg, maybe_label) {
-        (SampleLabelConfig::Category{num_categories}, Some(&SampleLabel::Category{category})) => {
-          assert!(category >= 0);
-          assert!(category < num_categories);
-        }
-        _ => panic!("SgdOpt: unsupported label"),
-      }
-      match datum {
-        &SampleDatum::WHCBytes(ref frame_bytes) => {
-          //println!("DEBUG: frame: {:?}", frame_bytes.as_slice());
-          copy_memory(
-              frame_bytes.as_slice(),
-              operator.input_operator().expose_host_frame_buf(batch_counter),
-          );
-        }
-      }
-      operator.loss_operator(0).stage_label(batch_counter, maybe_label.unwrap());
-      batch_counter += 1;
-
-      if batch_counter == batch_size {
-        operator.input_operator().load_frames(batch_size);
-        operator.loss_operator(0).load_labels(batch_size);
-        operator.forward(batch_size, OpPhase::Inference);
-        operator.loss_operator(0).store_output_categories(batch_size);
-        let local_correct_count = operator.loss_operator(0).accuracy_count(batch_size);
-        shared.acc_correct_count.fetch_add(local_correct_count, Ordering::AcqRel);
-        shared.acc_total_count.fetch_add(batch_size, Ordering::AcqRel);
-        batch_counter = 0;
-      }
-    });
-    if batch_counter < batch_size {
-      let batch_size = batch_counter;
-      operator.input_operator().load_frames(batch_size);
-      operator.loss_operator(0).load_labels(batch_size);
-      operator.forward(batch_size, OpPhase::Inference);
-      operator.loss_operator(0).store_output_categories(batch_size);
-      let local_correct_count = operator.loss_operator(0).accuracy_count(batch_size);
-      shared.acc_correct_count.fetch_add(local_correct_count, Ordering::AcqRel);
-      shared.acc_total_count.fetch_add(batch_size, Ordering::AcqRel);
-      batch_counter = 0;
-    }
-
-    shared.sync();
-    if tid == 0 {
-      let lap_time = get_time();
-      let elapsed_ms = (lap_time - start_time).num_milliseconds();
-      start_time = lap_time;
-      let acc_correct_count = shared.acc_correct_count.load(Ordering::Acquire);
-      let acc_total_count = shared.acc_total_count.load(Ordering::Acquire);
-      let accuracy = acc_correct_count as f32 / acc_total_count as f32;
-      info!("SgdOpt: sample count: {} valid accuracy: {:.03} elapsed: {:.03} s",
-          acc_total_count,
-          accuracy,
-          elapsed_ms as f32 * 0.001,
-      );
-      shared.acc_correct_count.store(0, Ordering::Release);
-      shared.acc_total_count.store(0, Ordering::Release);
-    }
-    shared.sync();
-  }
-}
-
-pub struct SgdOpt {
+pub struct SyncSgdOpt {
   shared:   Arc<OptSharedData>,
 }
 
-impl SgdOpt {
-  pub fn new(shared: Arc<OptSharedData>) -> SgdOpt {
-    SgdOpt{
+impl SyncSgdOpt {
+  pub fn new(shared: Arc<OptSharedData>) -> SyncSgdOpt {
+    SyncSgdOpt{
       shared:   shared,
     }
   }
@@ -224,7 +151,7 @@ impl SgdOpt {
             assert!(category >= 0);
             assert!(category < num_categories);
           }
-          _ => panic!("SgdOpt: unsupported label"),
+          _ => panic!("SyncSgdOpt: unsupported label"),
         }
         match datum {
           &SampleDatum::WHCBytes(ref frame_bytes) => {
@@ -267,6 +194,8 @@ impl SgdOpt {
           operator.accumulate_grads(-step_size, momentum);
           //operator.save_params();
           operator.update_params(1.0);
+          // FIXME(20160407): very useful to separate operator from comm.
+          //if comm_worker.update() {
           if num_workers > 1 {
             operator.stage_params();
             operator.sync_params();
@@ -289,7 +218,7 @@ impl SgdOpt {
               let acc_correct_count = self.shared.acc_correct_count.load(Ordering::Acquire);
               let acc_total_count = self.shared.acc_total_count.load(Ordering::Acquire);
               let accuracy = acc_correct_count as f32 / acc_total_count as f32;
-              info!("SgdOpt: iter: {} epoch: {} sample {}/{} step: {} momentum: {} loss: {:.06} train accuracy: {:.03} elapsed: {:.03} s",
+              info!("SyncSgdOpt: train: iter: {} epoch: {} sample: {}/{} step: {} momentum: {} loss: {:.06} accuracy: {:.03} elapsed: {:.03} s",
                   iter_counter, epoch_counter,
                   epoch_offset, epoch_size,
                   step_size, momentum,
@@ -307,13 +236,82 @@ impl SgdOpt {
           }
 
           if iter_counter % sgd_opt_cfg.valid_iters == 0 {
-            let validation = Validation;
-            validation.validate(self.shared.clone(), sgd_opt_cfg, datum_cfg, label_cfg, valid_data, operator);
+            self.validate(sgd_opt_cfg, datum_cfg, label_cfg, valid_data, operator);
+            start_time = get_time();
           }
         }
       });
 
       //epoch_counter += 1;
     }
+  }
+
+  pub fn validate(&self, sgd_opt_cfg: SgdOptConfig, datum_cfg: SampleDatumConfig, label_cfg: SampleLabelConfig, valid_data: &mut DataIterator, operator: &mut OperatorWorker) {
+    let batch_size = operator.batch_size();
+    let num_workers = operator.num_workers();
+    let tid = operator.worker_rank();
+
+    let mut start_time = get_time();
+    let mut batch_counter = 0;
+    valid_data.each_sample(datum_cfg, label_cfg, &mut |epoch_idx, datum, maybe_label| {
+      match (label_cfg, maybe_label) {
+        (SampleLabelConfig::Category{num_categories}, Some(&SampleLabel::Category{category})) => {
+          assert!(category >= 0);
+          assert!(category < num_categories);
+        }
+        _ => panic!("SyncSgdOpt: unsupported label"),
+      }
+      match datum {
+        &SampleDatum::WHCBytes(ref frame_bytes) => {
+          //println!("DEBUG: frame: {:?}", frame_bytes.as_slice());
+          copy_memory(
+              frame_bytes.as_slice(),
+              operator.input_operator().expose_host_frame_buf(batch_counter),
+          );
+        }
+      }
+      operator.loss_operator(0).stage_label(batch_counter, maybe_label.unwrap());
+      batch_counter += 1;
+
+      if batch_counter == batch_size {
+        operator.input_operator().load_frames(batch_size);
+        operator.loss_operator(0).load_labels(batch_size);
+        operator.forward(batch_size, OpPhase::Inference);
+        operator.loss_operator(0).store_output_categories(batch_size);
+        let local_correct_count = operator.loss_operator(0).accuracy_count(batch_size);
+        self.shared.acc_correct_count.fetch_add(local_correct_count, Ordering::AcqRel);
+        self.shared.acc_total_count.fetch_add(batch_size, Ordering::AcqRel);
+        batch_counter = 0;
+      }
+    });
+    if batch_counter < batch_size {
+      let batch_size = batch_counter;
+      operator.input_operator().load_frames(batch_size);
+      operator.loss_operator(0).load_labels(batch_size);
+      operator.forward(batch_size, OpPhase::Inference);
+      operator.loss_operator(0).store_output_categories(batch_size);
+      let local_correct_count = operator.loss_operator(0).accuracy_count(batch_size);
+      self.shared.acc_correct_count.fetch_add(local_correct_count, Ordering::AcqRel);
+      self.shared.acc_total_count.fetch_add(batch_size, Ordering::AcqRel);
+      batch_counter = 0;
+    }
+
+    self.shared.sync();
+    if tid == 0 {
+      let lap_time = get_time();
+      let elapsed_ms = (lap_time - start_time).num_milliseconds();
+      start_time = lap_time;
+      let acc_correct_count = self.shared.acc_correct_count.load(Ordering::Acquire);
+      let acc_total_count = self.shared.acc_total_count.load(Ordering::Acquire);
+      let accuracy = acc_correct_count as f32 / acc_total_count as f32;
+      info!("SyncSgdOpt: valid: sample count: {} accuracy: {:.03} elapsed: {:.03} s",
+          acc_total_count,
+          accuracy,
+          elapsed_ms as f32 * 0.001,
+      );
+      self.shared.acc_correct_count.store(0, Ordering::Release);
+      self.shared.acc_total_count.store(0, Ordering::Release);
+    }
+    self.shared.sync();
   }
 }

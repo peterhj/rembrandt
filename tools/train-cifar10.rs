@@ -22,6 +22,7 @@ use rembrandt::operator::{
   AffineOperatorConfig,
   Conv2dOperatorConfig,
   Pool2dOperatorConfig,
+  DropoutOperatorConfig,
 };
 use rembrandt::operator::loss::{
   CategoricalLossConfig,
@@ -36,7 +37,7 @@ use rembrandt::operator::worker::{
   PipelineOperatorWorkerBuilder,
 };
 use rembrandt::opt::sgd::{
-  SgdOptConfig, StepSizeSchedule, MomentumStyle, OptSharedData, SgdOpt,
+  SgdOptConfig, StepSizeSchedule, MomentumStyle, OptSharedData, SyncSgdOpt,
 };
 use threadpool::{ThreadPool};
 
@@ -49,8 +50,8 @@ use std::sync::{Arc, Barrier};
 fn main() {
   env_logger::init().unwrap();
 
-  let num_workers = 8;
-  let batch_size = 128;
+  let num_workers = 4;
+  let batch_size = 32;
   info!("num workers: {} batch size: {}",
       num_workers, batch_size);
 
@@ -72,7 +73,7 @@ fn main() {
   };
 
   let data_op_cfg = Data3dOperatorConfig{
-    dims:           (32, 32, 3),
+    in_dims:        (32, 32, 3),
     normalize:      true,
     preprocs:       vec![],
   };
@@ -82,7 +83,7 @@ fn main() {
     conv_stride:    1,
     conv_pad:       2,
     out_channels:   64,
-    act_func:       ActivationFunction::Identity,
+    act_func:       ActivationFunction::Rect,
     init_weights:   ParamsInit::Uniform{half_range: 0.05},
     fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
     bwd_backend:    Conv2dBwdBackend::CudnnFastest,
@@ -93,16 +94,15 @@ fn main() {
     pool_stride:    2,
     pool_pad:       0,
     pool_op:        PoolOperation::Max,
-    //pool_op:        PoolOperation::Average,
     act_func:       ActivationFunction::Identity,
   };
   let conv2_op_cfg = Conv2dOperatorConfig{
     in_dims:        (16, 16, 64),
-    conv_size:      5,
+    conv_size:      3,
     conv_stride:    1,
-    conv_pad:       2,
+    conv_pad:       1,
     out_channels:   128,
-    act_func:       ActivationFunction::Identity,
+    act_func:       ActivationFunction::Rect,
     init_weights:   ParamsInit::Uniform{half_range: 0.05},
     fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
     bwd_backend:    Conv2dBwdBackend::CudnnFastest,
@@ -113,15 +113,29 @@ fn main() {
     pool_stride:    2,
     pool_pad:       0,
     pool_op:        PoolOperation::Max,
-    //pool_op:        PoolOperation::Average,
     act_func:       ActivationFunction::Identity,
   };
+  let conv3_op_cfg = Conv2dOperatorConfig{
+    in_dims:        (8, 8, 128),
+    conv_size:      3,
+    conv_stride:    1,
+    conv_pad:       1,
+    out_channels:   64,
+    act_func:       ActivationFunction::Rect,
+    init_weights:   ParamsInit::Uniform{half_range: 0.05},
+    fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
+    bwd_backend:    Conv2dBwdBackend::CudnnFastest,
+  };
   let aff1_op_cfg = AffineOperatorConfig{
-    in_channels:    8192,
+    in_channels:    4096,
     out_channels:   256,
     act_func:       ActivationFunction::Rect,
     init_weights:   ParamsInit::Uniform{half_range: 0.05},
     backend:        AffineBackend::CublasGemm,
+  };
+  let drop_op_cfg = DropoutOperatorConfig{
+    channels:       256,
+    drop_ratio:     0.5,
   };
   let aff2_op_cfg = AffineOperatorConfig{
     in_channels:    256,
@@ -141,7 +155,9 @@ fn main() {
     .pool2d(pool1_op_cfg)
     .conv2d(conv2_op_cfg)
     .pool2d(pool2_op_cfg)
+    .conv2d(conv3_op_cfg)
     .affine(aff1_op_cfg)
+    .dropout(drop_op_cfg)
     .affine(aff2_op_cfg)
     .softmax_kl_loss(loss_cfg);
 
@@ -171,7 +187,7 @@ fn main() {
             Box::new(PartitionDataSource::new(tid, num_workers, dataset_cfg.build_with_cfg(datum_cfg, label_cfg, "valid")))
           );
 
-      let sgd_opt = SgdOpt::new(opt_shared);
+      let sgd_opt = SyncSgdOpt::new(opt_shared);
       sgd_opt.train(sgd_opt_cfg, datum_cfg, label_cfg, &mut train_data, &mut valid_data, &mut worker);
       join_barrier.wait();
     });

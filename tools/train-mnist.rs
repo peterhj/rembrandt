@@ -36,7 +36,7 @@ use rembrandt::operator::worker::{
   PipelineOperatorWorkerBuilder,
 };
 use rembrandt::opt::sgd::{
-  SgdOptConfig, StepSizeSchedule, MomentumStyle, OptSharedData, SgdOpt,
+  SgdOptConfig, StepSizeSchedule, MomentumStyle, OptSharedData, SyncSgdOpt,
 };
 use threadpool::{ThreadPool};
 
@@ -72,7 +72,7 @@ fn main() {
   };
 
   let data_op_cfg = Data3dOperatorConfig{
-    dims:           (28, 28, 1),
+    in_dims:        (28, 28, 1),
     normalize:      true,
     preprocs:       vec![],
   };
@@ -172,7 +172,7 @@ fn main() {
             Box::new(PartitionDataSource::new(tid, num_workers, dataset_cfg.build_with_cfg(datum_cfg, label_cfg, "valid")))
           );
 
-      let sgd_opt = SgdOpt::new(opt_shared);
+      let sgd_opt = SyncSgdOpt::new(opt_shared);
       sgd_opt.train(sgd_opt_cfg, datum_cfg, label_cfg, &mut train_data, &mut valid_data, &mut worker);
       join_barrier.wait();
     });

@@ -11,20 +11,22 @@ use array_cuda::device::context::{DeviceContext, DeviceCtxRef};
 use array_cuda::device::ext::{DeviceCastBytesExt, DeviceNumExt};
 use array_cuda::device::linalg::{BlasMatrixExt, BlasVectorExt, Transpose};
 use array_cuda::device::memory::{DeviceZeroExt, DeviceBuffer};
+use array_cuda::device::random::{RandomSampleExt, UniformDist};
 use array_new::{
   Array, AsyncArray, ArrayView, ArrayViewMut, ArrayZeroExt, NdArraySerialize,
   Shape, Array2d,
 };
 use cuda_dnn::v4::{
   CudnnConvFwdOp, CudnnConvBwdFilterOp, CudnnConvBwdDataOp,
-  CudnnAddOp, CudnnActKind, CudnnActOp, CudnnSoftmaxOp, CudnnPoolingOp,
+  CudnnAddOp, CudnnActKind, CudnnActOp, CudnnSoftmaxOp, CudnnPoolingOp, CudnnTransformOp,
   CudnnTensorDesc, CudnnFilterDesc, CudnnConvDesc,
 };
 use cuda_dnn::v4::ffi::{cudnnConvolutionFwdAlgo_t, cudnnPoolingMode_t};
+use rembrandt_kernels::*;
 use rembrandt_kernels::ffi::*;
 use rng::xorshift::{Xorshiftplus128Rng};
 
-use rand::{SeedableRng};
+use rand::{Rng, SeedableRng, thread_rng};
 use rand::distributions::{IndependentSample};
 use rand::distributions::normal::{Normal};
 use rand::distributions::range::{Range};
@@ -348,9 +350,34 @@ pub struct JoinOperator;
 
 #[derive(Clone)]
 pub struct Data3dOperatorConfig {
-  pub dims:         (usize, usize, usize),
+  pub in_dims:      (usize, usize, usize),
   pub normalize:    bool,
   pub preprocs:     Vec<Data3dPreproc>,
+}
+
+impl Data3dOperatorConfig {
+  pub fn get_out_dims(&self) -> (usize, usize, usize) {
+    let mut out_dims = self.in_dims;
+    for preproc in self.preprocs.iter() {
+      match preproc {
+        &Data3dPreproc::Crop{crop_width, crop_height} => {
+          assert!(crop_width <= out_dims.0);
+          assert!(crop_height <= out_dims.1);
+          out_dims = (crop_width, crop_height, out_dims.2);
+          assert!(self.in_dims.len() >= out_dims.len());
+        }
+      }
+    }
+    out_dims
+  }
+}
+
+enum Data3dPreprocOperator {
+  Crop{
+    transform:  CudnnTransformOp,
+    w_range:    Range<usize>,
+    h_range:    Range<usize>,
+  }
 }
 
 pub struct Data3dOperator {
@@ -363,20 +390,55 @@ pub struct Data3dOperator {
   in_buf:       DeviceBuffer<u8>,
   out_buf:      SharedDeviceBuf<f32>,
   tmp_buf:      DeviceBuffer<f32>,
+
+  rng:          Xorshiftplus128Rng,
+  preprocs:     Vec<Data3dPreprocOperator>,
 }
 
 impl Data3dOperator {
   pub fn new(batch_size: usize, config: Data3dOperatorConfig, context: Rc<DeviceContext>) -> Data3dOperator {
     let ctx = &(*context).as_ref();
-    let frame_len = config.dims.len();
+    let in_dims = config.in_dims;
+    let (in_width, in_height, in_channels) = in_dims;
+    let in_frame_len = in_dims.len();
+    let out_dims = config.get_out_dims();
+    let out_frame_len = out_dims.len();
+    let mut preprocs = Vec::with_capacity(config.preprocs.len());
+    for preproc_cfg in config.preprocs.iter() {
+      match preproc_cfg {
+        &Data3dPreproc::Crop{crop_width, crop_height} => {
+          // FIXME(20160407): this formulation is only valid for a single
+          // crop, as it references `in_dims`.
+          let max_offset_w = in_width - crop_width;
+          let max_offset_h = in_height - crop_height;
+          preprocs.push(Data3dPreprocOperator::Crop{
+            transform:  CudnnTransformOp::new(
+                CudnnTensorDesc::<f32>::create_4d_strided(
+                    crop_width, crop_height, in_channels, batch_size,
+                    1, in_width, in_width * in_height, in_width * in_height * in_channels,
+                ).unwrap(),
+                CudnnTensorDesc::<f32>::create_4d(
+                    crop_width, crop_height, in_channels, batch_size,
+                ).unwrap(),
+            ),
+            w_range:    Range::new(0, max_offset_w),
+            h_range:    Range::new(0, max_offset_h),
+          });
+        }
+      }
+    }
     Data3dOperator{
       batch_cap:    batch_size,
       config:       config,
       context:      context.clone(),
-      in_buf_h:     repeat(0).take(batch_size * frame_len).collect(),
-      in_buf:       DeviceBuffer::zeros(batch_size * frame_len, ctx),
-      out_buf:      Rc::new(RefCell::new(DeviceBuffer::zeros(batch_size * frame_len, ctx))),
-      tmp_buf:      DeviceBuffer::zeros(batch_size * frame_len, ctx),
+      in_buf_h:     repeat(0).take(batch_size * in_frame_len).collect(),
+      in_buf:       DeviceBuffer::zeros(batch_size * in_frame_len, ctx),
+      out_buf:      Rc::new(RefCell::new(DeviceBuffer::zeros(batch_size * out_frame_len, ctx))),
+      // FIXME(20160407): assuming that `in_frame_len` is as large as any
+      // intermediate frame_len.
+      tmp_buf:      DeviceBuffer::zeros(batch_size * in_frame_len, ctx),
+      rng:          Xorshiftplus128Rng::new(&mut thread_rng()),
+      preprocs:     preprocs,
     }
   }
 }
@@ -397,7 +459,10 @@ impl Operator for Data3dOperator {
   fn forward(&mut self, batch_size: usize, _phase: OpPhase) {
     assert!(batch_size <= self.batch_cap);
     let ctx = &(*self.context).as_ref();
-    //let length = self.config.dims.len();
+    //let length = self.config.in_dims.len();
+    let in_dims = self.config.in_dims;
+    //let (in_width, in_height, in_channels) = in_dims;
+    let (in_width, _, _) = in_dims;
     let in_buf = self.in_buf.as_ref(ctx);
     let mut out_buf = self.out_buf.borrow_mut();
     let num_preprocs = self.config.preprocs.len();
@@ -414,15 +479,27 @@ impl Operator for Data3dOperator {
       }
     }
     for (r, preproc) in self.config.preprocs.iter().enumerate() {
-      let (src_buf, target_buf) = if (num_preprocs - r - 1) % 2 == 0 {
+      let (src_buf, mut target_buf) = if (num_preprocs - r - 1) % 2 == 0 {
         (self.tmp_buf.as_ref(ctx), out_buf.as_ref_mut(ctx))
       } else {
         (out_buf.as_ref(ctx), self.tmp_buf.as_ref_mut(ctx))
       };
-      match preproc {
-        &Data3dPreproc::Crop{crop_width, crop_height} => {
-          // FIXME(20160331)
-          unimplemented!();
+      match (preproc, &self.preprocs[r]) {
+        ( &Data3dPreproc::Crop{crop_width, crop_height},
+          &Data3dPreprocOperator::Crop{ref transform, ref w_range, ref h_range},
+        ) => {
+          // FIXME(20160407): this formulation is only valid for a single
+          // crop, as it references `in_dims`.
+          /*let offset_w = self.rng.gen_range(0, in_width - crop_width);
+          let offset_h = self.rng.gen_range(0, in_height - crop_height);*/
+          let offset_w = w_range.ind_sample(&mut self.rng);
+          let offset_h = h_range.ind_sample(&mut self.rng);
+          let buf_offset = offset_w + offset_h * in_width;
+          unsafe { transform.transform(
+              1.0, src_buf.as_ptr().offset(buf_offset as isize),
+              0.0, target_buf.as_mut_ptr(),
+              &*ctx.get_dnn(),
+          ) }.unwrap();
         }
       }
     }
@@ -452,7 +529,7 @@ impl InputOperator for Data3dOperator {
 
   fn expose_host_frame_buf(&mut self, batch_idx: usize) -> &mut [u8] {
     assert!(batch_idx < self.batch_cap);
-    let frame_len = self.config.dims.len();
+    let frame_len = self.config.in_dims.len();
     &mut self.in_buf_h[batch_idx * frame_len .. (batch_idx + 1) * frame_len]
   }
 
@@ -1536,6 +1613,10 @@ pub struct DropoutOperator {
   out_act:      SharedDeviceBuf<f32>,
   out_delta:    SharedDeviceBuf<f32>,
 
+  uniform_dist: UniformDist,
+  rand_samples: DeviceBuffer<f32>,
+  drop_mask:    DeviceBuffer<i32>,
+
   //state:        DeviceBuffer<u8>,
   //dropout:      CudnnDropoutOp,
 }
@@ -1571,6 +1652,9 @@ impl DropoutOperator {
       in_delta:     prev_op.unwrap().get_output_deltas(),
       out_act:      Rc::new(RefCell::new(DeviceBuffer::<f32>::zeros(channels * batch_size, ctx))),
       out_delta:    Rc::new(RefCell::new(DeviceBuffer::<f32>::zeros(channels * batch_size, ctx))),
+      uniform_dist: UniformDist,
+      rand_samples: DeviceBuffer::zeros(channels * batch_size, ctx),
+      drop_mask:    DeviceBuffer::zeros(channels * batch_size, ctx),
     }
   }
 }
@@ -1589,16 +1673,24 @@ impl Operator for DropoutOperator {
   }
 
   fn forward(&mut self, batch_size: usize, phase: OpPhase) {
+    assert!(batch_size <= self.batch_cap);
+    let ctx = &(*self.context).as_ref();
     match phase {
       OpPhase::Inference => {
-        // FIXME(20160407): Identity.
-        unimplemented!();
+        self.in_act.borrow_mut().as_ref(ctx)
+          .send(&mut self.out_act.borrow_mut().as_ref_mut(ctx));
       }
       OpPhase::Training => {
-        assert!(batch_size <= self.batch_cap);
-        let ctx = &(*self.context).as_ref();
-        // FIXME(20160407)
-        unimplemented!();
+        self.rand_samples.as_ref_mut(ctx).sample(&self.uniform_dist);
+        unsafe { rembrandt_kernel_map_dropout(
+            self.in_act.borrow_mut().as_ref(ctx).as_ptr(),
+            (self.config.channels * batch_size) as i32,
+            self.config.drop_ratio, 1.0,
+            self.rand_samples.as_ref(ctx).as_ptr(),
+            self.out_act.borrow_mut().as_ref_mut(ctx).as_mut_ptr(),
+            self.drop_mask.as_ref_mut(ctx).as_mut_ptr(),
+            ctx.stream.ptr,
+        ) };
       }
     }
   }
@@ -1607,8 +1699,14 @@ impl Operator for DropoutOperator {
     if let Some(ref mut in_delta) = self.in_delta {
       assert!(batch_size <= self.batch_cap);
       let ctx = &(*self.context).as_ref();
-      // FIXME(20160407)
-      unimplemented!();
+      unsafe { rembrandt_kernel_map_dropout_backprop(
+          self.out_delta.borrow_mut().as_ref(ctx).as_ptr(),
+          (self.config.channels * batch_size) as i32,
+          self.config.drop_ratio, 1.0,
+          self.drop_mask.as_ref(ctx).as_ptr(),
+          in_delta.borrow_mut().as_ref_mut(ctx).as_mut_ptr(),
+          ctx.stream.ptr,
+      ) };
     }
   }
 
