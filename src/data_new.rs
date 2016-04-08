@@ -1,7 +1,11 @@
+use caffe_proto::{Datum};
+
 use array_new::{Shape, Array, ArrayViewMut, NdArraySerialize, Array3d, BitArray3d};
 use byteorder::{LittleEndian, BigEndian, ReadBytesExt};
 use episodb::{EpisoDb};
+use lmdb::{LmdbEnv, LmdbCursor};
 use memmap::{Mmap, Protection};
+use protobuf::{MessageStatic, parse_from_bytes};
 //use random::{XorShift128Plus};
 use rng::xorshift::{Xorshiftplus128Rng};
 use toml::{Parser};
@@ -364,6 +368,23 @@ impl DatasetConfig {
       }
       None => panic!("dataset missing key: '{}'", key),
     }
+  }
+
+  pub fn build_iterator(&self, key: &str) -> Box<DataIterator> {
+    match self.datasets.get(key) {
+      Some(&(ref src_name, ref data_cfg)) => {
+        match src_name as &str {
+          "lmdb_caffe"  => Box::new(LmdbCaffeDataIterator::open(data_cfg.clone())),
+          _ => panic!("unknown data iterator: '{}'", src_name),
+        }
+      }
+      None => panic!("dataset missing key: '{}'", key),
+    }
+  }
+
+  pub fn build_source(&self, key: &str) -> Box<DataSource> {
+    // FIXME(20160408)
+    unimplemented!();
   }
 }
 
@@ -835,5 +856,63 @@ impl DataSource for Cifar10DataSource {
       _ => unimplemented!(),
     };
     Some((sample_datum, Some(sample_label)))
+  }
+}
+
+pub struct LmdbCaffeDataIterator {
+  env:      LmdbEnv,
+  length:   usize,
+}
+
+impl LmdbCaffeDataIterator {
+  pub fn open(config: DataSourceConfig) -> LmdbCaffeDataIterator {
+    let mut env = match LmdbEnv::open_read_only(&config.data_path) {
+      Ok(env) => env,
+      Err(e) => panic!("failed to open lmdb env: {:?}", e),
+    };
+    if let Err(e) = env.set_map_size(1099511627776) {
+      panic!("failed to set lmdb env map size: {:?}", e);
+    }
+    let length = match env.stat() {
+      Ok(stat) => stat.entries(),
+      Err(e) => panic!("failed to query lmdb env stat: {:?}", e),
+    };
+    LmdbCaffeDataIterator{
+      env:      env,
+      length:   length,
+      //cursor:   cursor,
+    }
+  }
+}
+
+impl DataIterator for LmdbCaffeDataIterator {
+  fn max_num_samples(&self) -> usize {
+    self.length
+  }
+
+  fn each_sample(&mut self,
+      datum_cfg: SampleDatumConfig,
+      label_cfg: SampleLabelConfig,
+      func: &mut FnMut(usize, &SampleDatum, Option<&SampleLabel>))
+  {
+    let cursor = match LmdbCursor::new_read_only(&self.env) {
+      Ok(cursor) => cursor,
+      Err(e) => panic!("failed to open lmdb cursor: {:?}", e),
+    };
+    for (i, kv) in cursor.iter().enumerate() {
+      let value_bytes: &[u8] = kv.value;
+      let mut datum: Datum = match parse_from_bytes(value_bytes) {
+        Ok(m) => m,
+        Err(e) => panic!("LmdbCaffeDataIterator: failed to parse Datum: {}", e),
+      };
+      let channels = datum.get_channels() as usize;
+      let height = datum.get_height() as usize;
+      let width = datum.get_width() as usize;
+      let label = datum.get_label() as i32;
+      let image_flat_bytes = datum.take_data();
+      assert_eq!(image_flat_bytes.len(), width * height * channels);
+      let image_bytes = Array3d::with_data(image_flat_bytes, (width, height, channels));
+      func(i, &SampleDatum::WHCBytes(image_bytes), Some(&SampleLabel::Category{category: label}));
+    }
   }
 }
