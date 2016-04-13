@@ -1088,6 +1088,7 @@ impl Layer for Conv2dLayer<Disable<Conv2dHvData>> {
         scale,
         in_act.as_ptr(),
         out_delta.as_ptr(),
+        1.0,
         grad_weights.as_view_mut(ctx).as_mut_ptr(),
         work_space.as_mut_ptr(),
         &*ctx.get_dnn(),
@@ -1095,6 +1096,7 @@ impl Layer for Conv2dLayer<Disable<Conv2dHvData>> {
     unsafe { self.conv_bwd_w.backward_bias(
         scale,
         out_delta.as_ptr(),
+        1.0,
         grad_bias.as_view_mut(ctx).as_mut_ptr(),
         &*ctx.get_dnn(),
     ).unwrap() };
@@ -1102,8 +1104,10 @@ impl Layer for Conv2dLayer<Disable<Conv2dHvData>> {
       self.conv_bwd_d.set_batch_size(batch_size).unwrap();
       let mut in_delta = in_delta.borrow_mut().as_ref_mut(ctx);
       unsafe { self.conv_bwd_d.backward_data(
+          1.0,
           weights.as_view(ctx).as_ptr(),
           out_delta.as_ptr(),
+          0.0,
           in_delta.as_mut_ptr(),
           work_space.as_mut_ptr(),
           &*ctx.get_dnn(),
@@ -1340,6 +1344,7 @@ impl Layer for ResidualConv2dLayer {
         scale,
         in_act.as_ptr(),
         out_delta.as_ptr(),
+        1.0,
         grad_weights.as_view_mut(ctx).as_mut_ptr(),
         work_space.as_mut_ptr(),
         &*ctx.get_dnn(),
@@ -1348,6 +1353,7 @@ impl Layer for ResidualConv2dLayer {
     unsafe { conv_bwd_w.backward_bias(
         scale,
         out_delta.as_ptr(),
+        1.0,
         grad_bias.as_view_mut(ctx).as_mut_ptr(),
         &*ctx.get_dnn(),
     ).unwrap() };
@@ -1357,8 +1363,10 @@ impl Layer for ResidualConv2dLayer {
 
       conv_bwd_d.set_batch_size(batch_size).unwrap();
       unsafe { conv_bwd_d.backward_data(
+          1.0,
           weights.as_view(ctx).as_ptr(),
           out_delta.as_ptr(),
+          0.0,
           in_delta.as_mut_ptr(),
           work_space.as_mut_ptr(),
           &*ctx.get_dnn(),
@@ -1681,6 +1689,7 @@ impl Layer for AffineConv2dLayer {
         scale,
         in_act.as_ptr(),
         out_delta.as_ref(ctx).as_ptr(),
+        1.0,
         grad_weights.as_view_mut(ctx).as_mut_ptr(),
         work_space.as_mut_ptr(),
         &*ctx.get_dnn(),
@@ -1697,8 +1706,10 @@ impl Layer for AffineConv2dLayer {
       self.conv_bwd_d.set_batch_size(batch_size).unwrap();
       let mut in_delta = in_delta.borrow_mut().as_ref_mut(ctx);
       unsafe { self.conv_bwd_d.backward_data(
+          1.0,
           weights.as_view(ctx).as_ptr(),
           out_delta.as_ref(ctx).as_ptr(),
+          0.0,
           in_delta.as_mut_ptr(),
           work_space.as_mut_ptr(),
           &*ctx.get_dnn(),

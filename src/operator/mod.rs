@@ -1230,8 +1230,10 @@ impl<Comm> Operator for Conv2dOperator<Comm> where Comm: CommWorker {
 
     self.conv_fwd.set_batch_size(batch_size).unwrap();
     match unsafe { self.conv_fwd.forward(
+        1.0,
         in_act.borrow_mut().as_ref(ctx).as_ptr(),
         weights.as_view(ctx).as_ptr(),
+        0.0,
         out_act.as_mut_ptr(),
         workspace.as_ref_mut(ctx).as_mut_ptr(),
         &*ctx.get_dnn(),
@@ -1310,6 +1312,7 @@ impl<Comm> Operator for Conv2dOperator<Comm> where Comm: CommWorker {
         1.0,
         in_act.as_ptr(),
         out_delta.as_ptr(),
+        1.0,
         grad_weights.as_view_mut(ctx).as_mut_ptr(),
         workspace.as_mut_ptr(),
         &*ctx.get_dnn(),
@@ -1317,6 +1320,7 @@ impl<Comm> Operator for Conv2dOperator<Comm> where Comm: CommWorker {
     unsafe { backward.conv_bwd_w.backward_bias(
         1.0,
         out_delta.as_ptr(),
+        1.0,
         grad_bias.as_view_mut(ctx).as_mut_ptr(),
         &*ctx.get_dnn(),
     ).unwrap() };
@@ -1324,8 +1328,10 @@ impl<Comm> Operator for Conv2dOperator<Comm> where Comm: CommWorker {
       backward.conv_bwd_d.set_batch_size(batch_size).unwrap();
       let mut in_delta = in_delta.borrow_mut().as_ref_mut(ctx);
       unsafe { backward.conv_bwd_d.backward_data(
+          1.0,
           weights.as_view(ctx).as_ptr(),
           out_delta.as_ptr(),
+          0.0,
           in_delta.as_mut_ptr(),
           workspace.as_mut_ptr(),
           &*ctx.get_dnn(),

@@ -9,6 +9,10 @@ name = "rembrandt"
 path = "src/lib.rs"
 
 [[bin]]
+name = "test-openmpi"
+path = "tools/test-openmpi.rs"
+
+[[bin]]
 name = "train-mnist"
 path = "tools/train-mnist.rs"
 
