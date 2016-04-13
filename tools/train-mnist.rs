@@ -32,7 +32,7 @@ use rembrandt::operator::comm::{
 };
 use rembrandt::operator::worker::{
   OperatorWorkerBuilder,
-  PipelineOperatorWorkerConfig,
+  PipelineOperatorConfig,
   PipelineOperatorWorkerBuilder,
 };
 use rembrandt::opt::sgd::{
@@ -56,7 +56,7 @@ fn main() {
 
   let sgd_opt_cfg = SgdOptConfig{
     init_t:         None,
-    minibatch_size: num_workers * batch_size,
+    minibatch_size: batch_size,
     step_size:      StepSizeSchedule::Constant{step_size: 0.01},
     momentum:       MomentumStyle::Nesterov{momentum: 0.9},
     l2_reg_coef:    1.0e-4,
@@ -135,7 +135,7 @@ fn main() {
     num_categories: 10,
   };
 
-  let mut worker_cfg = PipelineOperatorWorkerConfig::new();
+  let mut worker_cfg = PipelineOperatorConfig::new();
   worker_cfg
     .data3d(data_op_cfg)
     .conv2d(conv1_op_cfg)
@@ -165,11 +165,11 @@ fn main() {
       let dataset_cfg = DatasetConfig::open(&PathBuf::from("examples/mnist.data"));
       let mut train_data =
           RandomEpisodeIterator::new(
-            dataset_cfg.build_with_cfg(datum_cfg, label_cfg, "train"),
+              dataset_cfg.build_with_cfg(datum_cfg, label_cfg, "train"),
           );
       let mut valid_data =
           SampleIterator::new(
-            Box::new(PartitionDataSource::new(tid, num_workers, dataset_cfg.build_with_cfg(datum_cfg, label_cfg, "valid")))
+              Box::new(PartitionDataSource::new(tid, num_workers, dataset_cfg.build_with_cfg(datum_cfg, label_cfg, "valid")))
           );
 
       let sgd_opt = SyncSgdOpt::new(opt_shared);

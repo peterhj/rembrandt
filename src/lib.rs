@@ -12,12 +12,14 @@ extern crate cuda_dnn;
 extern crate episodb;
 //extern crate linalg;
 extern crate lmdb;
+extern crate openmpi;
 extern crate procgroup;
+extern crate procgroup_mpi;
 extern crate protobuf;
 extern crate rembrandt_kernels;
 extern crate rng;
 extern crate toggle;
-extern crate worker;
+extern crate worker as worker_;
 
 #[macro_use]
 extern crate log;
@@ -48,3 +50,4 @@ pub mod opt_new;
 //pub mod comm;
 pub mod operator;
 pub mod opt;
+pub mod worker;

@@ -31,6 +31,10 @@ pub trait LossOperator: Operator {
   fn get_output_categories(&self, batch_size: usize) -> &Array2d<i32>;
   fn accuracy_count(&self, batch_size: usize) -> usize;
   //fn reset_loss(&mut self);
+
+  // Requires `HVBackward` capability.
+  fn hv_stage_hessian_weight(&mut self, _batch_idx: usize, _h_weight: f32) { unimplemented!(); }
+  fn hv_load_hessian_weights(&mut self, _batch_size: usize) { unimplemented!(); }
 }
 
 #[derive(Clone, Copy)]

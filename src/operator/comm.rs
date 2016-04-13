@@ -4,7 +4,7 @@ use array_cuda::device::context::{DeviceContext, DeviceCtxRef};
 use array_cuda::device::memory::{RawDeviceBuffer};
 use array_new::{AsyncArray};
 use rng::xorshift::{Xorshiftplus128Rng};
-use worker::{WorkerData};
+use worker_::{WorkerData};
 
 use rand::{Rng, SeedableRng, thread_rng};
 use std::sync::{Arc, Barrier};
@@ -17,7 +17,7 @@ pub trait CommWorkerBuilder: Send + Clone {
 }
 
 pub trait CommWorker {
-  fn update(&mut self) -> bool;
+  fn next(&mut self) -> bool;
   fn load(&mut self, offset: usize, data: &mut DeviceArray2d<f32>, ctx: &DeviceCtxRef);
   fn communicate(&mut self, ctx: &DeviceCtxRef);
   fn store(&mut self, offset: usize, data: &mut DeviceArray2d<f32>, ctx: &DeviceCtxRef);
@@ -37,7 +37,7 @@ impl CommWorkerBuilder for NullCommWorkerBuilder {
 pub struct NullCommWorker;
 
 impl CommWorker for NullCommWorker {
-  fn update(&mut self) -> bool { false }
+  fn next(&mut self) -> bool { false }
   fn load(&mut self, offset: usize, data: &mut DeviceArray2d<f32>, ctx: &DeviceCtxRef) {}
   fn communicate(&mut self, ctx: &DeviceCtxRef) {}
   fn store(&mut self, offset: usize, data: &mut DeviceArray2d<f32>, ctx: &DeviceCtxRef) {}
@@ -49,7 +49,7 @@ pub struct DeviceAllReduceCommWorkerBuilder;
 pub struct DeviceAllReduceCommWorker;
 
 impl CommWorker for DeviceAllReduceCommWorker {
-  fn update(&mut self) -> bool {
+  fn next(&mut self) -> bool {
     unimplemented!();
   }
 
@@ -63,6 +63,21 @@ impl CommWorker for DeviceAllReduceCommWorker {
 
   fn store(&mut self, offset: usize, data: &mut DeviceArray2d<f32>, ctx: &DeviceCtxRef) {
     unimplemented!();
+  }
+}
+
+#[derive(Clone, Copy)]
+pub struct GossipConfig {
+  pub num_workers:  usize,
+  pub num_rounds:   usize,
+  pub buf_size:     usize,
+}
+
+impl GossipConfig {
+  pub fn check(&self) {
+    assert!(self.num_workers >= 1);
+    assert!(self.num_rounds >= 1);
+    assert!(self.buf_size < 2 * 1024 * 1024 * 1024);
   }
 }
 
@@ -140,7 +155,7 @@ pub struct DeviceSyncGossipCommWorker {
 }
 
 impl CommWorker for DeviceSyncGossipCommWorker {
-  fn update(&mut self) -> bool {
+  fn next(&mut self) -> bool {
     self.iter_counter += 1;
     let should_comm = if self.iter_counter == self.period {
       self.iter_counter = 0;

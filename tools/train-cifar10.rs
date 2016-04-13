@@ -33,7 +33,7 @@ use rembrandt::operator::comm::{
 };
 use rembrandt::operator::worker::{
   OperatorWorkerBuilder,
-  PipelineOperatorWorkerConfig,
+  PipelineOperatorConfig,
   PipelineOperatorWorkerBuilder,
 };
 use rembrandt::opt::sgd::{
@@ -47,31 +47,7 @@ use std::rc::{Rc};
 use std::path::{PathBuf};
 use std::sync::{Arc, Barrier};
 
-fn main() {
-  env_logger::init().unwrap();
-
-  let num_workers = 4;
-  let batch_size = 32;
-  info!("num workers: {} batch size: {}",
-      num_workers, batch_size);
-
-  let sgd_opt_cfg = SgdOptConfig{
-    init_t:         None,
-    minibatch_size: num_workers * batch_size,
-    step_size:      StepSizeSchedule::Constant{step_size: 0.01},
-    momentum:       MomentumStyle::Nesterov{momentum: 0.9},
-    l2_reg_coef:    1.0e-4,
-    display_iters:  100,
-    valid_iters:    500,
-    save_iters:     5000,
-  };
-  info!("sgd: {:?}", sgd_opt_cfg);
-
-  let datum_cfg = SampleDatumConfig::Bytes3d;
-  let label_cfg = SampleLabelConfig::Category{
-    num_categories: 10,
-  };
-
+fn build_krizh26_arch() -> PipelineOperatorConfig {
   let data_op_cfg = Data3dOperatorConfig{
     in_dims:        (32, 32, 3),
     normalize:      true,
@@ -82,63 +58,71 @@ fn main() {
     conv_size:      5,
     conv_stride:    1,
     conv_pad:       2,
-    out_channels:   64,
+    out_channels:   32,
     act_func:       ActivationFunction::Rect,
     init_weights:   ParamsInit::Uniform{half_range: 0.05},
     fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
     bwd_backend:    Conv2dBwdBackend::CudnnFastest,
   };
   let pool1_op_cfg = Pool2dOperatorConfig{
-    in_dims:        (32, 32, 64),
-    pool_size:      2,
+    in_dims:        (32, 32, 32),
+    pool_size:      3,
     pool_stride:    2,
-    pool_pad:       0,
+    pool_pad:       1,
     pool_op:        PoolOperation::Max,
     act_func:       ActivationFunction::Identity,
   };
   let conv2_op_cfg = Conv2dOperatorConfig{
-    in_dims:        (16, 16, 64),
-    conv_size:      3,
+    in_dims:        (16, 16, 32),
+    conv_size:      5,
     conv_stride:    1,
-    conv_pad:       1,
-    out_channels:   128,
+    conv_pad:       2,
+    out_channels:   32,
     act_func:       ActivationFunction::Rect,
     init_weights:   ParamsInit::Uniform{half_range: 0.05},
     fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
     bwd_backend:    Conv2dBwdBackend::CudnnFastest,
   };
   let pool2_op_cfg = Pool2dOperatorConfig{
-    in_dims:        (16, 16, 128),
-    pool_size:      2,
+    in_dims:        (16, 16, 32),
+    pool_size:      3,
     pool_stride:    2,
-    pool_pad:       0,
-    pool_op:        PoolOperation::Max,
+    pool_pad:       1,
+    pool_op:        PoolOperation::Average,
     act_func:       ActivationFunction::Identity,
   };
   let conv3_op_cfg = Conv2dOperatorConfig{
-    in_dims:        (8, 8, 128),
-    conv_size:      3,
+    in_dims:        (8, 8, 32),
+    conv_size:      5,
     conv_stride:    1,
-    conv_pad:       1,
+    conv_pad:       2,
     out_channels:   64,
     act_func:       ActivationFunction::Rect,
     init_weights:   ParamsInit::Uniform{half_range: 0.05},
     fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
     bwd_backend:    Conv2dBwdBackend::CudnnFastest,
   };
+  let pool3_op_cfg = Pool2dOperatorConfig{
+    in_dims:        (8, 8, 64),
+    pool_size:      3,
+    pool_stride:    2,
+    pool_pad:       1,
+    pool_op:        PoolOperation::Average,
+    act_func:       ActivationFunction::Identity,
+  };
   let aff1_op_cfg = AffineOperatorConfig{
-    in_channels:    4096,
-    out_channels:   256,
+    in_channels:    1024,
+    out_channels:   64,
     act_func:       ActivationFunction::Rect,
     init_weights:   ParamsInit::Uniform{half_range: 0.05},
     backend:        AffineBackend::CublasGemm,
   };
   let drop_op_cfg = DropoutOperatorConfig{
-    channels:       256,
+    channels:       64,
     drop_ratio:     0.5,
   };
   let aff2_op_cfg = AffineOperatorConfig{
-    in_channels:    256,
+    in_channels:    64,
     out_channels:   10,
     act_func:       ActivationFunction::Identity,
     init_weights:   ParamsInit::Uniform{half_range: 0.05},
@@ -148,7 +132,7 @@ fn main() {
     num_categories: 10,
   };
 
-  let mut worker_cfg = PipelineOperatorWorkerConfig::new();
+  let mut worker_cfg = PipelineOperatorConfig::new();
   worker_cfg
     .data3d(data_op_cfg)
     .conv2d(conv1_op_cfg)
@@ -156,10 +140,176 @@ fn main() {
     .conv2d(conv2_op_cfg)
     .pool2d(pool2_op_cfg)
     .conv2d(conv3_op_cfg)
+    .pool2d(pool3_op_cfg)
     .affine(aff1_op_cfg)
-    .dropout(drop_op_cfg)
+    //.dropout(drop_op_cfg)
     .affine(aff2_op_cfg)
     .softmax_kl_loss(loss_cfg);
+  worker_cfg
+}
+
+fn build_allconv_arch() -> PipelineOperatorConfig {
+  let data_op_cfg = Data3dOperatorConfig{
+    in_dims:        (32, 32, 3),
+    normalize:      true,
+    preprocs:       vec![],
+  };
+  let conv1_1_op_cfg = Conv2dOperatorConfig{
+    in_dims:        (32, 32, 3),
+    conv_size:      3,
+    conv_stride:    1,
+    conv_pad:       1,
+    out_channels:   96,
+    act_func:       ActivationFunction::Rect,
+    init_weights:   ParamsInit::Uniform{half_range: 0.10},
+    fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
+    bwd_backend:    Conv2dBwdBackend::CudnnFastest,
+  };
+  let conv1_2_op_cfg = Conv2dOperatorConfig{
+    in_dims:        (32, 32, 32),
+    conv_size:      3,
+    conv_stride:    1,
+    conv_pad:       1,
+    out_channels:   96,
+    act_func:       ActivationFunction::Rect,
+    init_weights:   ParamsInit::Uniform{half_range: 0.10},
+    fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
+    bwd_backend:    Conv2dBwdBackend::CudnnFastest,
+  };
+  let pool1_op_cfg = Pool2dOperatorConfig{
+    in_dims:        (32, 32, 96),
+    pool_size:      3,
+    pool_stride:    2,
+    pool_pad:       1,
+    pool_op:        PoolOperation::Max,
+    act_func:       ActivationFunction::Identity,
+  };
+  let conv2_1_op_cfg = Conv2dOperatorConfig{
+    in_dims:        (16, 16, 96),
+    conv_size:      3,
+    conv_stride:    1,
+    conv_pad:       1,
+    out_channels:   192,
+    act_func:       ActivationFunction::Rect,
+    init_weights:   ParamsInit::Uniform{half_range: 0.10},
+    fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
+    bwd_backend:    Conv2dBwdBackend::CudnnFastest,
+  };
+  let conv2_2_op_cfg = Conv2dOperatorConfig{
+    in_dims:        (16, 16, 192),
+    conv_size:      3,
+    conv_stride:    1,
+    conv_pad:       1,
+    out_channels:   192,
+    act_func:       ActivationFunction::Rect,
+    init_weights:   ParamsInit::Uniform{half_range: 0.10},
+    fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
+    bwd_backend:    Conv2dBwdBackend::CudnnFastest,
+  };
+  let pool2_op_cfg = Pool2dOperatorConfig{
+    in_dims:        (16, 16, 192),
+    pool_size:      3,
+    pool_stride:    2,
+    pool_pad:       1,
+    pool_op:        PoolOperation::Max,
+    act_func:       ActivationFunction::Identity,
+  };
+  let conv3_op_cfg = Conv2dOperatorConfig{
+    in_dims:        (8, 8, 192),
+    conv_size:      3,
+    conv_stride:    1,
+    conv_pad:       0,
+    out_channels:   192,
+    act_func:       ActivationFunction::Rect,
+    init_weights:   ParamsInit::Uniform{half_range: 0.10},
+    fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
+    bwd_backend:    Conv2dBwdBackend::CudnnFastest,
+  };
+  let conv4_op_cfg = Conv2dOperatorConfig{
+    in_dims:        (6, 6, 192),
+    conv_size:      1,
+    conv_stride:    1,
+    conv_pad:       0,
+    out_channels:   192,
+    act_func:       ActivationFunction::Rect,
+    init_weights:   ParamsInit::Uniform{half_range: 0.10},
+    fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
+    bwd_backend:    Conv2dBwdBackend::CudnnFastest,
+  };
+  let conv5_op_cfg = Conv2dOperatorConfig{
+    in_dims:        (6, 6, 192),
+    conv_size:      1,
+    conv_stride:    1,
+    conv_pad:       0,
+    out_channels:   10,
+    act_func:       ActivationFunction::Rect,
+    init_weights:   ParamsInit::Uniform{half_range: 0.10},
+    fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
+    bwd_backend:    Conv2dBwdBackend::CudnnFastest,
+  };
+  let pool5_op_cfg = Pool2dOperatorConfig{
+    in_dims:        (6, 6, 10),
+    pool_size:      6,
+    pool_stride:    1,
+    pool_pad:       0,
+    pool_op:        PoolOperation::Average,
+    act_func:       ActivationFunction::Identity,
+  };
+  let loss_cfg = CategoricalLossConfig{
+    num_categories: 10,
+  };
+
+  let mut worker_cfg = PipelineOperatorConfig::new();
+  worker_cfg
+    .data3d(data_op_cfg)
+    .conv2d(conv1_1_op_cfg)
+    .conv2d(conv1_2_op_cfg)
+    .pool2d(pool1_op_cfg)
+    .conv2d(conv2_1_op_cfg)
+    .conv2d(conv2_2_op_cfg)
+    .pool2d(pool2_op_cfg)
+    .conv2d(conv3_op_cfg)
+    .conv2d(conv4_op_cfg)
+    .conv2d(conv5_op_cfg)
+    .pool2d(pool5_op_cfg)
+    .softmax_kl_loss(loss_cfg);
+  worker_cfg
+}
+
+fn build_resnet20_arch() -> PipelineOperatorConfig {
+  // FIXME(20160408): requires 2x residual conv operators.
+  unimplemented!();
+}
+
+fn main() {
+  env_logger::init().unwrap();
+
+  let num_workers = 4;
+  let batch_size = 32;
+  info!("num workers: {} batch size: {}",
+      num_workers, batch_size);
+
+  let sgd_opt_cfg = SgdOptConfig{
+    init_t:         None,
+    minibatch_size: batch_size,
+    step_size:      StepSizeSchedule::Constant{step_size: 0.01},
+    momentum:       MomentumStyle::Nesterov{momentum: 0.9},
+    l2_reg_coef:    1.0e-4,
+    display_iters:  50,
+    valid_iters:    500,
+    save_iters:     5000,
+  };
+  info!("sgd: {:?}", sgd_opt_cfg);
+
+  let datum_cfg = SampleDatumConfig::Bytes3d;
+  let label_cfg = SampleLabelConfig::Category{
+    num_categories: 10,
+  };
+
+  // This works and gets 74% test accuracy as claimed.
+  let worker_cfg = build_krizh26_arch();
+  // This doesn't really work.
+  //let worker_cfg = build_allconv_arch();
 
   // FIXME(20160331)
   let comm_worker_builder = DeviceSyncGossipCommWorkerBuilder::new(num_workers, 1, worker_cfg.params_len());
@@ -180,11 +330,11 @@ fn main() {
       let dataset_cfg = DatasetConfig::open(&PathBuf::from("examples/cifar10.data"));
       let mut train_data =
           RandomEpisodeIterator::new(
-            dataset_cfg.build_with_cfg(datum_cfg, label_cfg, "train"),
+              dataset_cfg.build_with_cfg(datum_cfg, label_cfg, "train"),
           );
       let mut valid_data =
           SampleIterator::new(
-            Box::new(PartitionDataSource::new(tid, num_workers, dataset_cfg.build_with_cfg(datum_cfg, label_cfg, "valid")))
+              Box::new(PartitionDataSource::new(tid, num_workers, dataset_cfg.build_with_cfg(datum_cfg, label_cfg, "valid")))
           );
 
       let sgd_opt = SyncSgdOpt::new(opt_shared);

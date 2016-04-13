@@ -129,9 +129,11 @@ impl SyncSgdOpt {
     let num_workers = operator.num_workers();
     let tid = operator.worker_rank();
     let minibatch_size = sgd_opt_cfg.minibatch_size;
-    let local_minibatch_size = minibatch_size / num_workers;
-    let local_minibatch_weight = 1.0 / local_minibatch_size as f32;
-    let epoch_size = (train_data.max_num_samples() / local_minibatch_size) * local_minibatch_size;
+    let minibatch_weight = 1.0 / minibatch_size as f32;
+    let epoch_size = (train_data.max_num_samples() / minibatch_size) * minibatch_size;
+    //let local_minibatch_size = minibatch_size / num_workers;
+    //let local_minibatch_weight = 1.0 / local_minibatch_size as f32;
+    //let epoch_size = (train_data.max_num_samples() / local_minibatch_size) * local_minibatch_size;
 
     let shared_seed = operator.shared_seed();
     operator.init_params(shared_seed);
@@ -163,7 +165,7 @@ impl SyncSgdOpt {
           }
         }
         operator.loss_operator(0).stage_label(batch_counter, maybe_label.unwrap());
-        operator.loss_operator(0).stage_weight(batch_counter, local_minibatch_weight);
+        operator.loss_operator(0).stage_weight(batch_counter, minibatch_weight);
         local_counter += 1;
         epoch_counter = local_counter * num_workers / epoch_size;
         let epoch_offset = local_counter * num_workers % epoch_size;
@@ -182,7 +184,7 @@ impl SyncSgdOpt {
           batch_counter = 0;
         }
 
-        if local_counter % local_minibatch_size == 0 {
+        if local_counter % minibatch_size == 0 {
           let l2_reg_coef = sgd_opt_cfg.l2_reg_coef;
           let step_size = sgd_opt_cfg.step_size.at_iter(iter_counter);
           let momentum = sgd_opt_cfg.momentum.at_iter(iter_counter);

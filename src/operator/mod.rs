@@ -65,13 +65,13 @@ pub trait Operator {
   fn sync_grads(&mut self) { unimplemented!(); }
   fn stage_params(&mut self) {}
   fn sync_params(&mut self) {}
-  fn _stage_params_v2(&mut self, _comm_worker: &mut CommWorker) {}
+  /*fn _stage_params_v2(&mut self, _comm_worker: &mut CommWorker) {}
   fn _sync_params_v2(&mut self, _comm_worker: &mut CommWorker) {}
-  fn _unstage_params_v2(&mut self, _comm_worker: &mut CommWorker) {}
+  fn _unstage_params_v2(&mut self, _comm_worker: &mut CommWorker) {}*/
   fn reset_grads(&mut self, _scale: f32) {}
   fn reset(&mut self) {}
 
-  // Requires `HvBackward` capability.
+  // Requires `HVBackward` capability.
   fn hv_reset_direction(&mut self, _init: HvDirectionInit) { unimplemented!(); }
   fn hv_solve_direction(&mut self, _solver: HvDirectionSolver) { unimplemented!(); }
   fn hv_forward(&mut self, _batch_size: usize) { unimplemented!(); }
@@ -192,23 +192,26 @@ impl OperatorConfig {
 pub enum OpCapability {
   Forward,
   Backward,
-  HvBackward,
+  HVBackward,
+  GNHVBackward,
 }
 
 impl OpCapability {
   pub fn backward_enabled(&self) -> bool {
     match *self {
-      OpCapability::Forward     => false,
-      OpCapability::Backward    => true,
-      OpCapability::HvBackward  => true,
+      OpCapability::Forward         => false,
+      OpCapability::Backward        => true,
+      OpCapability::HVBackward      => true,
+      OpCapability::GNHVBackward    => true,
     }
   }
 
   pub fn hv_backward_enabled(&self) -> bool {
     match *self {
-      OpCapability::Forward     => false,
-      OpCapability::Backward    => false,
-      OpCapability::HvBackward  => true,
+      OpCapability::Forward         => false,
+      OpCapability::Backward        => false,
+      OpCapability::HVBackward      => true,
+      OpCapability::GNHVBackward    => true,
     }
   }
 }

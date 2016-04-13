@@ -19,7 +19,7 @@ use array_cuda::device::context::{DeviceContext, DeviceCtxRef};
 use rng::xorshift::{Xorshiftplus128Rng};
 use procgroup::{ProcGroup};
 use threadpool::{ThreadPool};
-use worker::{WorkerData};
+use worker_::{WorkerData};
 
 use rand::{Rng, SeedableRng, thread_rng};
 use std::cell::{RefCell};
@@ -43,158 +43,6 @@ pub trait OperatorWorker: Operator {
   fn loss_count(&self) -> usize;
   fn loss_operator(&mut self, rank: usize) -> &mut LossOperator;
   fn wait_barrier(&self);
-}
-
-#[derive(Clone)]
-pub struct DistOperatorWorkerBuilder<Comm, B>
-where Comm: 'static + CommWorker,
-      B: OperatorWorkerBuilder<Comm>,
-{
-  inner_builder:    B,
-  _marker:          PhantomData<Comm>,
-}
-
-impl<Comm, B> DistOperatorWorkerBuilder<Comm, B>
-where Comm: 'static + CommWorker,
-      B: OperatorWorkerBuilder<Comm>,
-{
-}
-
-pub struct DistOperatorWorker<W, Pg>
-where W: OperatorWorker, Pg: ProcGroup<Pid=usize> {
-  inner_worker: W,
-  _marker:      PhantomData<Pg>,
-}
-
-impl<W, Pg> DistOperatorWorker<W, Pg>
-where W: OperatorWorker, Pg: ProcGroup<Pid=usize> {
-  pub fn new(inner_worker: W) -> DistOperatorWorker<W, Pg> {
-    DistOperatorWorker{
-      inner_worker: inner_worker,
-      _marker:      PhantomData,
-    }
-  }
-}
-
-impl<W, Pg> OperatorWorker for DistOperatorWorker<W, Pg>
-where W: OperatorWorker, Pg: ProcGroup<Pid=usize> {
-  fn num_workers(&self) -> usize {
-    // FIXME(20160402): this is absolutely false, since different nodes may
-    // have different numbers of workers.
-    let num_local_workers = self.inner_worker.num_workers();
-    let num_proc_peers = 0;
-    unimplemented!()
-    //num_local_workers * num_proc_peers
-  }
-
-  fn worker_rank(&self) -> usize {
-    // FIXME(20160402)
-    unimplemented!();
-  }
-
-  fn shared_seed(&self) -> [u64; 2] {
-    self.inner_worker.shared_seed()
-  }
-
-  fn input_operator(&mut self) -> &mut InputOperator {
-    self.inner_worker.input_operator()
-  }
-
-  fn loss_count(&self) -> usize {
-    self.inner_worker.loss_count()
-  }
-
-  fn loss_operator(&mut self, rank: usize) -> &mut LossOperator {
-    self.inner_worker.loss_operator(rank)
-  }
-
-  fn wait_barrier(&self) {
-  }
-}
-
-impl<W, Pg> Operator for DistOperatorWorker<W, Pg>
-where W: OperatorWorker, Pg: ProcGroup<Pid=usize> {
-  fn batch_size(&self) -> usize {
-    // FIXME(20160402)
-    unimplemented!();
-  }
-
-  fn init_params(&mut self, shared_seed: [u64; 2]) {
-    self.inner_worker.init_params(shared_seed);
-  }
-
-  fn read_params(&mut self, blob: &[u8]) -> usize {
-    self.inner_worker.read_params(blob)
-  }
-
-  fn write_params(&mut self, blob: &mut Vec<u8>) {
-    self.inner_worker.write_params(blob)
-  }
-
-  fn forward(&mut self, batch_size: usize, phase: OpPhase) {
-    self.inner_worker.forward(batch_size, phase);
-  }
-
-  fn backward(&mut self, batch_size: usize) {
-    self.inner_worker.backward(batch_size);
-  }
-
-  fn regularize(&mut self, reg: Regularization) {
-    self.inner_worker.regularize(reg);
-  }
-
-  fn accumulate_grads(&mut self, scale: f32, momentum: f32) {
-    self.inner_worker.accumulate_grads(scale, momentum);
-  }
-
-  fn update_params(&mut self, scale: f32) {
-    self.inner_worker.update_params(scale);
-  }
-
-  /*fn reset_params(&mut self, momentum: f32, nesterov: bool) {
-    self.inner_worker.reset_params(momentum, nesterov);
-  }*/
-
-  fn save_params(&mut self) {
-    // FIXME(20160406)
-    unimplemented!();
-  }
-
-  fn restore_params(&mut self) {
-    // FIXME(20160406)
-    unimplemented!();
-  }
-
-  fn set_grads_with_params_diff(&mut self) {
-    // FIXME(20160406)
-    unimplemented!();
-  }
-
-  fn sync_grads(&mut self) {
-    unimplemented!();
-  }
-
-  fn stage_params(&mut self) {
-    self.inner_worker.stage_params();
-  }
-
-  fn sync_params(&mut self) {
-    self.inner_worker.sync_params();
-    // FIXME(20160402): additionally sync across nodes, and wait on a local
-    // barrier b/w device workers.
-    if self.inner_worker.worker_rank() == 0 {
-      unimplemented!();
-    }
-    self.inner_worker.wait_barrier();
-  }
-
-  fn reset_grads(&mut self, scale: f32) {
-    self.inner_worker.reset_grads(scale);
-  }
-
-  fn reset(&mut self) {
-    self.inner_worker.reset();
-  }
 }
 
 pub struct DeviceParallelOperatorServer<Comm, CBuilder, WBuilder>
@@ -246,22 +94,22 @@ where Comm: 'static + CommWorker + Sync,
 
 // FIXME(20160330): why can't I derive Clone here?
 //#[derive(Clone)]
-/*pub struct PipelineOperatorWorkerConfig<Comm> where Comm: 'static + CommWorker {
+/*pub struct PipelineOperatorConfig<Comm> where Comm: 'static + CommWorker {
   pub input_op:     Option<OperatorConfig<Comm>>,
   pub hidden_ops:   Vec<OperatorConfig<Comm>>,
   pub loss_op:      Option<OperatorConfig<Comm>>,
 }*/
 
 #[derive(Clone)]
-pub struct PipelineOperatorWorkerConfig {
+pub struct PipelineOperatorConfig {
   pub input_op:     Option<OperatorConfig>,
   pub hidden_ops:   Vec<OperatorConfig>,
   pub loss_op:      Option<OperatorConfig>,
 }
 
-/*impl<Comm> Clone for PipelineOperatorWorkerConfig<Comm> where Comm: 'static + CommWorker {
-  fn clone(&self) -> PipelineOperatorWorkerConfig<Comm> {
-    PipelineOperatorWorkerConfig{
+/*impl<Comm> Clone for PipelineOperatorConfig<Comm> where Comm: 'static + CommWorker {
+  fn clone(&self) -> PipelineOperatorConfig<Comm> {
+    PipelineOperatorConfig{
       input_op:     self.input_op.clone(),
       hidden_ops:   self.hidden_ops.clone(),
       loss_op:      self.loss_op.clone(),
@@ -269,11 +117,11 @@ pub struct PipelineOperatorWorkerConfig {
   }
 }*/
 
-//impl<Comm> PipelineOperatorWorkerConfig<Comm> where Comm: 'static + CommWorker {
-impl PipelineOperatorWorkerConfig {
-  //pub fn new() -> PipelineOperatorWorkerConfig<Comm> {
-  pub fn new() -> PipelineOperatorWorkerConfig {
-    PipelineOperatorWorkerConfig{
+//impl<Comm> PipelineOperatorConfig<Comm> where Comm: 'static + CommWorker {
+impl PipelineOperatorConfig {
+  //pub fn new() -> PipelineOperatorConfig<Comm> {
+  pub fn new() -> PipelineOperatorConfig {
+    PipelineOperatorConfig{
       input_op:     None,
       hidden_ops:   vec![],
       loss_op:      None,
@@ -323,8 +171,8 @@ pub struct PipelineOperatorWorkerBuilder<Comm> where Comm: 'static + CommWorker 
 //pub struct PipelineOperatorWorkerBuilder {
   num_workers:  usize,
   batch_size:   usize,
-  //config:       PipelineOperatorWorkerConfig<Comm>,
-  config:       PipelineOperatorWorkerConfig,
+  //config:       PipelineOperatorConfig<Comm>,
+  config:       PipelineOperatorConfig,
   capability:   OpCapability,
   shared_seed:  [u64; 2],
   // XXX: Contravariance.
@@ -345,8 +193,8 @@ impl<Comm> Clone for PipelineOperatorWorkerBuilder<Comm> where Comm: 'static + C
 }
 
 impl<Comm> PipelineOperatorWorkerBuilder<Comm> where Comm: 'static + CommWorker {
-  //pub fn new(num_workers: usize, batch_size: usize, config: PipelineOperatorWorkerConfig<Comm>, capability: OpCapability) -> PipelineOperatorWorkerBuilder<Comm> {
-  pub fn new(num_workers: usize, batch_size: usize, config: PipelineOperatorWorkerConfig, capability: OpCapability) -> PipelineOperatorWorkerBuilder<Comm> {
+  //pub fn new(num_workers: usize, batch_size: usize, config: PipelineOperatorConfig<Comm>, capability: OpCapability) -> PipelineOperatorWorkerBuilder<Comm> {
+  pub fn new(num_workers: usize, batch_size: usize, config: PipelineOperatorConfig, capability: OpCapability) -> PipelineOperatorWorkerBuilder<Comm> {
     PipelineOperatorWorkerBuilder{
       num_workers:  num_workers,
       batch_size:   batch_size,
@@ -404,8 +252,8 @@ impl<Comm> OperatorWorkerBuilder<Comm> for PipelineOperatorWorkerBuilder<Comm> w
 pub struct PipelineOperatorWorker<Comm> where Comm: 'static + CommWorker {
   worker_data:  WorkerData,
   batch_size:   usize,
-  //config:       PipelineOperatorWorkerConfig<Comm>,
-  config:       PipelineOperatorWorkerConfig,
+  //config:       PipelineOperatorConfig<Comm>,
+  config:       PipelineOperatorConfig,
   shared_seed:  [u64; 2],
 
   context:      Rc<DeviceContext>,
@@ -539,12 +387,18 @@ impl<Comm> Operator for PipelineOperatorWorker<Comm> where Comm: 'static + CommW
   }
 
   fn stage_params(&mut self) {
+    if self.num_workers() <= 1 {
+      return;
+    }
     for op in self.hidden_ops.iter_mut() {
       op.stage_params();
     }
   }
 
   fn sync_params(&mut self) {
+    if self.num_workers() <= 1 {
+      return;
+    }
     {
       let ctx = &(*self.context).as_ref();
       self.comm_worker.borrow_mut().communicate(ctx);
@@ -685,3 +539,175 @@ pub struct GraphOperatorWorker<Comm> where Comm: CommWorker {
   worker_data:  WorkerData,
   comm_worker:  Comm,
 }
+
+/*#[derive(Clone)]
+pub struct DistOperatorWorkerBuilder<B, Comm>
+where B: OperatorWorkerBuilder<Comm>,
+      Comm: 'static + CommWorker,
+{
+  inner_builder:    B,
+  _marker:          PhantomData<Comm>,
+}
+
+impl<B, Comm> DistOperatorWorkerBuilder<B, Comm>
+where B: OperatorWorkerBuilder<Comm>,
+      Comm: 'static + CommWorker,
+{
+}
+
+impl<Comm, B> OperatorWorkerBuilder<Comm> for DistOperatorWorkerBuilder<Comm, B>
+where B: OperatorWorkerBuilder<Comm>,
+      Comm: 'static + CommWorker,
+{
+  pub fn into_worker(self) -> DistOperatorWorker<B::Worker, Comm> {
+    // FIXME(20160411)
+    unimplemented!();
+  }
+}
+
+pub struct DistOperatorWorker<W, Comm>
+//where W: OperatorWorker, Pg: ProcGroup<Pid=usize> {
+where W: OperatorWorker,
+      Comm: 'static + CommWorker,
+{
+  //proc_group:   Pg,
+  worker_data:  WorkerData,
+  inner_worker: W,
+  //_marker:      PhantomData<Pg>,
+}
+
+impl<W, Comm> DistOperatorWorker<W, Comm>
+//where W: OperatorWorker, Pg: ProcGroup<Pid=usize> {
+where W: OperatorWorker,
+      Comm: 'static + CommWorker,
+{
+}
+
+impl<W, Comm> OperatorWorker for DistOperatorWorker<W, Comm>
+//where W: OperatorWorker, Pg: ProcGroup<Pid=usize> {
+where W: OperatorWorker,
+      Comm: 'static + CommWorker,
+{
+  fn num_workers(&self) -> usize {
+    /*// FIXME(20160402): this is absolutely false, since different nodes may
+    // have different numbers of workers.
+    let num_local_workers = self.inner_worker.num_workers();
+    let num_proc_peers = 0;
+    unimplemented!()
+    //num_local_workers * num_proc_peers*/
+    self.worker_data.num_workers()
+  }
+
+  fn worker_rank(&self) -> usize {
+    // FIXME(20160402)
+    //unimplemented!();
+    self.worker_data.tid()
+  }
+
+  fn shared_seed(&self) -> [u64; 2] {
+    self.inner_worker.shared_seed()
+  }
+
+  fn input_operator(&mut self) -> &mut InputOperator {
+    self.inner_worker.input_operator()
+  }
+
+  fn loss_count(&self) -> usize {
+    self.inner_worker.loss_count()
+  }
+
+  fn loss_operator(&mut self, rank: usize) -> &mut LossOperator {
+    self.inner_worker.loss_operator(rank)
+  }
+
+  fn wait_barrier(&self) {
+  }
+}
+
+impl<W, Comm> Operator for DistOperatorWorker<W, Comm>
+//where W: OperatorWorker, Pg: ProcGroup<Pid=usize> {
+where W: OperatorWorker,
+      Comm: 'static + CommWorker,
+  fn batch_size(&self) -> usize {
+    // FIXME(20160402)
+    unimplemented!();
+  }
+
+  fn init_params(&mut self, shared_seed: [u64; 2]) {
+    self.inner_worker.init_params(shared_seed);
+  }
+
+  fn read_params(&mut self, blob: &[u8]) -> usize {
+    self.inner_worker.read_params(blob)
+  }
+
+  fn write_params(&mut self, blob: &mut Vec<u8>) {
+    self.inner_worker.write_params(blob)
+  }
+
+  fn forward(&mut self, batch_size: usize, phase: OpPhase) {
+    self.inner_worker.forward(batch_size, phase);
+  }
+
+  fn backward(&mut self, batch_size: usize) {
+    self.inner_worker.backward(batch_size);
+  }
+
+  fn regularize(&mut self, reg: Regularization) {
+    self.inner_worker.regularize(reg);
+  }
+
+  fn accumulate_grads(&mut self, scale: f32, momentum: f32) {
+    self.inner_worker.accumulate_grads(scale, momentum);
+  }
+
+  fn update_params(&mut self, scale: f32) {
+    self.inner_worker.update_params(scale);
+  }
+
+  /*fn reset_params(&mut self, momentum: f32, nesterov: bool) {
+    self.inner_worker.reset_params(momentum, nesterov);
+  }*/
+
+  fn save_params(&mut self) {
+    // FIXME(20160406)
+    unimplemented!();
+  }
+
+  fn restore_params(&mut self) {
+    // FIXME(20160406)
+    unimplemented!();
+  }
+
+  fn set_grads_with_params_diff(&mut self) {
+    // FIXME(20160406)
+    unimplemented!();
+  }
+
+  fn sync_grads(&mut self) {
+    unimplemented!();
+  }
+
+  fn stage_params(&mut self) {
+    // XXX(20160412): First, implicitly sync the inner worker parameters.
+    self.inner_worker.stage_params();
+  }
+
+  fn sync_params(&mut self) {
+    self.inner_worker.sync_params();
+    /*// FIXME(20160402): additionally sync across nodes, and wait on a local
+    // barrier b/w device workers.
+    if self.inner_worker.worker_rank() == 0 {
+      unimplemented!();
+    }
+    self.inner_worker.wait_barrier();*/
+  }
+
+  fn reset_grads(&mut self, scale: f32) {
+    self.inner_worker.reset_grads(scale);
+  }
+
+  fn reset(&mut self) {
+    self.inner_worker.reset();
+  }
+}*/

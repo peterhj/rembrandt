@@ -54,8 +54,9 @@ cuda = { path = "../libcuda" }
 cuda_dnn = { path = "../libcuda_dnn" } #, features = ["cudnn_v3"] }
 episodb = { path = "../../episodb" }
 lmdb = { path = "../liblmdb" }
+openmpi = { path = "../../libopenmpi" }
 procgroup = { path = "../../libprocgroup" }
-#procgroup_mpi = { path = "../../libprocgroup_mpi" }
+procgroup_mpi = { path = "../../libprocgroup_mpi" }
 rembrandt_kernels = { path = "../rembrandt_kernels" }
 #rembrandt_reportserv = { path = "../rembrandt_reportserv" }
 rng = { path = "../../librng" }
