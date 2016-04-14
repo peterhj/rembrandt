@@ -996,8 +996,10 @@ impl Layer for Conv2dLayer<Disable<Conv2dHvData>> {
     //println!("DEBUG: Conv2dLayer: forward batch size: {}", batch_size);
     self.conv_fwd.set_batch_size(batch_size).unwrap();
     match unsafe { self.conv_fwd.forward(
+        1.0,
         in_act.borrow_mut().as_ref(ctx).as_ptr(),
         weights.as_view(ctx).as_ptr(),
+        0.0,
         out_act.as_mut_ptr(),
         work_space.as_ref_mut(ctx).as_mut_ptr(),
         &*ctx.get_dnn(),
@@ -1257,8 +1259,10 @@ impl Layer for ResidualConv2dLayer {
 
     conv_fwd.set_batch_size(batch_size).unwrap();
     unsafe { conv_fwd.forward(
+        1.0,
         in_act.as_ptr(),
         weights.as_view(ctx).as_ptr(),
+        0.0,
         out_act.as_mut_ptr(),
         work_space.as_ref_mut(ctx).as_mut_ptr(),
         &*ctx.get_dnn(),
@@ -1620,8 +1624,10 @@ impl Layer for AffineConv2dLayer {
 
     self.conv_fwd.set_batch_size(batch_size).unwrap();
     unsafe { self.conv_fwd.forward(
+        1.0,
         in_act.borrow_mut().as_ref(ctx).as_ptr(),
         weights.as_view(ctx).as_ptr(),
+        0.0,
         out_act.as_mut_ptr(),
         work_space.as_ref_mut(ctx).as_mut_ptr(),
         &*ctx.get_dnn(),
