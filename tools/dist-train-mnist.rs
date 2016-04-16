@@ -164,9 +164,13 @@ fn main() {
     let join_barrier = join_barrier.clone();
     let opt_shared = opt_shared.clone();
     pool.execute(move || {
-      let context = Rc::new(DeviceContext::new(tid));
+      //let context = Rc::new(DeviceContext::new(tid));
       //let comm_worker = Rc::new(RefCell::new(comm_worker_builder.into_worker(tid)));
       //let mut worker = worker_builder.into_worker(tid, context, comm_worker);
+
+      // XXX(20160415): when running on K80s, use the 2nd one.
+      //let context = Rc::new(DeviceContext::new(0));
+      let context = Rc::new(DeviceContext::new(1));
       let mut worker = worker_builder.into_worker(context);
 
       let dataset_cfg = DatasetConfig::open(&PathBuf::from("examples/mnist.data"));
@@ -176,7 +180,8 @@ fn main() {
           );
       let mut valid_data =
           SampleIterator::new(
-              Box::new(PartitionDataSource::new(worker.worker_rank(), worker.num_workers(), dataset_cfg.build_with_cfg(datum_cfg, label_cfg, "valid")))
+              //Box::new(PartitionDataSource::new(worker.worker_rank(), worker.num_workers(), dataset_cfg.build_with_cfg(datum_cfg, label_cfg, "valid")))
+              dataset_cfg.build_with_cfg(datum_cfg, label_cfg, "valid")
           );
 
       let sgd_opt = SyncSgdOpt::new(opt_shared);

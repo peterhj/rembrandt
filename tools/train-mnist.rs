@@ -49,7 +49,7 @@ use std::sync::{Arc, Barrier};
 fn main() {
   env_logger::init().unwrap();
 
-  let num_workers = 1;
+  let num_workers = 8;
   let batch_size = 16;
   info!("num workers: {} batch size: {}",
       num_workers, batch_size);

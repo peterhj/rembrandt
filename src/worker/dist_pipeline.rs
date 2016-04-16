@@ -45,7 +45,7 @@ use std::sync::{Arc, Barrier};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /*#[derive(Clone)]
-pub struct MpiDistSyncGossipCommWorkerBuilder {
+pub struct MpiDistAsyncGossipCommWorkerBuilder {
   num_workers:  usize,
   num_rounds:   usize,
   period:       usize,
@@ -55,58 +55,72 @@ pub struct MpiDistSyncGossipCommWorkerBuilder {
   shared_seed:  [u64; 2],
 }
 
-impl MpiDistSyncGossipCommWorkerBuilder {
-  pub fn new(config: GossipConfig, /*contexts: &[DeviceContext]*/) -> MpiDistSyncGossipCommWorkerBuilder {
+impl MpiDistAsyncGossipCommWorkerBuilder {
+  pub fn new(config: GossipConfig, /*contexts: &[DeviceContext]*/) -> MpiDistAsyncGossipCommWorkerBuilder {
     // FIXME(20160412)
     unimplemented!();
   }
 }*/
 
-pub struct MpiDistSyncGossipCommWorker {
+pub struct MpiDistAsyncGossipCommWorker {
   worker_data:  WorkerData,
   context:      Rc<DeviceContext>,
   mpi:          Mpi,
+
+  buf_len:      usize,
+  msg_len:      usize,
+  num_buf_msgs: usize,
+  com_interval: usize,
 
   origin_buf:   RawDeviceBuffer<f32>,
   target_buf:   RawDeviceBuffer<f32>,
   origin_buf_h: Vec<f32>,
   target_buf_h: Vec<f32>,
   target_win_h: MpiWindow<f32>,
+  avg_reduce:   AverageReduceOperation<f32>,
 
   rng:          Xorshiftplus128Rng,
   ranks_perm:   Vec<usize>,
   iter_counter: usize,
 }
 
-impl MpiDistSyncGossipCommWorker {
-  pub fn new(gossip_cfg: GossipConfig, context: Rc<DeviceContext>) -> MpiDistSyncGossipCommWorker {
-    let buf_size = gossip_cfg.buf_size;
+impl MpiDistAsyncGossipCommWorker {
+  pub fn new(gossip_cfg: GossipConfig, context: Rc<DeviceContext>) -> MpiDistAsyncGossipCommWorker {
+    // XXX(20160415): Empirically determined message length.
+    let msg_len = 32 * 1024;
+    let num_buf_msgs = (gossip_cfg.buf_size + msg_len - 1) / msg_len;
+    let buf_len = num_buf_msgs * msg_len;
 
     let ctx = &(*context).as_ref();
-    let origin_buf = unsafe { RawDeviceBuffer::new(buf_size, ctx) };
-    let target_buf = unsafe { RawDeviceBuffer::new(buf_size, ctx) };
+    let origin_buf = unsafe { RawDeviceBuffer::new(buf_len, ctx) };
+    let target_buf = unsafe { RawDeviceBuffer::new(buf_len, ctx) };
 
     let mpi = Mpi::new();
     let worker_rank = mpi.rank();
     let num_workers = mpi.size();
-    let mut origin_buf_h = Vec::with_capacity(buf_size);
-    unsafe { origin_buf_h.set_len(buf_size) };
-    let mut target_buf_h = Vec::with_capacity(buf_size);
-    unsafe { target_buf_h.set_len(buf_size) };
+    let mut origin_buf_h = Vec::with_capacity(buf_len);
+    unsafe { origin_buf_h.set_len(buf_len) };
+    let mut target_buf_h = Vec::with_capacity(buf_len);
+    unsafe { target_buf_h.set_len(buf_len) };
     let target_win_h = match unsafe { MpiWindow::create(target_buf_h.as_mut_ptr(), target_buf_h.len(), &mpi) } {
       Ok(win) => win,
       Err(e) => panic!("comm worker: failed to create MPI window"),
     };
 
-    MpiDistSyncGossipCommWorker{
+    MpiDistAsyncGossipCommWorker{
       worker_data:  WorkerData::new(worker_rank, num_workers),
       context:      context.clone(),
       mpi:          Mpi,
+      buf_len:      buf_len,
+      msg_len:      msg_len,
+      num_buf_msgs: num_buf_msgs,
+      com_interval: 1,
       origin_buf:   origin_buf,
       target_buf:   target_buf,
       origin_buf_h: origin_buf_h,
       target_buf_h: target_buf_h,
       target_win_h: target_win_h,
+      avg_reduce:   AverageReduceOperation::new(0),
       rng:          Xorshiftplus128Rng::new(&mut thread_rng()),
       ranks_perm:   (0 .. num_workers).collect(),
       iter_counter: 0,
@@ -114,7 +128,7 @@ impl MpiDistSyncGossipCommWorker {
   }
 }
 
-impl CommWorker for MpiDistSyncGossipCommWorker {
+impl CommWorker for MpiDistAsyncGossipCommWorker {
   fn next(&mut self) -> bool {
     // FIXME(20160412)
     self.iter_counter += 1;
@@ -125,7 +139,7 @@ impl CommWorker for MpiDistSyncGossipCommWorker {
   }
 
   fn load(&mut self, offset: usize, data: &mut DeviceArray2d<f32>, ctx: &DeviceCtxRef) {
-    if self.iter_counter % 1000 != 0 {
+    if self.iter_counter % self.com_interval != 0 {
       return;
     }
 
@@ -136,7 +150,7 @@ impl CommWorker for MpiDistSyncGossipCommWorker {
   }
 
   fn communicate(&mut self, ctx: &DeviceCtxRef) {
-    if self.iter_counter % 1000 != 0 {
+    if self.iter_counter % self.com_interval != 0 {
       return;
     }
 
@@ -161,20 +175,30 @@ impl CommWorker for MpiDistSyncGossipCommWorker {
     //ctx.sync();
 
     // FIXME(20160415): getting communication to work.
-    self.mpi.barrier();
-    /*match unsafe { self.target_win_h.rma_get(self.origin_buf_h.as_mut_ptr(), self.origin_buf_h.len(), other_rank, &self.mpi) } {
-      Ok(_) => {}
-      Err(e) => panic!("mpi dist comm worker: failed to call rma_get: {:?}", e),
+    //self.mpi.barrier();
+    self.target_win_h.fence();
+    for msg in 0 .. self.num_buf_msgs {
+      let offset = msg * self.msg_len;
+      match unsafe { self.target_win_h.rma_get(self.origin_buf_h.as_mut_ptr().offset(offset as isize), self.msg_len, other_rank, offset, &self.mpi) } {
+        Ok(_) => {}
+        Err(e) => panic!("mpi dist comm worker: failed to call rma_get: {:?}", e),
+      }
     }
-    self.mpi.barrier();*/
+    self.target_win_h.fence();
+    //self.mpi.barrier();
 
     // FIXME(20160415): load from the correct buffer.
-    self.origin_buf.sync_load(&self.target_buf_h, ctx);
-    //self.origin_buf.sync_load(&self.origin_buf_h, ctx);
+    //self.origin_buf.sync_load(&self.target_buf_h, ctx);
+    self.origin_buf.sync_load(&self.origin_buf_h, ctx);
+    self.avg_reduce.reduce(
+        &(self.target_buf).as_ref(),
+        &(self.origin_buf).as_ref(),
+        ctx,
+    );
   }
 
   fn store(&mut self, offset: usize, data: &mut DeviceArray2d<f32>, ctx: &DeviceCtxRef) {
-    if self.iter_counter % 1000 != 0 {
+    if self.iter_counter % self.com_interval != 0 {
       return;
     }
 
@@ -235,10 +259,15 @@ impl MpiDistPipelineOperatorWorkerBuilder {
       num_rounds:   1,
       buf_size:     total_params_len,
     };
-    let comm_worker = Rc::new(RefCell::new(MpiDistSyncGossipCommWorker::new(gossip_cfg, context.clone())));
+    let comm_worker = Rc::new(RefCell::new(MpiDistAsyncGossipCommWorker::new(gossip_cfg, context.clone())));
     let worker_data = comm_worker.borrow().worker_data.clone();
+    let mut shared_seed = [0u64, 0u64];
+    if worker_data.worker_rank() == 0 {
+      shared_seed = self.shared_seed;
+    }
+    comm_worker.borrow().mpi.broadcast(&mut shared_seed, 0);
 
-    let input_op = config.input_op.unwrap().build_input_operator::<MpiDistSyncGossipCommWorker>(self.batch_size, context.clone());
+    let input_op = config.input_op.unwrap().build_input_operator::<MpiDistAsyncGossipCommWorker>(self.batch_size, context.clone());
     let mut hidden_ops: Vec<Box<Operator>> = vec![];
     let mut params_off = 0;
     for r in 0 .. config.hidden_ops.len() {
@@ -248,7 +277,7 @@ impl MpiDistPipelineOperatorWorkerBuilder {
           _ => &*hidden_ops[r-1],
         };
         // FIXME(20160412): used fixed MPI comm worker.
-        config.hidden_ops[r].build_operator::<MpiDistSyncGossipCommWorker>(self.batch_size, self.capability, params_off, Some(prev_op), Some(comm_worker.clone()), context.clone())
+        config.hidden_ops[r].build_operator::<MpiDistAsyncGossipCommWorker>(self.batch_size, self.capability, params_off, Some(prev_op), Some(comm_worker.clone()), context.clone())
       };
       hidden_ops.push(hidden_op);
       params_off += config.hidden_ops[r].params_len();
@@ -260,14 +289,15 @@ impl MpiDistPipelineOperatorWorkerBuilder {
         0 => input_op.downcast(),
         _ => &*hidden_ops[num_hidden_ops-1],
       };
-      config.loss_op.unwrap().build_loss_operator::<MpiDistSyncGossipCommWorker>(self.batch_size, Some(prev_op), context.clone())
+      config.loss_op.unwrap().build_loss_operator::<MpiDistAsyncGossipCommWorker>(self.batch_size, Some(prev_op), context.clone())
     };
 
     MpiDistPipelineOperatorWorker{
       worker_data:  worker_data,
       batch_size:   self.batch_size,
       config:       self.config,
-      shared_seed:  self.shared_seed,
+      //shared_seed:  self.shared_seed,
+      shared_seed:  shared_seed,
       context:      context,
       comm_worker:  comm_worker,
       input_op:     input_op,
@@ -285,7 +315,7 @@ pub struct MpiDistPipelineOperatorWorker {
 
   context:      Rc<DeviceContext>,
   //comm_worker:  Rc<RefCell<Comm>>,
-  comm_worker:  Rc<RefCell<MpiDistSyncGossipCommWorker>>,
+  comm_worker:  Rc<RefCell<MpiDistAsyncGossipCommWorker>>,
   input_op:     Box<InputOperator>,
   hidden_ops:   Vec<Box<Operator>>,
   loss_op:      Box<LossOperator>,
