@@ -148,6 +148,7 @@ impl SyncSgdOpt {
         if epoch_idx >= epoch_size {
           return;
         }
+
         match (label_cfg, maybe_label) {
           (SampleLabelConfig::Category{num_categories}, Some(&SampleLabel::Category{category})) => {
             assert!(category >= 0);
@@ -172,6 +173,7 @@ impl SyncSgdOpt {
         batch_counter += 1;
 
         if batch_counter == batch_size {
+          operator.next();
           operator.input_operator().load_frames(batch_size);
           operator.loss_operator(0).load_labels(batch_size);
           operator.loss_operator(0).load_weights(batch_size);
@@ -286,7 +288,7 @@ impl SyncSgdOpt {
         batch_counter = 0;
       }
     });
-    if batch_counter < batch_size {
+    if batch_counter > 0 && batch_counter < batch_size {
       let batch_size = batch_counter;
       operator.input_operator().load_frames(batch_size);
       operator.loss_operator(0).load_labels(batch_size);

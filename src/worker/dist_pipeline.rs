@@ -31,7 +31,7 @@ use array_new::{AsyncArray};
 use rng::xorshift::{Xorshiftplus128Rng};
 use worker_::{WorkerData};
 
-use openmpi::{Mpi, MpiWindow};
+use mpi::{Mpi, MpiWindow};
 //use procgroup::{ProcGroup};
 use threadpool::{ThreadPool};
 
@@ -64,32 +64,71 @@ impl MpiDistSyncGossipCommWorkerBuilder {
 
 pub struct MpiDistSyncGossipCommWorker {
   worker_data:  WorkerData,
+  context:      Rc<DeviceContext>,
   mpi:          Mpi,
 
   origin_buf:   RawDeviceBuffer<f32>,
   target_buf:   RawDeviceBuffer<f32>,
-  window:       MpiWindow<f32>,
+  origin_buf_h: Vec<f32>,
+  target_buf_h: Vec<f32>,
+  target_win_h: MpiWindow<f32>,
 
   rng:          Xorshiftplus128Rng,
-  tids_perm:    Vec<usize>,
+  ranks_perm:   Vec<usize>,
   iter_counter: usize,
 }
 
 impl MpiDistSyncGossipCommWorker {
-  pub fn new(gossip_cfg: GossipConfig) -> MpiDistSyncGossipCommWorker {
-    // FIXME(20160412)
-    unimplemented!();
+  pub fn new(gossip_cfg: GossipConfig, context: Rc<DeviceContext>) -> MpiDistSyncGossipCommWorker {
+    let buf_size = gossip_cfg.buf_size;
+
+    let ctx = &(*context).as_ref();
+    let origin_buf = unsafe { RawDeviceBuffer::new(buf_size, ctx) };
+    let target_buf = unsafe { RawDeviceBuffer::new(buf_size, ctx) };
+
+    let mpi = Mpi::new();
+    let worker_rank = mpi.rank();
+    let num_workers = mpi.size();
+    let mut origin_buf_h = Vec::with_capacity(buf_size);
+    unsafe { origin_buf_h.set_len(buf_size) };
+    let mut target_buf_h = Vec::with_capacity(buf_size);
+    unsafe { target_buf_h.set_len(buf_size) };
+    let target_win_h = match unsafe { MpiWindow::create(target_buf_h.as_mut_ptr(), target_buf_h.len(), &mpi) } {
+      Ok(win) => win,
+      Err(e) => panic!("comm worker: failed to create MPI window"),
+    };
+
+    MpiDistSyncGossipCommWorker{
+      worker_data:  WorkerData::new(worker_rank, num_workers),
+      context:      context.clone(),
+      mpi:          Mpi,
+      origin_buf:   origin_buf,
+      target_buf:   target_buf,
+      origin_buf_h: origin_buf_h,
+      target_buf_h: target_buf_h,
+      target_win_h: target_win_h,
+      rng:          Xorshiftplus128Rng::new(&mut thread_rng()),
+      ranks_perm:   (0 .. num_workers).collect(),
+      iter_counter: 0,
+    }
   }
 }
 
 impl CommWorker for MpiDistSyncGossipCommWorker {
   fn next(&mut self) -> bool {
     // FIXME(20160412)
-    //unimplemented!();
+    self.iter_counter += 1;
+    /*if self.worker_data.worker_rank() == 0 {
+      println!("DEBUG: next: {}", self.iter_counter);
+    }*/
     true
   }
 
   fn load(&mut self, offset: usize, data: &mut DeviceArray2d<f32>, ctx: &DeviceCtxRef) {
+    if self.iter_counter % 1000 != 0 {
+      return;
+    }
+
     let data = data.as_view(ctx).data;
     data.raw_send(
         &self.target_buf.as_ref_range(offset, offset + data.len()),
@@ -97,6 +136,10 @@ impl CommWorker for MpiDistSyncGossipCommWorker {
   }
 
   fn communicate(&mut self, ctx: &DeviceCtxRef) {
+    if self.iter_counter % 1000 != 0 {
+      return;
+    }
+
     // FIXME(20160412): steps for distributed gossip:
     // - first, sync on the previous loads (this can happen in the caller)
     // - optionally, wait on a world barrier
@@ -104,18 +147,37 @@ impl CommWorker for MpiDistSyncGossipCommWorker {
     // - call a fence-protected RMA get
     // - wait on a final world barrier
 
-    //self.mpi.barrier();
-    //self.window.fence();
+    self.rng.shuffle(&mut self.ranks_perm);
+    let self_rank = self.worker_data.worker_rank();
+    let other_rank = self.ranks_perm[self_rank];
 
-    self.rng.shuffle(&mut self.tids_perm);
-    let self_tid = self.worker_data.tid();
-    let other_tid = self.tids_perm[self_tid];
+    if self_rank == other_rank {
+      //self.origin_buf.sync_load(&self.target_buf_h, ctx);
+      self.target_buf.raw_send(&self.origin_buf, ctx);
+      return;
+    }
 
-    // FIXME(20160412)
-    unimplemented!();
+    self.target_buf.sync_store(&mut self.target_buf_h, ctx);
+    //ctx.sync();
+
+    // FIXME(20160415): getting communication to work.
+    self.mpi.barrier();
+    /*match unsafe { self.target_win_h.rma_get(self.origin_buf_h.as_mut_ptr(), self.origin_buf_h.len(), other_rank, &self.mpi) } {
+      Ok(_) => {}
+      Err(e) => panic!("mpi dist comm worker: failed to call rma_get: {:?}", e),
+    }
+    self.mpi.barrier();*/
+
+    // FIXME(20160415): load from the correct buffer.
+    self.origin_buf.sync_load(&self.target_buf_h, ctx);
+    //self.origin_buf.sync_load(&self.origin_buf_h, ctx);
   }
 
   fn store(&mut self, offset: usize, data: &mut DeviceArray2d<f32>, ctx: &DeviceCtxRef) {
+    if self.iter_counter % 1000 != 0 {
+      return;
+    }
+
     let mut data = data.as_view_mut(ctx).data;
     let data_len = data.len();
     data.raw_recv(
@@ -124,8 +186,9 @@ impl CommWorker for MpiDistSyncGossipCommWorker {
   }
 }
 
+#[derive(Clone)]
 pub struct MpiDistPipelineOperatorWorkerBuilder {
-  num_workers:  usize,
+  //num_workers:  usize,
   batch_size:   usize,
   config:       PipelineOperatorConfig,
   capability:   OpCapability,
@@ -134,10 +197,10 @@ pub struct MpiDistPipelineOperatorWorkerBuilder {
   //_marker:      PhantomData<fn () -> Comm>,
 }
 
-impl Clone for MpiDistPipelineOperatorWorkerBuilder {
+/*impl Clone for MpiDistPipelineOperatorWorkerBuilder {
   fn clone(&self) -> MpiDistPipelineOperatorWorkerBuilder {
     MpiDistPipelineOperatorWorkerBuilder{
-      num_workers:  self.num_workers,
+      //num_workers:  self.num_workers,
       batch_size:   self.batch_size,
       config:       self.config.clone(),
       capability:   self.capability,
@@ -145,13 +208,13 @@ impl Clone for MpiDistPipelineOperatorWorkerBuilder {
       //_marker:      PhantomData,
     }
   }
-}
+}*/
 
 impl MpiDistPipelineOperatorWorkerBuilder {
   //pub fn new(num_workers: usize, batch_size: usize, config: PipelineOperatorConfig<Comm>, capability: OpCapability) -> MpiDistPipelineOperatorWorkerBuilder<Comm> {
-  pub fn new(num_workers: usize, batch_size: usize, config: PipelineOperatorConfig, capability: OpCapability) -> MpiDistPipelineOperatorWorkerBuilder {
+  pub fn new(/*num_workers: usize,*/ batch_size: usize, config: PipelineOperatorConfig, capability: OpCapability) -> MpiDistPipelineOperatorWorkerBuilder {
     MpiDistPipelineOperatorWorkerBuilder{
-      num_workers:  num_workers,
+      //num_workers:  num_workers,
       batch_size:   batch_size,
       config:       config,
       capability:   capability,
@@ -164,9 +227,17 @@ impl MpiDistPipelineOperatorWorkerBuilder {
 impl MpiDistPipelineOperatorWorkerBuilder {
   //type Worker = MpiDistPipelineOperatorWorker;
 
-  pub fn into_worker(self, tid: usize, context: Rc<DeviceContext>) -> MpiDistPipelineOperatorWorker {
+  pub fn into_worker(self, /*tid: usize,*/ context: Rc<DeviceContext>) -> MpiDistPipelineOperatorWorker {
     let config = self.config.clone();
     let total_params_len = config.params_len();
+
+    let gossip_cfg = GossipConfig{
+      num_rounds:   1,
+      buf_size:     total_params_len,
+    };
+    let comm_worker = Rc::new(RefCell::new(MpiDistSyncGossipCommWorker::new(gossip_cfg, context.clone())));
+    let worker_data = comm_worker.borrow().worker_data.clone();
+
     let input_op = config.input_op.unwrap().build_input_operator::<MpiDistSyncGossipCommWorker>(self.batch_size, context.clone());
     let mut hidden_ops: Vec<Box<Operator>> = vec![];
     let mut params_off = 0;
@@ -177,7 +248,7 @@ impl MpiDistPipelineOperatorWorkerBuilder {
           _ => &*hidden_ops[r-1],
         };
         // FIXME(20160412): used fixed MPI comm worker.
-        config.hidden_ops[r].build_operator::<MpiDistSyncGossipCommWorker>(self.batch_size, self.capability, params_off, Some(prev_op), None, context.clone())
+        config.hidden_ops[r].build_operator::<MpiDistSyncGossipCommWorker>(self.batch_size, self.capability, params_off, Some(prev_op), Some(comm_worker.clone()), context.clone())
       };
       hidden_ops.push(hidden_op);
       params_off += config.hidden_ops[r].params_len();
@@ -191,13 +262,14 @@ impl MpiDistPipelineOperatorWorkerBuilder {
       };
       config.loss_op.unwrap().build_loss_operator::<MpiDistSyncGossipCommWorker>(self.batch_size, Some(prev_op), context.clone())
     };
+
     MpiDistPipelineOperatorWorker{
-      worker_data:  WorkerData::new(self.num_workers, tid),
+      worker_data:  worker_data,
       batch_size:   self.batch_size,
       config:       self.config,
       shared_seed:  self.shared_seed,
       context:      context,
-      //comm_worker:  comm_worker,
+      comm_worker:  comm_worker,
       input_op:     input_op,
       hidden_ops:   hidden_ops,
       loss_op:      loss_op,
@@ -213,6 +285,7 @@ pub struct MpiDistPipelineOperatorWorker {
 
   context:      Rc<DeviceContext>,
   //comm_worker:  Rc<RefCell<Comm>>,
+  comm_worker:  Rc<RefCell<MpiDistSyncGossipCommWorker>>,
   input_op:     Box<InputOperator>,
   hidden_ops:   Vec<Box<Operator>>,
   loss_op:      Box<LossOperator>,
@@ -250,6 +323,10 @@ impl OperatorWorker for MpiDistPipelineOperatorWorker {
   fn wait_barrier(&self) {
     // FIXME(20160402)
     unimplemented!();
+  }
+
+  fn next(&mut self) {
+    self.comm_worker.borrow_mut().next();
   }
 }
 
@@ -352,8 +429,7 @@ impl Operator for MpiDistPipelineOperatorWorker {
     }
     {
       let ctx = &(*self.context).as_ref();
-      // FIXME(20160412)
-      //self.comm_worker.borrow_mut().communicate(ctx);
+      self.comm_worker.borrow_mut().communicate(ctx);
     }
     for op in self.hidden_ops.iter_mut() {
       op.sync_params();

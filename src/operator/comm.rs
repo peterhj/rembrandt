@@ -68,14 +68,14 @@ impl CommWorker for DeviceAllReduceCommWorker {
 
 #[derive(Clone, Copy)]
 pub struct GossipConfig {
-  pub num_workers:  usize,
+  //pub num_workers:  usize,
   pub num_rounds:   usize,
   pub buf_size:     usize,
 }
 
 impl GossipConfig {
   pub fn check(&self) {
-    assert!(self.num_workers >= 1);
+    //assert!(self.num_workers >= 1);
     assert!(self.num_rounds >= 1);
     assert!(self.buf_size < 2 * 1024 * 1024 * 1024);
   }
@@ -126,7 +126,7 @@ impl CommWorkerBuilder for DeviceSyncGossipCommWorkerBuilder {
 
   fn into_worker(self, tid: usize) -> DeviceSyncGossipCommWorker {
     DeviceSyncGossipCommWorker{
-      worker_data:  WorkerData::new(self.num_workers, tid),
+      worker_data:  WorkerData::new(tid, self.num_workers),
       num_rounds:   self.num_rounds,
       period:       self.period,
       barrier:      self.barrier,

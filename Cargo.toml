@@ -9,6 +9,10 @@ name = "rembrandt"
 path = "src/lib.rs"
 
 [[bin]]
+name = "test-mpich"
+path = "tools/test-mpich.rs"
+
+[[bin]]
 name = "test-openmpi"
 path = "tools/test-openmpi.rs"
 
@@ -19,6 +23,10 @@ path = "tools/train-mnist.rs"
 [[bin]]
 name = "train-cifar10"
 path = "tools/train-cifar10.rs"
+
+[[bin]]
+name = "dist-train-mnist"
+path = "tools/dist-train-mnist.rs"
 
 #[[bin]]
 #name = "bench-kernels"
@@ -58,6 +66,7 @@ cuda = { path = "../libcuda" }
 cuda_dnn = { path = "../libcuda_dnn" } #, features = ["cudnn_v3"] }
 episodb = { path = "../../episodb" }
 lmdb = { path = "../liblmdb" }
+mpich = { path = "../../libmpich" }
 openmpi = { path = "../../libopenmpi" }
 procgroup = { path = "../../libprocgroup" }
 procgroup_mpi = { path = "../../libprocgroup_mpi" }

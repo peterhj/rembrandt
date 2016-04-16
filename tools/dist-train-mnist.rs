@@ -32,8 +32,13 @@ use rembrandt::operator::comm::{
 };
 use rembrandt::operator::worker::{
   OperatorWorkerBuilder,
+  OperatorWorker,
   PipelineOperatorConfig,
   PipelineOperatorWorkerBuilder,
+};
+use rembrandt::worker::dist_pipeline::{
+  MpiDistPipelineOperatorWorkerBuilder,
+  MpiDistPipelineOperatorWorker,
 };
 use rembrandt::opt::sgd::{
   SgdOptConfig, StepSizeSchedule, MomentumStyle, OptSharedData, SyncSgdOpt,
@@ -147,20 +152,22 @@ fn main() {
     .softmax_kl_loss(loss_cfg);
 
   // FIXME(20160331)
-  let comm_worker_builder = DeviceSyncGossipCommWorkerBuilder::new(num_workers, 1, worker_cfg.params_len());
-  let worker_builder = PipelineOperatorWorkerBuilder::new(num_workers, batch_size, worker_cfg, OpCapability::Backward);
+  //let comm_worker_builder = DeviceSyncGossipCommWorkerBuilder::new(num_workers, 1, worker_cfg.params_len());
+  //let worker_builder = PipelineOperatorWorkerBuilder::new(num_workers, batch_size, worker_cfg, OpCapability::Backward);
+  let worker_builder = MpiDistPipelineOperatorWorkerBuilder::new(batch_size, worker_cfg, OpCapability::Backward);
   let pool = ThreadPool::new(num_workers);
   let join_barrier = Arc::new(Barrier::new(num_workers + 1));
   let opt_shared = Arc::new(OptSharedData::new(num_workers));
   for tid in 0 .. num_workers {
-    let comm_worker_builder = comm_worker_builder.clone();
+    //let comm_worker_builder = comm_worker_builder.clone();
     let worker_builder = worker_builder.clone();
     let join_barrier = join_barrier.clone();
     let opt_shared = opt_shared.clone();
     pool.execute(move || {
       let context = Rc::new(DeviceContext::new(tid));
-      let comm_worker = Rc::new(RefCell::new(comm_worker_builder.into_worker(tid)));
-      let mut worker = worker_builder.into_worker(tid, context, comm_worker);
+      //let comm_worker = Rc::new(RefCell::new(comm_worker_builder.into_worker(tid)));
+      //let mut worker = worker_builder.into_worker(tid, context, comm_worker);
+      let mut worker = worker_builder.into_worker(context);
 
       let dataset_cfg = DatasetConfig::open(&PathBuf::from("examples/mnist.data"));
       let mut train_data =
@@ -169,7 +176,7 @@ fn main() {
           );
       let mut valid_data =
           SampleIterator::new(
-              Box::new(PartitionDataSource::new(tid, num_workers, dataset_cfg.build_with_cfg(datum_cfg, label_cfg, "valid")))
+              Box::new(PartitionDataSource::new(worker.worker_rank(), worker.num_workers(), dataset_cfg.build_with_cfg(datum_cfg, label_cfg, "valid")))
           );
 
       let sgd_opt = SyncSgdOpt::new(opt_shared);

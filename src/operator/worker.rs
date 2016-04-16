@@ -17,7 +17,7 @@ use operator::loss::{
 
 use array_cuda::device::context::{DeviceContext, DeviceCtxRef};
 use rng::xorshift::{Xorshiftplus128Rng};
-use procgroup::{ProcGroup};
+//use procgroup::{ProcGroup};
 use threadpool::{ThreadPool};
 use worker_::{WorkerData};
 
@@ -42,7 +42,8 @@ pub trait OperatorWorker: Operator {
   fn input_operator(&mut self) -> &mut InputOperator;
   fn loss_count(&self) -> usize;
   fn loss_operator(&mut self, rank: usize) -> &mut LossOperator;
-  fn wait_barrier(&self);
+  fn wait_barrier(&self) { unimplemented!(); }
+  fn next(&mut self) {}
 }
 
 pub struct DeviceParallelOperatorServer<Comm, CBuilder, WBuilder>
@@ -236,7 +237,7 @@ impl<Comm> OperatorWorkerBuilder<Comm> for PipelineOperatorWorkerBuilder<Comm> w
       config.loss_op.unwrap().build_loss_operator::<Comm>(self.batch_size, Some(prev_op), context.clone())
     };
     PipelineOperatorWorker{
-      worker_data:  WorkerData::new(self.num_workers, tid),
+      worker_data:  WorkerData::new(tid, self.num_workers),
       batch_size:   self.batch_size,
       config:       self.config,
       shared_seed:  self.shared_seed,
