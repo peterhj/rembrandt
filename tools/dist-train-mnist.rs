@@ -65,7 +65,7 @@ fn main() {
     step_size:      StepSizeSchedule::Constant{step_size: 0.01},
     momentum:       MomentumStyle::Nesterov{momentum: 0.9},
     l2_reg_coef:    1.0e-4,
-    display_iters:  100,
+    display_iters:  5,
     valid_iters:    500,
     save_iters:     5000,
   };
@@ -169,8 +169,8 @@ fn main() {
       //let mut worker = worker_builder.into_worker(tid, context, comm_worker);
 
       // XXX(20160415): when running on K80s, use the 2nd one.
-      //let context = Rc::new(DeviceContext::new(0));
-      let context = Rc::new(DeviceContext::new(1));
+      let context = Rc::new(DeviceContext::new(0));
+      //let context = Rc::new(DeviceContext::new(1));
       let mut worker = worker_builder.into_worker(context);
 
       let dataset_cfg = DatasetConfig::open(&PathBuf::from("examples/mnist.data"));
