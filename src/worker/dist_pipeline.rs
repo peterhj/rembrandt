@@ -31,7 +31,7 @@ use array_new::{AsyncArray};
 use rng::xorshift::{Xorshiftplus128Rng};
 use worker_::{WorkerData};
 
-use mpi::{Mpi, MpiWindow};
+use mpi::{Mpi, MpiGroup, MpiWindow, MpiRequest};
 //use procgroup::{ProcGroup};
 use threadpool::{ThreadPool};
 
@@ -45,7 +45,7 @@ use std::sync::{Arc, Barrier};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /*#[derive(Clone)]
-pub struct MpiDistAsyncGossipCommWorkerBuilder {
+pub struct MpiDistSyncGossipCommWorkerBuilder {
   num_workers:  usize,
   num_rounds:   usize,
   period:       usize,
@@ -55,14 +55,18 @@ pub struct MpiDistAsyncGossipCommWorkerBuilder {
   shared_seed:  [u64; 2],
 }
 
-impl MpiDistAsyncGossipCommWorkerBuilder {
-  pub fn new(config: GossipConfig, /*contexts: &[DeviceContext]*/) -> MpiDistAsyncGossipCommWorkerBuilder {
+impl MpiDistSyncGossipCommWorkerBuilder {
+  pub fn new(config: GossipConfig, /*contexts: &[DeviceContext]*/) -> MpiDistSyncGossipCommWorkerBuilder {
     // FIXME(20160412)
     unimplemented!();
   }
 }*/
 
-pub struct MpiDistAsyncGossipCommWorker {
+pub struct MpiDistDownpourServerCommWorker;
+
+pub struct MpiDistElasticServerCommWorker;
+
+pub struct MpiDistSyncGossipCommWorker {
   worker_data:  WorkerData,
   context:      Rc<DeviceContext>,
   mpi:          Mpi,
@@ -71,6 +75,10 @@ pub struct MpiDistAsyncGossipCommWorker {
   msg_len:      usize,
   num_buf_msgs: usize,
   com_interval: usize,
+
+  world_group:  MpiGroup,
+  solo_groups:  Vec<MpiGroup>,
+  pair_groups:  Vec<MpiGroup>,
 
   origin_buf:   RawDeviceBuffer<f32>,
   target_buf:   RawDeviceBuffer<f32>,
@@ -84,10 +92,10 @@ pub struct MpiDistAsyncGossipCommWorker {
   iter_counter: usize,
 }
 
-impl MpiDistAsyncGossipCommWorker {
-  pub fn new(gossip_cfg: GossipConfig, context: Rc<DeviceContext>) -> MpiDistAsyncGossipCommWorker {
+impl MpiDistSyncGossipCommWorker {
+  pub fn new(gossip_cfg: GossipConfig, context: Rc<DeviceContext>) -> MpiDistSyncGossipCommWorker {
     // XXX(20160415): Empirically determined message length.
-    let msg_len = 32 * 1024;
+    let msg_len = 16 * 1024;
     let num_buf_msgs = (gossip_cfg.buf_size + msg_len - 1) / msg_len;
     let buf_len = num_buf_msgs * msg_len;
 
@@ -98,6 +106,7 @@ impl MpiDistAsyncGossipCommWorker {
     let mpi = Mpi::new();
     let worker_rank = mpi.rank();
     let num_workers = mpi.size();
+
     let mut origin_buf_h = Vec::with_capacity(buf_len);
     unsafe { origin_buf_h.set_len(buf_len) };
     let mut target_buf_h = Vec::with_capacity(buf_len);
@@ -107,6 +116,209 @@ impl MpiDistAsyncGossipCommWorker {
       Err(e) => panic!("comm worker: failed to create MPI window"),
     };
 
+    let world_group = mpi.world_group();
+    let mut solo_groups = Vec::with_capacity(num_workers);
+    for r in 0 .. num_workers {
+      solo_groups.push(world_group.ranges(&[(r, r+1, 1)]));
+    }
+    let mut pair_groups = Vec::with_capacity(num_workers);
+    for r in 0 .. num_workers {
+      if r != worker_rank {
+        pair_groups.push(world_group.ranges(&[(worker_rank, worker_rank+1, 1), (r, r+1, 1)]));
+      } else {
+        pair_groups.push(world_group.ranges(&[(worker_rank, worker_rank+1, 1)]));
+      }
+    }
+
+    MpiDistSyncGossipCommWorker{
+      worker_data:  WorkerData::new(worker_rank, num_workers),
+      context:      context.clone(),
+      mpi:          Mpi,
+      buf_len:      buf_len,
+      msg_len:      msg_len,
+      num_buf_msgs: num_buf_msgs,
+      com_interval: 1,
+      world_group:  world_group,
+      solo_groups:  solo_groups,
+      pair_groups:  pair_groups,
+      origin_buf:   origin_buf,
+      target_buf:   target_buf,
+      origin_buf_h: origin_buf_h,
+      target_buf_h: target_buf_h,
+      target_win_h: target_win_h,
+      avg_reduce:   AverageReduceOperation::new(0),
+      rng:          Xorshiftplus128Rng::new(&mut thread_rng()),
+      ranks_perm:   (0 .. num_workers).collect(),
+      iter_counter: 0,
+    }
+  }
+}
+
+impl CommWorker for MpiDistSyncGossipCommWorker {
+  fn next(&mut self) -> bool {
+    // FIXME(20160412)
+    self.iter_counter += 1;
+    /*if self.worker_data.worker_rank() == 0 {
+      println!("DEBUG: next: {}", self.iter_counter);
+    }*/
+    true
+  }
+
+  fn load(&mut self, offset: usize, data: &mut DeviceArray2d<f32>, ctx: &DeviceCtxRef) {
+    if self.iter_counter % self.com_interval != 0 {
+      return;
+    }
+
+    let data = data.as_view(ctx).data;
+    data.raw_send(
+        //&self.target_buf.as_ref_range(offset, offset + data.len()),
+        &self.origin_buf.as_ref_range(offset, offset + data.len()),
+    );
+  }
+
+  fn communicate(&mut self, ctx: &DeviceCtxRef) {
+    if self.iter_counter % self.com_interval != 0 {
+      return;
+    }
+
+    // FIXME(20160412): steps for distributed gossip:
+    // - first, sync on the previous loads (this can happen in the caller)
+    // - optionally, wait on a world barrier
+    // - pick a target according to a permutation
+    // - call a fence-protected RMA get
+    // - wait on a final world barrier
+
+    self.rng.shuffle(&mut self.ranks_perm);
+    let self_rank = self.worker_data.worker_rank();
+    let send_rank = self.ranks_perm[self_rank];
+    let mut recv_rank = self_rank;
+    for r in 0 .. self.worker_data.num_workers() {
+      if self.ranks_perm[r] == self_rank {
+        recv_rank = r;
+        break;
+      }
+    }
+
+    if self_rank == send_rank || self_rank == recv_rank {
+      assert_eq!(self_rank, send_rank);
+      assert_eq!(self_rank, recv_rank);
+      //self.target_buf.raw_send(&self.origin_buf, ctx);
+      self.origin_buf.raw_send(&self.target_buf, ctx);
+      return;
+    }
+
+    //self.target_buf.sync_store(&mut self.target_buf_h, ctx);
+    self.origin_buf.sync_store(&mut self.origin_buf_h, ctx);
+
+    // FIXME(20160415): getting communication to work.
+    // FIXME(20160416): nesting the start-complete-post-wait primitives lead to
+    // deadlock.
+    self.target_win_h.fence();
+    //self.target_win_h.post(&self.solo_groups[recv_rank]);
+    //self.target_win_h.start(&self.solo_groups[send_rank]);
+    for msg in 0 .. self.num_buf_msgs {
+      let offset = msg * self.msg_len;
+      //match unsafe { self.target_win_h.rma_get(self.origin_buf_h.as_mut_ptr().offset(offset as isize), self.msg_len, send_rank, offset, &self.mpi) } {
+      match unsafe { self.target_win_h.rma_put(self.origin_buf_h.as_ptr().offset(offset as isize), self.msg_len, send_rank, offset, &self.mpi) } {
+        Ok(_) => {}
+        Err(e) => panic!("mpi dist comm worker: failed to call rma_get: {:?}", e),
+      }
+    }
+    self.target_win_h.fence();
+    //self.target_win_h.complete();
+    //self.target_win_h.wait();
+
+    // FIXME(20160415): load from the correct buffer.
+    //self.origin_buf.sync_load(&self.origin_buf_h, ctx);
+    self.target_buf.sync_load(&self.target_buf_h, ctx);
+    self.avg_reduce.reduce(
+        /*&(self.target_buf).as_ref(),
+        &(self.origin_buf).as_ref(),*/
+        &(self.origin_buf).as_ref(),
+        &(self.target_buf).as_ref(),
+        ctx,
+    );
+  }
+
+  fn store(&mut self, offset: usize, data: &mut DeviceArray2d<f32>, ctx: &DeviceCtxRef) {
+    if self.iter_counter % self.com_interval != 0 {
+      return;
+    }
+
+    let mut data = data.as_view_mut(ctx).data;
+    let data_len = data.len();
+    data.raw_recv(
+        //&self.origin_buf.as_ref_range(offset, offset + data_len),
+        &self.target_buf.as_ref_range(offset, offset + data_len),
+    );
+  }
+}
+
+pub struct MpiDistAsyncGossipCommWorker {
+  worker_data:  WorkerData,
+  context:      Rc<DeviceContext>,
+  mpi:          Mpi,
+
+  buf_len:      usize,
+  msg_len:      usize,
+  num_buf_msgs: usize,
+  com_interval: usize,
+
+  /*world_group:  MpiGroup,
+  solo_groups:  Vec<MpiGroup>,
+  pair_groups:  Vec<MpiGroup>,*/
+
+  origin_buf:   RawDeviceBuffer<f32>,
+  target_buf:   RawDeviceBuffer<f32>,
+  origin_buf_h: Vec<f32>,
+  target_buf_h: Vec<f32>,
+  //target_win_h: MpiWindow<f32>,
+  avg_reduce:   AverageReduceOperation<f32>,
+
+  rng:          Xorshiftplus128Rng,
+  ranks_perm:   Vec<usize>,
+  iter_counter: usize,
+}
+
+impl MpiDistAsyncGossipCommWorker {
+  pub fn new(gossip_cfg: GossipConfig, context: Rc<DeviceContext>) -> MpiDistAsyncGossipCommWorker {
+    // XXX(20160415): Empirically determined message length.
+    let msg_len = 256;
+    //let msg_len = 16 * 1024;
+    let num_buf_msgs = (gossip_cfg.buf_size + msg_len - 1) / msg_len;
+    let buf_len = num_buf_msgs * msg_len;
+
+    let ctx = &(*context).as_ref();
+    let origin_buf = unsafe { RawDeviceBuffer::new(buf_len, ctx) };
+    let target_buf = unsafe { RawDeviceBuffer::new(buf_len, ctx) };
+
+    let mpi = Mpi::new();
+    let worker_rank = mpi.rank();
+    let num_workers = mpi.size();
+
+    /*let world_group = mpi.world_group();
+    let mut solo_groups = Vec::with_capacity(num_workers);
+    for r in 0 .. num_workers {
+      solo_groups.push(world_group.ranges(&[(r, r+1, 1)]));
+    }
+    let mut pair_groups = Vec::with_capacity(num_workers);
+    for r in 0 .. num_workers {
+      if r != worker_rank {
+        pair_groups.push(world_group.ranges(&[(worker_rank, worker_rank+1, 1), (r, r+1, 1)]));
+      } else {
+        pair_groups.push(world_group.ranges(&[(worker_rank, worker_rank+1, 1)]));
+      }
+    }*/
+
+    let mut origin_buf_h = Vec::with_capacity(buf_len);
+    unsafe { origin_buf_h.set_len(buf_len) };
+    let mut target_buf_h = Vec::with_capacity(buf_len);
+    unsafe { target_buf_h.set_len(buf_len) };
+    /*let target_win_h = match unsafe { MpiWindow::create(target_buf_h.as_mut_ptr(), target_buf_h.len(), &mpi) } {
+      Ok(win) => win,
+      Err(e) => panic!("comm worker: failed to create MPI window"),
+    };*/
+
     MpiDistAsyncGossipCommWorker{
       worker_data:  WorkerData::new(worker_rank, num_workers),
       context:      context.clone(),
@@ -115,11 +327,14 @@ impl MpiDistAsyncGossipCommWorker {
       msg_len:      msg_len,
       num_buf_msgs: num_buf_msgs,
       com_interval: 1,
+      /*world_group:  world_group,
+      solo_groups:  solo_groups,
+      pair_groups:  pair_groups,*/
       origin_buf:   origin_buf,
       target_buf:   target_buf,
       origin_buf_h: origin_buf_h,
       target_buf_h: target_buf_h,
-      target_win_h: target_win_h,
+      //target_win_h: target_win_h,
       avg_reduce:   AverageReduceOperation::new(0),
       rng:          Xorshiftplus128Rng::new(&mut thread_rng()),
       ranks_perm:   (0 .. num_workers).collect(),
@@ -145,7 +360,8 @@ impl CommWorker for MpiDistAsyncGossipCommWorker {
 
     let data = data.as_view(ctx).data;
     data.raw_send(
-        &self.target_buf.as_ref_range(offset, offset + data.len()),
+        //&self.target_buf.as_ref_range(offset, offset + data.len()),
+        &self.origin_buf.as_ref_range(offset, offset + data.len()),
     );
   }
 
@@ -163,36 +379,70 @@ impl CommWorker for MpiDistAsyncGossipCommWorker {
 
     self.rng.shuffle(&mut self.ranks_perm);
     let self_rank = self.worker_data.worker_rank();
-    let other_rank = self.ranks_perm[self_rank];
-
-    if self_rank == other_rank {
-      //self.origin_buf.sync_load(&self.target_buf_h, ctx);
-      self.target_buf.raw_send(&self.origin_buf, ctx);
-      return;
+    let send_rank = self.ranks_perm[self_rank];
+    let mut recv_rank = self_rank;
+    for r in 0 .. self.worker_data.num_workers() {
+      if self.ranks_perm[r] == self_rank {
+        recv_rank = r;
+        break;
+      }
     }
 
-    self.target_buf.sync_store(&mut self.target_buf_h, ctx);
-    //ctx.sync();
+    if self_rank == send_rank || self_rank == recv_rank {
+      assert_eq!(self_rank, send_rank);
+      assert_eq!(self_rank, recv_rank);
+      /*//self.target_buf.raw_send(&self.origin_buf, ctx);
+      self.origin_buf.raw_send(&self.target_buf, ctx);
+      return;*/
+    }
+
+    //self.target_buf.sync_store(&mut self.target_buf_h, ctx);
+    self.origin_buf.sync_store(&mut self.origin_buf_h, ctx);
 
     // FIXME(20160415): getting communication to work.
+
+    // FIXME(20160416): this pattern is known to deadlock!
+    /*let mut send_req = match MpiRequest::nonblocking_send(&self.origin_buf_h, send_rank) {
+      Ok(req) => req,
+      Err(e) => panic!("failed to do nonblocking send: {:?}", e),
+    };
+    let mut recv_req = match MpiRequest::nonblocking_recv(&mut self.target_buf_h, Some(recv_rank)) {
+      Ok(req) => req,
+      Err(e) => panic!("failed to do nonblocking recv: {:?}", e),
+    };
     //self.mpi.barrier();
+    send_req.wait();
+    recv_req.wait();*/
+    println!("DEBUG: rank: {} start send_recv", self_rank);
+    self.mpi.send_recv(&self.origin_buf_h, send_rank, &mut self.target_buf_h, Some(recv_rank));
+    println!("DEBUG: rank: {} completed send_recv", self_rank);
+    self.mpi.barrier();
+
+    /*// FIXME(20160416): nesting the start-complete-post-wait primitives lead to
+    // deadlock.
     self.target_win_h.fence();
+    //self.target_win_h.post(&self.solo_groups[recv_rank]);
+    //self.target_win_h.start(&self.solo_groups[send_rank]);
     for msg in 0 .. self.num_buf_msgs {
       let offset = msg * self.msg_len;
-      match unsafe { self.target_win_h.rma_get(self.origin_buf_h.as_mut_ptr().offset(offset as isize), self.msg_len, other_rank, offset, &self.mpi) } {
+      //match unsafe { self.target_win_h.rma_get(self.origin_buf_h.as_mut_ptr().offset(offset as isize), self.msg_len, send_rank, offset, &self.mpi) } {
+      match unsafe { self.target_win_h.rma_put(self.origin_buf_h.as_ptr().offset(offset as isize), self.msg_len, send_rank, offset, &self.mpi) } {
         Ok(_) => {}
         Err(e) => panic!("mpi dist comm worker: failed to call rma_get: {:?}", e),
       }
     }
     self.target_win_h.fence();
-    //self.mpi.barrier();
+    //self.target_win_h.complete();
+    //self.target_win_h.wait();*/
 
     // FIXME(20160415): load from the correct buffer.
-    //self.origin_buf.sync_load(&self.target_buf_h, ctx);
-    self.origin_buf.sync_load(&self.origin_buf_h, ctx);
+    //self.origin_buf.sync_load(&self.origin_buf_h, ctx);
+    self.target_buf.sync_load(&self.target_buf_h, ctx);
     self.avg_reduce.reduce(
-        &(self.target_buf).as_ref(),
+        /*&(self.target_buf).as_ref(),
+        &(self.origin_buf).as_ref(),*/
         &(self.origin_buf).as_ref(),
+        &(self.target_buf).as_ref(),
         ctx,
     );
   }
@@ -205,7 +455,8 @@ impl CommWorker for MpiDistAsyncGossipCommWorker {
     let mut data = data.as_view_mut(ctx).data;
     let data_len = data.len();
     data.raw_recv(
-        &self.origin_buf.as_ref_range(offset, offset + data_len),
+        //&self.origin_buf.as_ref_range(offset, offset + data_len),
+        &self.target_buf.as_ref_range(offset, offset + data_len),
     );
   }
 }

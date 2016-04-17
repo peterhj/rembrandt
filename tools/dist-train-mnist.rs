@@ -55,7 +55,7 @@ fn main() {
   env_logger::init().unwrap();
 
   let num_workers = 1;
-  let batch_size = 16;
+  let batch_size = 128;
   info!("num workers: {} batch size: {}",
       num_workers, batch_size);
 
