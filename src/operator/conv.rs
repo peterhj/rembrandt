@@ -1,7 +1,36 @@
+use operator::{
+  ActivationFunction,
+  ParamsInit,
+  Conv2dFwdBackend,
+  Conv2dBwdBackend,
+};
+
+#[derive(Clone, Copy)]
+pub struct StackResConv2dOperatorConfig {
+  pub in_dims:      (usize, usize, usize),
+  pub act_func:     ActivationFunction,
+  pub init_weights: ParamsInit,
+  pub fwd_backend:  Conv2dFwdBackend,
+  pub bwd_backend:  Conv2dBwdBackend,
+}
+
+#[derive(Clone, Copy)]
+pub struct ProjStackResConv2dOperatorConfig {
+  pub in_dims:      (usize, usize, usize),
+  pub out_dims:     (usize, usize, usize),
+  pub act_func:     ActivationFunction,
+  pub init_weights: ParamsInit,
+  pub fwd_backend:  Conv2dFwdBackend,
+  pub bwd_backend:  Conv2dBwdBackend,
+}
+
 #[derive(Clone, Copy)]
 pub struct BotResConv2dOperatorConfig {
   pub in_dims:      (usize, usize, usize),
+  pub act_func:     ActivationFunction,
   pub init_weights: ParamsInit,
+  pub fwd_backend:  Conv2dFwdBackend,
+  pub bwd_backend:  Conv2dBwdBackend,
 }
 
 impl BotResConv2dOperatorConfig {
@@ -19,6 +48,7 @@ impl BotResConv2dOperatorConfig {
   }
 }
 
+/*
 pub struct BotResConv2dOperator<Comm> {
   batch_cap:    usize,
   _capability:  OpCapability,
@@ -494,11 +524,13 @@ impl<Comm> Operator for BotResConv2dOperator<Comm> where Comm: CommWorker {
       .row_vector_scale(0.0);
   }
 }
+*/
 
 #[derive(Clone, Copy)]
 pub struct ProjBotResConv2dOperatorConfig {
   pub in_dims:      (usize, usize, usize),
   pub out_dims:     (usize, usize, usize),
+  pub act_func:     ActivationFunction,
   pub init_weights: ParamsInit,
   pub fwd_backend:  Conv2dFwdBackend,
   pub bwd_backend:  Conv2dBwdBackend,

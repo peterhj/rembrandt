@@ -38,6 +38,7 @@ use std::marker::{PhantomData};
 use std::rc::{Rc};
 
 pub mod comm;
+pub mod conv;
 pub mod data;
 pub mod input;
 pub mod loss;

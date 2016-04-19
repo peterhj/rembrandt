@@ -57,6 +57,7 @@ time = "*"
 #toggle = "*"
 toggle = { path = "../../libtoggle" }
 toml = { path = "../third_party/toml-rs" }
+vec_map = "*"
 
 array_cuda = { path = "../libarray_cuda" }
 array_dist = { path = "../libarray_dist" }

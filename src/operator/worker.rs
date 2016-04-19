@@ -10,6 +10,12 @@ use operator::{
   DropoutOperatorConfig,
 };
 use operator::comm::{CommWorkerBuilder, CommWorker};
+use operator::conv::{
+  StackResConv2dOperatorConfig,
+  ProjStackResConv2dOperatorConfig,
+  BotResConv2dOperatorConfig,
+  ProjBotResConv2dOperatorConfig,
+};
 use operator::loss::{
   LossOperator,
   CategoricalLossConfig,
@@ -150,6 +156,26 @@ impl PipelineOperatorConfig {
   pub fn conv2d(&mut self, cfg: Conv2dOperatorConfig) -> &mut Self  {
     self.hidden_ops.push(OperatorConfig::Conv2d(cfg));
     self
+  }
+
+  pub fn stack_res_conv2d(&mut self, cfg: StackResConv2dOperatorConfig) -> &mut Self {
+    // FIXME(20160418)
+    unimplemented!();
+  }
+
+  pub fn proj_stack_res_conv2d(&mut self, cfg: ProjStackResConv2dOperatorConfig) -> &mut Self {
+    // FIXME(20160418)
+    unimplemented!();
+  }
+
+  pub fn bot_res_conv2d(&mut self, cfg: BotResConv2dOperatorConfig) -> &mut Self {
+    // FIXME(20160418)
+    unimplemented!();
+  }
+
+  pub fn proj_bot_res_conv2d(&mut self, cfg: ProjBotResConv2dOperatorConfig) -> &mut Self {
+    // FIXME(20160418)
+    unimplemented!();
   }
 
   pub fn pool2d(&mut self, cfg: Pool2dOperatorConfig) -> &mut Self  {

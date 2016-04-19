@@ -31,6 +31,10 @@ use rembrandt::operator::comm::{
   CommWorkerBuilder,
   DeviceSyncGossipCommWorkerBuilder,
 };
+use rembrandt::operator::conv::{
+  StackResConv2dOperatorConfig,
+  ProjStackResConv2dOperatorConfig,
+};
 use rembrandt::operator::worker::{
   OperatorWorkerBuilder,
   PipelineOperatorConfig,
@@ -277,8 +281,96 @@ fn build_allconv_arch() -> PipelineOperatorConfig {
 }
 
 fn build_resnet20_arch() -> PipelineOperatorConfig {
-  // FIXME(20160408): requires 2x residual conv operators.
-  unimplemented!();
+  let data_op_cfg = Data3dOperatorConfig{
+    in_dims:        (32, 32, 3),
+    normalize:      true,
+    preprocs:       vec![],
+  };
+  let conv1_op_cfg = Conv2dOperatorConfig{
+    in_dims:        (32, 32, 3),
+    conv_size:      3,
+    conv_stride:    1,
+    conv_pad:       1,
+    out_channels:   16,
+    act_func:       ActivationFunction::Rect,
+    init_weights:   ParamsInit::Uniform{half_range: 0.05},
+    fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
+    bwd_backend:    Conv2dBwdBackend::CudnnFastest,
+  };
+  let res_conv1_op_cfg = StackResConv2dOperatorConfig{
+    in_dims:        (32, 32, 16),
+    act_func:       ActivationFunction::Rect,
+    init_weights:   ParamsInit::Uniform{half_range: 0.05},
+    fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
+    bwd_backend:    Conv2dBwdBackend::CudnnFastest,
+  };
+  let proj_res_conv2_op_cfg = ProjStackResConv2dOperatorConfig{
+    in_dims:        (32, 32, 16),
+    out_dims:       (16, 16, 32),
+    act_func:       ActivationFunction::Rect,
+    init_weights:   ParamsInit::Uniform{half_range: 0.05},
+    fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
+    bwd_backend:    Conv2dBwdBackend::CudnnFastest,
+  };
+  let res_conv2_op_cfg = StackResConv2dOperatorConfig{
+    in_dims:        (16, 16, 32),
+    act_func:       ActivationFunction::Rect,
+    init_weights:   ParamsInit::Uniform{half_range: 0.05},
+    fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
+    bwd_backend:    Conv2dBwdBackend::CudnnFastest,
+  };
+  let proj_res_conv3_op_cfg = ProjStackResConv2dOperatorConfig{
+    in_dims:        (16, 16, 32),
+    out_dims:       (8, 8, 64),
+    act_func:       ActivationFunction::Rect,
+    init_weights:   ParamsInit::Uniform{half_range: 0.05},
+    fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
+    bwd_backend:    Conv2dBwdBackend::CudnnFastest,
+  };
+  let res_conv3_op_cfg = StackResConv2dOperatorConfig{
+    in_dims:        (8, 8, 64),
+    act_func:       ActivationFunction::Rect,
+    init_weights:   ParamsInit::Uniform{half_range: 0.05},
+    fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
+    bwd_backend:    Conv2dBwdBackend::CudnnFastest,
+  };
+  let global_pool_op_cfg = Pool2dOperatorConfig{
+    in_dims:        (8, 8, 64),
+    pool_size:      8,
+    pool_stride:    1,
+    pool_pad:       0,
+    pool_op:        PoolOperation::Average,
+    act_func:       ActivationFunction::Identity,
+  };
+  let affine_op_cfg = AffineOperatorConfig{
+    in_channels:    64,
+    out_channels:   10,
+    act_func:       ActivationFunction::Identity,
+    init_weights:   ParamsInit::Uniform{half_range: 0.05},
+    backend:        AffineBackend::CublasGemm,
+  };
+  let loss_cfg = CategoricalLossConfig{
+    num_categories: 10,
+  };
+
+  let mut worker_cfg = PipelineOperatorConfig::new();
+  worker_cfg
+    .data3d(data_op_cfg)
+    .conv2d(conv1_op_cfg)
+    .stack_res_conv2d(res_conv1_op_cfg)
+    .stack_res_conv2d(res_conv1_op_cfg)
+    .stack_res_conv2d(res_conv1_op_cfg)
+    .proj_stack_res_conv2d(proj_res_conv2_op_cfg)
+    .stack_res_conv2d(res_conv2_op_cfg)
+    .stack_res_conv2d(res_conv2_op_cfg)
+    .proj_stack_res_conv2d(proj_res_conv3_op_cfg)
+    .stack_res_conv2d(res_conv3_op_cfg)
+    .stack_res_conv2d(res_conv3_op_cfg)
+    .pool2d(global_pool_op_cfg)
+    .affine(affine_op_cfg)
+    .softmax_kl_loss(loss_cfg);
+
+  worker_cfg
 }
 
 fn main() {

@@ -31,6 +31,7 @@ extern crate rand;
 extern crate threadpool;
 extern crate time;
 extern crate toml;
+extern crate vec_map;
 
 #[macro_use]
 pub mod util;
