@@ -64,7 +64,8 @@ fn build_krizh26_arch() -> PipelineOperatorConfig {
     conv_pad:       2,
     out_channels:   32,
     act_func:       ActivationFunction::Rect,
-    init_weights:   ParamsInit::Uniform{half_range: 0.05},
+    //init_weights:   ParamsInit::Uniform{half_range: 0.05},
+    init_weights:   ParamsInit::KaimingRectFwd,
     fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
     bwd_backend:    Conv2dBwdBackend::CudnnFastest,
   };
@@ -83,7 +84,8 @@ fn build_krizh26_arch() -> PipelineOperatorConfig {
     conv_pad:       2,
     out_channels:   32,
     act_func:       ActivationFunction::Rect,
-    init_weights:   ParamsInit::Uniform{half_range: 0.05},
+    //init_weights:   ParamsInit::Uniform{half_range: 0.05},
+    init_weights:   ParamsInit::KaimingRectFwd,
     fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
     bwd_backend:    Conv2dBwdBackend::CudnnFastest,
   };
@@ -102,7 +104,8 @@ fn build_krizh26_arch() -> PipelineOperatorConfig {
     conv_pad:       2,
     out_channels:   64,
     act_func:       ActivationFunction::Rect,
-    init_weights:   ParamsInit::Uniform{half_range: 0.05},
+    //init_weights:   ParamsInit::Uniform{half_range: 0.05},
+    init_weights:   ParamsInit::KaimingRectFwd,
     fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
     bwd_backend:    Conv2dBwdBackend::CudnnFastest,
   };
@@ -119,6 +122,7 @@ fn build_krizh26_arch() -> PipelineOperatorConfig {
     out_channels:   64,
     act_func:       ActivationFunction::Rect,
     init_weights:   ParamsInit::Uniform{half_range: 0.05},
+    //init_weights:   ParamsInit::KaimingRectFwd,
     backend:        AffineBackend::CublasGemm,
   };
   let drop_op_cfg = DropoutOperatorConfig{
@@ -130,6 +134,7 @@ fn build_krizh26_arch() -> PipelineOperatorConfig {
     out_channels:   10,
     act_func:       ActivationFunction::Identity,
     init_weights:   ParamsInit::Uniform{half_range: 0.05},
+    //init_weights:   ParamsInit::KaimingRectFwd,
     backend:        AffineBackend::CublasGemm,
   };
   let loss_cfg = CategoricalLossConfig{
@@ -293,14 +298,14 @@ fn build_resnet20_arch() -> PipelineOperatorConfig {
     conv_pad:       1,
     out_channels:   16,
     act_func:       ActivationFunction::Rect,
-    init_weights:   ParamsInit::Uniform{half_range: 0.05},
+    init_weights:   ParamsInit::KaimingRectFwd,
     fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
     bwd_backend:    Conv2dBwdBackend::CudnnFastest,
   };
   let res_conv1_op_cfg = StackResConv2dOperatorConfig{
     in_dims:        (32, 32, 16),
     act_func:       ActivationFunction::Rect,
-    init_weights:   ParamsInit::Uniform{half_range: 0.05},
+    init_weights:   ParamsInit::KaimingRectFwd,
     fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
     bwd_backend:    Conv2dBwdBackend::CudnnFastest,
   };
@@ -308,14 +313,14 @@ fn build_resnet20_arch() -> PipelineOperatorConfig {
     in_dims:        (32, 32, 16),
     out_dims:       (16, 16, 32),
     act_func:       ActivationFunction::Rect,
-    init_weights:   ParamsInit::Uniform{half_range: 0.05},
+    init_weights:   ParamsInit::KaimingRectFwd,
     fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
     bwd_backend:    Conv2dBwdBackend::CudnnFastest,
   };
   let res_conv2_op_cfg = StackResConv2dOperatorConfig{
     in_dims:        (16, 16, 32),
     act_func:       ActivationFunction::Rect,
-    init_weights:   ParamsInit::Uniform{half_range: 0.05},
+    init_weights:   ParamsInit::KaimingRectFwd,
     fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
     bwd_backend:    Conv2dBwdBackend::CudnnFastest,
   };
@@ -323,14 +328,14 @@ fn build_resnet20_arch() -> PipelineOperatorConfig {
     in_dims:        (16, 16, 32),
     out_dims:       (8, 8, 64),
     act_func:       ActivationFunction::Rect,
-    init_weights:   ParamsInit::Uniform{half_range: 0.05},
+    init_weights:   ParamsInit::KaimingRectFwd,
     fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
     bwd_backend:    Conv2dBwdBackend::CudnnFastest,
   };
   let res_conv3_op_cfg = StackResConv2dOperatorConfig{
     in_dims:        (8, 8, 64),
     act_func:       ActivationFunction::Rect,
-    init_weights:   ParamsInit::Uniform{half_range: 0.05},
+    init_weights:   ParamsInit::KaimingRectFwd,
     fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
     bwd_backend:    Conv2dBwdBackend::CudnnFastest,
   };
@@ -339,14 +344,16 @@ fn build_resnet20_arch() -> PipelineOperatorConfig {
     pool_size:      8,
     pool_stride:    1,
     pool_pad:       0,
+    //pool_op:        PoolOperation::Max,
     pool_op:        PoolOperation::Average,
     act_func:       ActivationFunction::Identity,
   };
   let affine_op_cfg = AffineOperatorConfig{
-    in_channels:    64,
+    in_channels:    64 * 64,
+    //in_channels:    64,
     out_channels:   10,
     act_func:       ActivationFunction::Identity,
-    init_weights:   ParamsInit::Uniform{half_range: 0.05},
+    init_weights:   ParamsInit::Uniform{half_range: 0.15},
     backend:        AffineBackend::CublasGemm,
   };
   let loss_cfg = CategoricalLossConfig{
@@ -366,7 +373,7 @@ fn build_resnet20_arch() -> PipelineOperatorConfig {
     .proj_stack_res_conv2d(proj_res_conv3_op_cfg)
     .stack_res_conv2d(res_conv3_op_cfg)
     .stack_res_conv2d(res_conv3_op_cfg)
-    .pool2d(global_pool_op_cfg)
+    //.pool2d(global_pool_op_cfg)
     .affine(affine_op_cfg)
     .softmax_kl_loss(loss_cfg);
 
@@ -376,19 +383,19 @@ fn build_resnet20_arch() -> PipelineOperatorConfig {
 fn main() {
   env_logger::init().unwrap();
 
-  let num_workers = 4;
-  let batch_size = 32;
+  let num_workers = 1;
+  let batch_size = 128;
   info!("num workers: {} batch size: {}",
       num_workers, batch_size);
 
   let sgd_opt_cfg = SgdOptConfig{
     init_t:         None,
     minibatch_size: batch_size,
-    step_size:      StepSizeSchedule::Constant{step_size: 0.01},
-    momentum:       MomentumStyle::Nesterov{momentum: 0.9},
+    step_size:      StepSizeSchedule::Constant{step_size: 0.001},
+    momentum:       MomentumStyle::Nesterov{momentum: 0.0},
     l2_reg_coef:    1.0e-4,
-    display_iters:  50,
-    valid_iters:    500,
+    display_iters:  100,
+    valid_iters:    1000,
     save_iters:     5000,
   };
   info!("sgd: {:?}", sgd_opt_cfg);
@@ -399,9 +406,11 @@ fn main() {
   };
 
   // This works and gets 74% test accuracy as claimed.
-  let worker_cfg = build_krizh26_arch();
+  //let worker_cfg = build_krizh26_arch();
   // This doesn't really work.
   //let worker_cfg = build_allconv_arch();
+  // ResNets.
+  let worker_cfg = build_resnet20_arch();
 
   // FIXME(20160331)
   let comm_worker_builder = DeviceSyncGossipCommWorkerBuilder::new(num_workers, 1, worker_cfg.params_len());

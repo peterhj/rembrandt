@@ -159,13 +159,13 @@ impl PipelineOperatorConfig {
   }
 
   pub fn stack_res_conv2d(&mut self, cfg: StackResConv2dOperatorConfig) -> &mut Self {
-    // FIXME(20160418)
-    unimplemented!();
+    self.hidden_ops.push(OperatorConfig::StackResConv2d(cfg));
+    self
   }
 
   pub fn proj_stack_res_conv2d(&mut self, cfg: ProjStackResConv2dOperatorConfig) -> &mut Self {
-    // FIXME(20160418)
-    unimplemented!();
+    self.hidden_ops.push(OperatorConfig::ProjStackResConv2d(cfg));
+    self
   }
 
   pub fn bot_res_conv2d(&mut self, cfg: BotResConv2dOperatorConfig) -> &mut Self {

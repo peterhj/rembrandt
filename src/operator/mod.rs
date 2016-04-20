@@ -1,5 +1,11 @@
 use data_new::{SampleLabel};
 use operator::comm::{CommWorker};
+use operator::conv::{
+  StackResConv2dOperatorConfig,
+  StackResConv2dOperator,
+  ProjStackResConv2dOperatorConfig,
+  ProjStackResConv2dOperator,
+};
 use operator::loss::{
   LossOperator,
   CategoricalLossConfig,
@@ -100,6 +106,8 @@ pub enum OperatorConfig {
   Data3d(Data3dOperatorConfig),
   Affine(AffineOperatorConfig),
   Conv2d(Conv2dOperatorConfig),
+  StackResConv2d(StackResConv2dOperatorConfig),
+  ProjStackResConv2d(ProjStackResConv2dOperatorConfig),
   Pool2d(Pool2dOperatorConfig),
   Dropout(DropoutOperatorConfig),
   SoftmaxKLLoss(CategoricalLossConfig),
@@ -132,6 +140,8 @@ impl OperatorConfig {
     match self {
       &OperatorConfig::Affine(ref cfg) => cfg.params_len(),
       &OperatorConfig::Conv2d(ref cfg) => cfg.params_len(),
+      &OperatorConfig::StackResConv2d(ref cfg) => cfg.params_len(),
+      &OperatorConfig::ProjStackResConv2d(ref cfg) => cfg.params_len(),
       _ => 0,
     }
   }
@@ -143,6 +153,12 @@ impl OperatorConfig {
       }
       &OperatorConfig::Conv2d(ref cfg) => {
         OperatorNode::Hidden(Box::new(Conv2dOperator::new(batch_size, capability, params_offset.unwrap(), *cfg, prev_op, comm_worker, context)))
+      }
+      &OperatorConfig::StackResConv2d(ref cfg) => {
+        OperatorNode::Hidden(Box::new(StackResConv2dOperator::new(batch_size, capability, params_offset.unwrap(), *cfg, prev_op, comm_worker, context)))
+      }
+      &OperatorConfig::ProjStackResConv2d(ref cfg) => {
+        OperatorNode::Hidden(Box::new(ProjStackResConv2dOperator::new(batch_size, capability, params_offset.unwrap(), *cfg, prev_op, comm_worker, context)))
       }
       &OperatorConfig::Pool2d(ref cfg) => {
         OperatorNode::Hidden(Box::new(Pool2dOperator::new(batch_size, *cfg, prev_op, context)))
@@ -249,8 +265,9 @@ pub enum ActivationFunction {
 #[derive(Clone, Copy)]
 pub enum ParamsInit {
   Disabled,
-  Normal{std: f32},
   Uniform{half_range: f32},
+  Normal{std: f32},
+  KaimingRectFwd,
 }
 
 #[derive(Clone, Copy)]
@@ -697,6 +714,10 @@ impl<Comm> Operator for AffineOperator<Comm> where Comm: CommWorker {
         for w in init_weights.as_view_mut().as_mut_slice().iter_mut() {
           *w = dist.ind_sample(&mut rng) as f32;
         }
+      }
+      ParamsInit::KaimingRectFwd => {
+        // FIXME(20160420)
+        unimplemented!();
       }
     }
     let init_bias = Array2d::zeros((1, out_channels));
@@ -1173,6 +1194,14 @@ impl<Comm> Operator for Conv2dOperator<Comm> where Comm: CommWorker {
           *w = dist.ind_sample(&mut rng) as f32;
         }
       }
+      ParamsInit::KaimingRectFwd => {
+        let in_conns = self.config.conv_size * self.config.conv_size * self.config.in_dims.2;
+        let std = (2.0 / in_conns as f64).sqrt();
+        let dist = Normal::new(0.0, std);
+        for w in init_weights.as_view_mut().as_mut_slice().iter_mut() {
+          *w = dist.ind_sample(&mut rng) as f32;
+        }
+      }
     }
     let init_bias = Array2d::zeros((1, out_channels));
     self.weights.as_view_mut(ctx).sync_load(&init_weights.as_view());
@@ -1538,7 +1567,8 @@ impl Pool2dOperator {
         config.pool_pad,
         match config.pool_op {
           PoolOperation::Max      => cudnnPoolingMode_t::Max,
-          PoolOperation::Average  => cudnnPoolingMode_t::AverageCountExcludingPadding,
+          PoolOperation::Average  => cudnnPoolingMode_t::AverageCountIncludingPadding,
+          //PoolOperation::Average  => cudnnPoolingMode_t::AverageCountExcludingPadding,
         },
     ) {
       Ok(pooling) => pooling,
@@ -1573,7 +1603,7 @@ impl Operator for Pool2dOperator {
     Some(self.out_delta.clone())
   }
 
-  fn forward(&mut self, batch_size: usize, phase: OpPhase) {
+  fn forward(&mut self, batch_size: usize, _phase: OpPhase) {
     assert!(batch_size <= self.batch_cap);
     let ctx = &(*self.context).as_ref();
     self.pooling.set_batch_size(batch_size).unwrap();

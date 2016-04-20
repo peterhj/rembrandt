@@ -46,7 +46,8 @@ use std::rc::{Rc};
 use std::sync::{Arc, Barrier, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Sender, Receiver, channel};
-use std::thread::{JoinHandle, spawn};
+use std::thread::{JoinHandle, sleep, spawn};
+use std::time::{Duration};
 use vec_map::{VecMap};
 
 /*#[derive(Clone)]
@@ -614,6 +615,60 @@ enum SyncGossipPass2ActMsg {
   DoneRound{clock: usize, success: bool},
 }
 
+struct MpiDistSyncGossipPassiveWorker {
+  worker_rank:  usize,
+  msg_len:      usize,
+  num_buf_msgs: usize,
+  target_buf_h: Arc<Mutex<Vec<f32>>>,
+  act2pass_rx:  Receiver<SyncGossipAct2PassMsg>,
+  pass2act_tx:  Sender<SyncGossipPass2ActMsg>,
+  client_conns: VecMap<MpiComm>,
+  recv_reqs:    MpiRequestList,
+}
+
+impl MpiDistSyncGossipPassiveWorker {
+  pub fn run(mut self) {
+    loop {
+      match self.act2pass_rx.recv() {
+        Err(_) => {
+          println!("DEBUG: async gossip: passive thread ({}): loop terminated early", self.worker_rank);
+          break;
+        }
+        Ok(SyncGossipAct2PassMsg::Quit) => {
+          break;
+        }
+        Ok(SyncGossipAct2PassMsg::StartRound{clock, recv_rank}) => {
+          //println!("DEBUG: async gossip: passive thread ({}): round: {} starting gossip round", worker_rank, clock);
+          //println!("DEBUG: async gossip: passive thread ({}): first recv", worker_rank);
+          //println!("DEBUG: async gossip: passive thread ({}): round: {} recv rank: {}", worker_rank, clock, recv_rank);
+          //println!("DEBUG: async gossip: passive thread ({}): round: {} acquire lock for recv", worker_rank, clock);
+          let mut target_buf_h = self.target_buf_h.lock().unwrap();
+          //println!("DEBUG: async gossip: passive thread ({}): round: {} start recv", worker_rank, clock);
+          self.recv_reqs.clear();
+          //let recv_req = match client_conns[recv_rank].nonblocking_recv(&mut target_buf_h[ .. msg_len], Some(0), Some(1)) {
+          let recv_req = match self.client_conns[recv_rank].nonblocking_recv(&mut target_buf_h[ .. self.msg_len], Some(0), Some(clock as i32)) {
+            Ok(req) => req,
+            Err(e) => panic!("async gossip: passive thread: failed to do nonblocking recv: {:?}", e),
+          };
+          self.recv_reqs.append(recv_req);
+          for msg in 1 .. self.num_buf_msgs {
+            //Mpi::blocking_recv(&mut target_buf_h[msg * msg_len .. (msg+1) * msg_len], Some(recv_rank)).unwrap();
+            //println!("DEBUG: async gossip: passive thread ({}): did recv {}/{}", worker_rank, msg, num_buf_msgs);
+            let recv_req = match self.client_conns[recv_rank].nonblocking_recv(&mut target_buf_h[msg * self.msg_len .. (msg+1) * self.msg_len], Some(0), Some(0)) {
+              Ok(req) => req,
+              Err(e) => panic!("async gossip: passive thread: failed to do nonblocking recv: {:?}", e),
+            };
+            self.recv_reqs.append(recv_req);
+          }
+          self.recv_reqs.wait_all();
+          //println!("DEBUG: async gossip: passive thread ({}): round: {} finish recv", worker_rank, clock);
+          self.pass2act_tx.send(SyncGossipPass2ActMsg::DoneRound{clock: clock, success: true}).unwrap();
+        }
+      }
+    }
+  }
+}
+
 pub struct MpiDistSyncGossipCommWorker {
   worker_data:  WorkerData,
   context:      Rc<DeviceContext>,
@@ -643,7 +698,7 @@ pub struct MpiDistSyncGossipCommWorker {
   avg_reduce:   AverageReduceOperation<f32>,
 
   shared_seed:  [u64; 2],
-  rng:          Xorshiftplus128Rng,
+  shared_rng:   Xorshiftplus128Rng,
   ranks_perm:   Vec<usize>,
   iter_counter: usize,
 }
@@ -651,11 +706,12 @@ pub struct MpiDistSyncGossipCommWorker {
 impl MpiDistSyncGossipCommWorker {
   pub fn new(gossip_cfg: GossipConfig, context: Rc<DeviceContext>) -> MpiDistSyncGossipCommWorker {
     // XXX(20160415): Empirically determined message length.
+    //let msg_len = 16; // FIXME(20160419): for debugging.
     let msg_len = 32 * 1024;
     let num_buf_msgs = (gossip_cfg.buf_size + msg_len - 1) / msg_len;
     let buf_len = num_buf_msgs * msg_len;
-    // FIXME(20160419): for debugging.
-    //let num_buf_msgs = 1;
+    //let num_buf_msgs = 1; // FIXME(20160419): for debugging.
+    //let num_buf_msgs = 2; // FIXME(20160419): for debugging.
 
     let ctx = &(*context).as_ref();
     let origin_buf = unsafe { RawDeviceBuffer::new(buf_len, ctx) };
@@ -679,9 +735,9 @@ impl MpiDistSyncGossipCommWorker {
     let mut service_name_buf = vec![];
     write!(&mut service_name_buf, "rembrandt_server_{}", worker_rank);
     let service_name = CString::new(service_name_buf).unwrap();
-    println!("DEBUG: rank: {} service name: {:?}", worker_rank, service_name);
+    //println!("DEBUG: rank: {} service name: {:?}", worker_rank, service_name);
     Mpi::publish_service_(&service_name, false, true, &service_port).unwrap();
-    //mpi.barrier();
+    Mpi::barrier_().unwrap();
 
     let mut client_conns = VecMap::with_capacity(num_workers);
     let mut server_conns = VecMap::with_capacity(num_workers);
@@ -708,9 +764,9 @@ impl MpiDistSyncGossipCommWorker {
           server_conns.insert(server_r, server_conn);
           server_ports.insert(server_r, server_port);
         }
-        if worker_rank == server_r {
+        /*if worker_rank == server_r {
           println!("DEBUG: connected: ({}, {})", server_r, client_r);
-        }
+        }*/
         Mpi::barrier_().unwrap();
       }
     }
@@ -732,47 +788,17 @@ impl MpiDistSyncGossipCommWorker {
     let passive_thr = {
       let target_buf_h = target_buf_h.clone();
       spawn(move || {
-        let pass2act_tx = pass2act_tx;
-        let mut client_conns = client_conns;
-        let mut recv_reqs = MpiRequestList::new();
-        loop {
-          match act2pass_rx.recv() {
-            Err(_) => {
-              println!("DEBUG: async gossip: passive thread ({}): loop terminated early", worker_rank);
-              break;
-            }
-            Ok(SyncGossipAct2PassMsg::Quit) => {
-              break;
-            }
-            Ok(SyncGossipAct2PassMsg::StartRound{clock, recv_rank}) => {
-              //println!("DEBUG: async gossip: passive thread ({}): round: {} starting gossip round", worker_rank, clock);
-              //println!("DEBUG: async gossip: passive thread ({}): first recv", worker_rank);
-              //println!("DEBUG: async gossip: passive thread ({}): round: {} recv rank: {}", worker_rank, clock, recv_rank);
-              //println!("DEBUG: async gossip: passive thread ({}): round: {} acquire lock for recv", worker_rank, clock);
-              let mut target_buf_h = target_buf_h.lock().unwrap();
-              //println!("DEBUG: async gossip: passive thread ({}): round: {} start recv", worker_rank, clock);
-              recv_reqs.clear();
-              //let recv_req = match client_conns[recv_rank].nonblocking_recv(&mut target_buf_h[ .. msg_len], Some(0), Some(1)) {
-              let recv_req = match client_conns[recv_rank].nonblocking_recv(&mut target_buf_h[ .. msg_len], Some(0), Some(clock as i32)) {
-                Ok(req) => req,
-                Err(e) => panic!("async gossip: passive thread: failed to do nonblocking recv: {:?}", e),
-              };
-              recv_reqs.append(recv_req);
-              for msg in 1 .. num_buf_msgs {
-                //Mpi::blocking_recv(&mut target_buf_h[msg * msg_len .. (msg+1) * msg_len], Some(recv_rank)).unwrap();
-                //println!("DEBUG: async gossip: passive thread ({}): did recv {}/{}", worker_rank, msg, num_buf_msgs);
-                let recv_req = match client_conns[recv_rank].nonblocking_recv(&mut target_buf_h[msg * msg_len .. (msg+1) * msg_len], Some(0), Some(0)) {
-                  Ok(req) => req,
-                  Err(e) => panic!("async gossip: passive thread: failed to do nonblocking recv: {:?}", e),
-                };
-                recv_reqs.append(recv_req);
-              }
-              recv_reqs.wait_all();
-              //println!("DEBUG: async gossip: passive thread ({}): round: {} finish recv", worker_rank, clock);
-              pass2act_tx.send(SyncGossipPass2ActMsg::DoneRound{clock: clock, success: true}).unwrap();
-            }
-          }
-        }
+        let passive_worker = MpiDistSyncGossipPassiveWorker{
+          worker_rank:  worker_rank,
+          msg_len:      msg_len,
+          num_buf_msgs: num_buf_msgs,
+          target_buf_h: target_buf_h,
+          act2pass_rx:  act2pass_rx,
+          pass2act_tx:  pass2act_tx,
+          client_conns: client_conns,
+          recv_reqs:    MpiRequestList::new(),
+        };
+        passive_worker.run();
       })
     };
 
@@ -807,7 +833,7 @@ impl MpiDistSyncGossipCommWorker {
       send_reqs:    MpiRequestList::new(),
       avg_reduce:   AverageReduceOperation::new(0),
       shared_seed:  shared_seed,
-      rng:          Xorshiftplus128Rng::from_seed(shared_seed),
+      shared_rng:   Xorshiftplus128Rng::from_seed(shared_seed),
       ranks_perm:   (0 .. num_workers).collect(),
       iter_counter: 0,
     }
@@ -848,7 +874,7 @@ impl CommWorker for MpiDistSyncGossipCommWorker {
     // - call a fence-protected RMA get
     // - wait on a final world barrier
 
-    self.rng.shuffle(&mut self.ranks_perm);
+    self.shared_rng.shuffle(&mut self.ranks_perm);
     let self_rank = self.worker_data.worker_rank();
     let send_rank = self.ranks_perm[self_rank];
 
@@ -952,10 +978,102 @@ impl CommWorker for MpiDistSyncGossipCommWorker {
 enum AsyncGossipAct2PassMsg {
   Quit,
   StartRound{clock: usize},
+  StopRound{clock: usize},
 }
 
 enum AsyncGossipPass2ActMsg {
   DoneRound{clock: usize, success: bool},
+}
+
+struct MpiDistAsyncGossipPassiveWorker {
+  worker_rank:  usize,
+  num_workers:  usize,
+  msg_len:      usize,
+  num_buf_msgs: usize,
+  target_buf_h: Arc<Mutex<Vec<f32>>>,
+  act2pass_rx:  Receiver<AsyncGossipAct2PassMsg>,
+  pass2act_tx:  Sender<AsyncGossipPass2ActMsg>,
+  client_conns: VecMap<MpiComm>,
+  recv_reqs:    MpiRequestList,
+  recv_count:   Arc<AtomicUsize>,
+}
+
+impl MpiDistAsyncGossipPassiveWorker {
+  pub fn run(mut self) {
+    let sleep_duration = Duration::new(0, 50_000);
+    'run_loop: loop {
+      match self.act2pass_rx.recv() {
+        Err(_) => {
+          println!("DEBUG: async gossip: passive thread ({}): loop terminated early", self.worker_rank);
+          break;
+        }
+        Ok(AsyncGossipAct2PassMsg::Quit) => {
+          break;
+        }
+        Ok(AsyncGossipAct2PassMsg::StartRound{clock}) => {
+          println!("DEBUG: async gossip: passive thread ({}): round: {} starting gossip round", self.worker_rank, clock);
+          let mut received = false;
+          {
+            //println!("DEBUG: async gossip: passive thread ({}): first recv", worker_rank);
+            let mut recv_rank = None;
+            'probe_loop: loop {
+            //'probe_loop: for _ in 0 .. 100 {
+              for r in 0 .. self.num_workers {
+                if r == self.worker_rank {
+                  continue;
+                }
+                match self.client_conns[r].nonblocking_probe(Some(0), Some(1)) {
+                  Ok(None) => {}
+                  Ok(Some(_)) => {
+                    recv_rank = Some(r);
+                    break 'probe_loop;
+                  }
+                  Err(e) => panic!("async gossip: passive thread: failed to do first recv: {:?}", e),
+                };
+              }
+              sleep(sleep_duration);
+              match self.act2pass_rx.recv() {
+                Ok(AsyncGossipAct2PassMsg::StopRound{..}) => {
+                  continue 'run_loop;
+                }
+                Ok(_) => unreachable!(),
+                Err(e) => panic!("async gossip: passive thread: failed to peek in msg queue: {:?}", e)
+              }
+            }
+            if let Some(recv_rank) = recv_rank {
+              println!("DEBUG: async gossip: passive thread ({}): round: {} recv rank: {}", self.worker_rank, clock, recv_rank);
+              received = true;
+              println!("DEBUG: async gossip: passive thread ({}): round: {} acquire lock for recv", self.worker_rank, clock);
+              let mut target_buf_h = self.target_buf_h.lock().unwrap();
+              println!("DEBUG: async gossip: passive thread ({}): round: {} start recv", self.worker_rank, clock);
+              self.recv_reqs.clear();
+              let recv_req = match self.client_conns[recv_rank].nonblocking_recv(&mut target_buf_h[ .. self.msg_len], Some(0), Some(1)) {
+                Ok(req) => req,
+                Err(e) => panic!("async gossip: passive thread: failed to do nonblocking recv: {:?}", e),
+              };
+              self.recv_reqs.append(recv_req);
+              for msg in 1 .. self.num_buf_msgs {
+                //Mpi::blocking_recv(&mut target_buf_h[msg * msg_len .. (msg+1) * msg_len], Some(recv_rank)).unwrap();
+                //println!("DEBUG: async gossip: passive thread ({}): did recv {}/{}", worker_rank, msg, num_buf_msgs);
+                let recv_req = match self.client_conns[recv_rank].nonblocking_recv(&mut target_buf_h[msg * self.msg_len .. (msg+1) * self.msg_len], Some(0), Some(0)) {
+                  Ok(req) => req,
+                  Err(e) => panic!("async gossip: passive thread: failed to do nonblocking recv: {:?}", e),
+                };
+                self.recv_reqs.append(recv_req);
+              }
+              self.recv_reqs.wait_all();
+              println!("DEBUG: async gossip: passive thread ({}): round: {} finish recv", self.worker_rank, clock);
+            } else {
+              println!("DEBUG: async gossip: passive thread ({}): round: {} no recv", self.worker_rank, clock);
+            }
+          }
+          self.pass2act_tx.send(AsyncGossipPass2ActMsg::DoneRound{clock: clock, success: received}).unwrap();
+        }
+        Ok(AsyncGossipAct2PassMsg::StopRound{clock}) => {
+        }
+      }
+    }
+  }
 }
 
 pub struct MpiDistAsyncGossipCommWorker {
@@ -983,6 +1101,7 @@ pub struct MpiDistAsyncGossipCommWorker {
   pass2act_rx:  Receiver<AsyncGossipPass2ActMsg>,
   passive_thr:  JoinHandle<()>,
   send_reqs:    MpiRequestList,
+  recv_count:   Arc<AtomicUsize>,
 
   avg_reduce:   AverageReduceOperation<f32>,
 
@@ -1024,9 +1143,9 @@ impl MpiDistAsyncGossipCommWorker {
     let mut service_name_buf = vec![];
     write!(&mut service_name_buf, "rembrandt_server_{}", worker_rank);
     let service_name = CString::new(service_name_buf).unwrap();
-    println!("DEBUG: rank: {} service name: {:?}", worker_rank, service_name);
+    //println!("DEBUG: rank: {} service name: {:?}", worker_rank, service_name);
     Mpi::publish_service_(&service_name, false, true, &service_port).unwrap();
-    //mpi.barrier();
+    Mpi::barrier_().unwrap();
 
     let mut client_conns = VecMap::with_capacity(num_workers);
     let mut server_conns = VecMap::with_capacity(num_workers);
@@ -1053,9 +1172,9 @@ impl MpiDistAsyncGossipCommWorker {
           server_conns.insert(server_r, server_conn);
           server_ports.insert(server_r, server_port);
         }
-        if worker_rank == server_r {
+        /*if worker_rank == server_r {
           println!("DEBUG: connected: ({}, {})", server_r, client_r);
-        }
+        }*/
         Mpi::barrier_().unwrap();
       }
     }
@@ -1074,74 +1193,24 @@ impl MpiDistAsyncGossipCommWorker {
 
     let (act2pass_tx, act2pass_rx) = channel();
     let (pass2act_tx, pass2act_rx) = channel();
+    let recv_count = Arc::new(AtomicUsize::new(0));
     let passive_thr = {
       let target_buf_h = target_buf_h.clone();
+      let recv_count = recv_count.clone();
       spawn(move || {
-        let pass2act_tx = pass2act_tx;
-        let mut client_conns = client_conns;
-        let mut recv_reqs = MpiRequestList::new();
-        loop {
-          match act2pass_rx.recv() {
-            Err(_) => {
-              println!("DEBUG: async gossip: passive thread ({}): loop terminated early", worker_rank);
-              break;
-            }
-            Ok(AsyncGossipAct2PassMsg::Quit) => {
-              break;
-            }
-            Ok(AsyncGossipAct2PassMsg::StartRound{clock}) => {
-              println!("DEBUG: async gossip: passive thread ({}): round: {} starting gossip round", worker_rank, clock);
-              let mut received = false;
-              {
-                //println!("DEBUG: async gossip: passive thread ({}): first recv", worker_rank);
-                let mut recv_rank = None;
-                'probe_loop: loop {
-                //'probe_loop: for _ in 0 .. 100 {
-                  for r in 0 .. num_workers {
-                    if r == worker_rank {
-                      continue;
-                    }
-                    match client_conns[r].nonblocking_probe(Some(0), Some(1)) {
-                      Ok(None) => {}
-                      Ok(Some(_)) => {
-                        recv_rank = Some(r);
-                        break 'probe_loop;
-                      }
-                      Err(e) => panic!("async gossip: passive thread: failed to do first recv: {:?}", e),
-                    };
-                  }
-                }
-                if let Some(recv_rank) = recv_rank {
-                  println!("DEBUG: async gossip: passive thread ({}): round: {} recv rank: {}", worker_rank, clock, recv_rank);
-                  received = true;
-                  println!("DEBUG: async gossip: passive thread ({}): round: {} acquire lock for recv", worker_rank, clock);
-                  let mut target_buf_h = target_buf_h.lock().unwrap();
-                  println!("DEBUG: async gossip: passive thread ({}): round: {} start recv", worker_rank, clock);
-                  recv_reqs.clear();
-                  let recv_req = match client_conns[recv_rank].nonblocking_recv(&mut target_buf_h[ .. msg_len], Some(0), Some(1)) {
-                    Ok(req) => req,
-                    Err(e) => panic!("async gossip: passive thread: failed to do nonblocking recv: {:?}", e),
-                  };
-                  recv_reqs.append(recv_req);
-                  for msg in 1 .. num_buf_msgs {
-                    //Mpi::blocking_recv(&mut target_buf_h[msg * msg_len .. (msg+1) * msg_len], Some(recv_rank)).unwrap();
-                    //println!("DEBUG: async gossip: passive thread ({}): did recv {}/{}", worker_rank, msg, num_buf_msgs);
-                    let recv_req = match client_conns[recv_rank].nonblocking_recv(&mut target_buf_h[msg * msg_len .. (msg+1) * msg_len], Some(0), Some(0)) {
-                      Ok(req) => req,
-                      Err(e) => panic!("async gossip: passive thread: failed to do nonblocking recv: {:?}", e),
-                    };
-                    recv_reqs.append(recv_req);
-                  }
-                  recv_reqs.wait_all();
-                  println!("DEBUG: async gossip: passive thread ({}): round: {} finish recv", worker_rank, clock);
-                } else {
-                  println!("DEBUG: async gossip: passive thread ({}): round: {} no recv", worker_rank, clock);
-                }
-              }
-              pass2act_tx.send(AsyncGossipPass2ActMsg::DoneRound{clock: clock, success: received}).unwrap();
-            }
-          }
-        }
+        let passive_worker = MpiDistAsyncGossipPassiveWorker{
+          worker_rank:  worker_rank,
+          num_workers:  num_workers,
+          msg_len:      msg_len,
+          num_buf_msgs: num_buf_msgs,
+          target_buf_h: target_buf_h,
+          act2pass_rx:  act2pass_rx,
+          pass2act_tx:  pass2act_tx,
+          client_conns: client_conns,
+          recv_reqs:    MpiRequestList::new(),
+          recv_count:   recv_count,
+        };
+        passive_worker.run();
       })
     };
 
@@ -1174,6 +1243,7 @@ impl MpiDistAsyncGossipCommWorker {
       pass2act_rx:  pass2act_rx,
       passive_thr:  passive_thr,
       send_reqs:    MpiRequestList::new(),
+      recv_count:   recv_count,
       avg_reduce:   AverageReduceOperation::new(0),
       shared_seed:  shared_seed,
       rng:          Xorshiftplus128Rng::from_seed(shared_seed),
@@ -1376,7 +1446,7 @@ impl MpiDistPipelineOperatorWorkerBuilder {
       num_rounds:   1,
       buf_size:     total_params_len,
     };
-    let comm_worker = Rc::new(RefCell::new(MpiDistSyncGossipCommWorker::new(gossip_cfg, context.clone())));
+    let comm_worker = Rc::new(RefCell::new(MpiDistAsyncGossipCommWorker::new(gossip_cfg, context.clone())));
     let worker_data = comm_worker.borrow().worker_data.clone();
     let mut shared_seed = [0u64, 0u64];
     if worker_data.worker_rank() == 0 {
@@ -1384,7 +1454,7 @@ impl MpiDistPipelineOperatorWorkerBuilder {
     }
     comm_worker.borrow().mpi.broadcast(&mut shared_seed, 0);
 
-    let input_op = config.input_op.unwrap().build_input_operator::<MpiDistSyncGossipCommWorker>(self.batch_size, context.clone());
+    let input_op = config.input_op.unwrap().build_input_operator::<MpiDistAsyncGossipCommWorker>(self.batch_size, context.clone());
     let mut hidden_ops: Vec<Box<Operator>> = vec![];
     let mut params_off = 0;
     for r in 0 .. config.hidden_ops.len() {
@@ -1394,7 +1464,7 @@ impl MpiDistPipelineOperatorWorkerBuilder {
           _ => &*hidden_ops[r-1],
         };
         // FIXME(20160412): used fixed MPI comm worker.
-        config.hidden_ops[r].build_operator::<MpiDistSyncGossipCommWorker>(self.batch_size, self.capability, params_off, Some(prev_op), Some(comm_worker.clone()), context.clone())
+        config.hidden_ops[r].build_operator::<MpiDistAsyncGossipCommWorker>(self.batch_size, self.capability, params_off, Some(prev_op), Some(comm_worker.clone()), context.clone())
       };
       hidden_ops.push(hidden_op);
       params_off += config.hidden_ops[r].params_len();
@@ -1406,7 +1476,7 @@ impl MpiDistPipelineOperatorWorkerBuilder {
         0 => input_op.downcast(),
         _ => &*hidden_ops[num_hidden_ops-1],
       };
-      config.loss_op.unwrap().build_loss_operator::<MpiDistSyncGossipCommWorker>(self.batch_size, Some(prev_op), context.clone())
+      config.loss_op.unwrap().build_loss_operator::<MpiDistAsyncGossipCommWorker>(self.batch_size, Some(prev_op), context.clone())
     };
 
     MpiDistPipelineOperatorWorker{
@@ -1432,7 +1502,7 @@ pub struct MpiDistPipelineOperatorWorker {
 
   context:      Rc<DeviceContext>,
   //comm_worker:  Rc<RefCell<Comm>>,
-  comm_worker:  Rc<RefCell<MpiDistSyncGossipCommWorker>>,
+  comm_worker:  Rc<RefCell<MpiDistAsyncGossipCommWorker>>,
   input_op:     Box<InputOperator>,
   hidden_ops:   Vec<Box<Operator>>,
   loss_op:      Box<LossOperator>,

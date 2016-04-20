@@ -17,8 +17,16 @@ name = "test-openmpi"
 path = "tools/test-openmpi.rs"
 
 [[bin]]
+name = "sleep-test"
+path = "tools/sleep-test.rs"
+
+[[bin]]
 name = "train-mnist"
 path = "tools/train-mnist.rs"
+
+[[bin]]
+name = "calculate-cifar10-mean"
+path = "tools/calculate-cifar10-mean.rs"
 
 [[bin]]
 name = "train-cifar10"
