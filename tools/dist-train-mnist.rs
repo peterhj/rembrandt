@@ -65,7 +65,7 @@ fn main() {
     step_size:      StepSizeSchedule::Constant{step_size: 0.01},
     momentum:       MomentumStyle::Nesterov{momentum: 0.9},
     l2_reg_coef:    1.0e-4,
-    display_iters:  5,
+    display_iters:  50,
     valid_iters:    5000,
     save_iters:     5000,
   };
