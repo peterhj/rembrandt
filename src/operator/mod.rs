@@ -267,7 +267,8 @@ pub enum ParamsInit {
   Disabled,
   Uniform{half_range: f32},
   Normal{std: f32},
-  KaimingRectFwd,
+  Xavier,
+  KaimingFwd,
 }
 
 #[derive(Clone, Copy)]
@@ -715,9 +716,17 @@ impl<Comm> Operator for AffineOperator<Comm> where Comm: CommWorker {
           *w = dist.ind_sample(&mut rng) as f32;
         }
       }
-      ParamsInit::KaimingRectFwd => {
+      ParamsInit::Xavier => {
         // FIXME(20160420)
         unimplemented!();
+      }
+      ParamsInit::KaimingFwd => {
+        let in_conns = self.config.in_channels;
+        let std = (2.0 / in_conns as f64).sqrt();
+        let dist = Normal::new(0.0, std);
+        for w in init_weights.as_view_mut().as_mut_slice().iter_mut() {
+          *w = dist.ind_sample(&mut rng) as f32;
+        }
       }
     }
     let init_bias = Array2d::zeros((1, out_channels));
@@ -1194,7 +1203,11 @@ impl<Comm> Operator for Conv2dOperator<Comm> where Comm: CommWorker {
           *w = dist.ind_sample(&mut rng) as f32;
         }
       }
-      ParamsInit::KaimingRectFwd => {
+      ParamsInit::Xavier => {
+        // FIXME(20160420)
+        unimplemented!();
+      }
+      ParamsInit::KaimingFwd => {
         let in_conns = self.config.conv_size * self.config.conv_size * self.config.in_dims.2;
         let std = (2.0 / in_conns as f64).sqrt();
         let dist = Normal::new(0.0, std);

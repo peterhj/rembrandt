@@ -36,6 +36,14 @@ path = "tools/train-cifar10.rs"
 name = "dist-train-mnist"
 path = "tools/dist-train-mnist.rs"
 
+[[bin]]
+name = "train-imagenet"
+path = "tools/train-imagenet.rs"
+
+[[bin]]
+name = "train-gogod"
+path = "tools/train-gogod.rs"
+
 #[[bin]]
 #name = "bench-kernels"
 #path = "tools/bench-kernels.rs"
