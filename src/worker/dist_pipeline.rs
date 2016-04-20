@@ -642,6 +642,7 @@ pub struct MpiDistAsyncGossipCommWorker {
 
   avg_reduce:   AverageReduceOperation<f32>,
 
+  shared_seed:  [u64; 2],
   rng:          Xorshiftplus128Rng,
   ranks_perm:   Vec<usize>,
   iter_counter: usize,
@@ -750,8 +751,8 @@ impl MpiDistAsyncGossipCommWorker {
               {
                 //println!("DEBUG: async gossip: passive thread ({}): first recv", worker_rank);
                 let mut recv_rank = None;
-                //'probe_loop: loop {
-                'probe_loop: for _ in 0 .. 100 {
+                'probe_loop: loop {
+                //'probe_loop: for _ in 0 .. 100 {
                   for r in 0 .. num_workers {
                     if r == worker_rank {
                       continue;
@@ -800,6 +801,12 @@ impl MpiDistAsyncGossipCommWorker {
       })
     };
 
+    let mut shared_seed = [0, 0];
+    if worker_rank == 0 {
+      shared_seed = [thread_rng().next_u64(), thread_rng().next_u64()];
+    }
+    mpi.broadcast(&mut shared_seed, 0);
+
     MpiDistAsyncGossipCommWorker{
       worker_data:  WorkerData::new(worker_rank, num_workers),
       context:      context.clone(),
@@ -824,7 +831,8 @@ impl MpiDistAsyncGossipCommWorker {
       passive_thr:  passive_thr,
       send_reqs:    MpiRequestList::new(),
       avg_reduce:   AverageReduceOperation::new(0),
-      rng:          Xorshiftplus128Rng::new(&mut thread_rng()),
+      shared_seed:  shared_seed,
+      rng:          Xorshiftplus128Rng::from_seed(shared_seed),
       ranks_perm:   (0 .. num_workers).collect(),
       iter_counter: 0,
       recv_success: true,
@@ -888,7 +896,8 @@ impl CommWorker for MpiDistAsyncGossipCommWorker {
 
     // FIXME(20160415): getting communication to work.
 
-    if self_rank == send_rank && self.recv_success {
+    if self_rank == send_rank {
+    //if self_rank == send_rank && self.recv_success {
       //self.target_buf.raw_send(&self.origin_buf, ctx);
       self.origin_buf.raw_send(&self.target_buf, ctx);
       //self.recv_success = true;
@@ -898,15 +907,16 @@ impl CommWorker for MpiDistAsyncGossipCommWorker {
     println!("DEBUG: async gossip: active thread ({}): round: {} starting gossip round", self_rank, self.iter_counter);
     self.act2pass_tx.send(AsyncGossipAct2PassMsg::StartRound{clock: self.iter_counter}).unwrap();
 
-    if self_rank != send_rank && self.recv_success {
+    if self_rank != send_rank {
+    //if self_rank != send_rank && self.recv_success {
       //self.target_buf.sync_store(&mut self.target_buf_h, ctx);
       self.origin_buf.sync_store(&mut self.origin_buf_h, ctx);
 
       println!("DEBUG: async gossip: active thread ({}): round: {} initial send rank: {}", self_rank, self.iter_counter, send_rank);
       //self.target_win_h.lock(send_rank, MpiWindowLockMode::Exclusive).unwrap();
       self.send_reqs.clear();
-      //let send_req = match self.server_conns[send_rank].nonblocking_sync_send(&self.origin_buf_h[ .. self.msg_len], 0, 1) {
-      let send_req = match self.server_conns[send_rank].nonblocking_send(&self.origin_buf_h[ .. self.msg_len], 0, 1) {
+      let send_req = match self.server_conns[send_rank].nonblocking_sync_send(&self.origin_buf_h[ .. self.msg_len], 0, 1) {
+      //let send_req = match self.server_conns[send_rank].nonblocking_send(&self.origin_buf_h[ .. self.msg_len], 0, 1) {
         Ok(req) => req,
         Err(e) => panic!("async gossip: active thread: failed to do initial send: {:?}", e),
       };
@@ -937,6 +947,9 @@ impl CommWorker for MpiDistAsyncGossipCommWorker {
       }
     }
     println!("DEBUG: async gossip: active thread ({}): round: {} got passive response", self_rank, self.iter_counter);
+
+    // FIXME(20160419): doing a sync barrier here for debugging.
+    //Mpi::barrier_();
 
     // FIXME(20160415): load from the correct buffer.
     //self.origin_buf.sync_load(&self.origin_buf_h, ctx);

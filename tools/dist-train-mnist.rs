@@ -66,7 +66,7 @@ fn main() {
     momentum:       MomentumStyle::Nesterov{momentum: 0.9},
     l2_reg_coef:    1.0e-4,
     display_iters:  5,
-    valid_iters:    500,
+    valid_iters:    5000,
     save_iters:     5000,
   };
   info!("sgd: {:?}", sgd_opt_cfg);
