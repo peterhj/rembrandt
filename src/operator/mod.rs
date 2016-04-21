@@ -562,6 +562,8 @@ impl InputOperator for Data3dOperator {
     let ctx = &(*self.context).as_ref();
     {
       // FIXME(20160329): does not use `batch_size` at all!
+      //loop {
+      //}
       let in_buf_h = &self.in_buf_h;
       let mut in_buf = self.in_buf.as_ref_mut(ctx);
       in_buf.sync_load(in_buf_h);

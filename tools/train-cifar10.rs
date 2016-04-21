@@ -352,6 +352,7 @@ fn build_resnet20_arch() -> PipelineOperatorConfig {
     out_channels:   10,
     act_func:       ActivationFunction::Identity,
     init_weights:   ParamsInit::Uniform{half_range: 0.15},
+    //init_weights:   ParamsInit::Normal{std: 0.15},
     backend:        AffineBackend::CublasGemm,
   };
   let loss_cfg = CategoricalLossConfig{
@@ -362,6 +363,7 @@ fn build_resnet20_arch() -> PipelineOperatorConfig {
   worker_cfg
     .data3d(data_op_cfg)
     .conv2d(conv1_op_cfg)
+    //.bnorm_conv2d(conv1_op_cfg)
     .stack_res_conv2d(res_conv1_op_cfg)
     .stack_res_conv2d(res_conv1_op_cfg)
     .stack_res_conv2d(res_conv1_op_cfg)
@@ -389,9 +391,14 @@ fn main() {
   let sgd_opt_cfg = SgdOptConfig{
     init_t:         None,
     minibatch_size: batch_size,
-    step_size:      StepSizeSchedule::Constant{step_size: 0.1},
-    momentum:       MomentumStyle::Zero,
-    //momentum:       MomentumStyle::Sgd{momentum: 0.9},
+    //step_size:      StepSizeSchedule::Constant{step_size: 0.1},
+    step_size:      StepSizeSchedule::Anneal2{
+      step0: 0.1,
+      step1: 0.01,  step1_iters: 16000,
+      step2: 0.001, step2_iters: 32000,
+    },
+    //momentum:       MomentumStyle::Zero,
+    momentum:       MomentumStyle::Sgd{momentum: 0.9},
     //momentum:       MomentumStyle::Nesterov{momentum: 0.9},
     l2_reg_coef:    1.0e-4,
     display_iters:  50,

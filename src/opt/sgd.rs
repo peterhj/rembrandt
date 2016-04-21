@@ -28,10 +28,17 @@ pub struct SgdOptConfig {
 #[derive(Clone, Copy, Debug)]
 pub enum StepSizeSchedule {
   Constant{step_size: f32},
-  DecayOnce{
+  Anneal1{
     step0:          f32,
-    step0_iters:    usize,
-    final_step:     f32,
+    step1:          f32,
+    step1_iters:    usize,
+  },
+  Anneal2{
+    step0:          f32,
+    step1:          f32,
+    step1_iters:    usize,
+    step2:          f32,
+    step2_iters:    usize,
   },
   Decay{
     init_step:      f32,
@@ -46,9 +53,21 @@ impl StepSizeSchedule {
       &StepSizeSchedule::Constant{step_size} => {
         step_size
       }
-      &StepSizeSchedule::DecayOnce{..} => {
-        // FIXME(20160330)
-        unimplemented!();
+      &StepSizeSchedule::Anneal1{step0, step1_iters, step1} => {
+        if t < step1_iters {
+          step0
+        } else {
+          step1
+        }
+      }
+      &StepSizeSchedule::Anneal2{step0, step1_iters, step1, step2_iters, step2} => {
+        if t < step1_iters {
+          step0
+        } else if t < step2_iters {
+          step1
+        } else {
+          step2
+        }
       }
       &StepSizeSchedule::Decay{..} => {
         // FIXME(20160330)

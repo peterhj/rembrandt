@@ -500,10 +500,10 @@ fn build_resnet10_arch() -> PipelineOperatorConfig {
     pool_op:        PoolOperation::Max,
     act_func:       ActivationFunction::Identity,
   };
-  let proj_res_conv2_op_cfg = ProjStackResConv2dOperatorConfig{
+  let res_conv2_op_cfg = ProjStackResConv2dOperatorConfig{
     in_dims:        (128, 128, 64),
     //in_dims:        (56, 56, 64),
-    out_dims:       (64, 64, 128),
+    out_dims:       (128, 128, 128),
     //out_dims:       (56, 56, 128),
     act_func:       ActivationFunction::Rect,
     //init_weights:   ParamsInit::Uniform{half_range: 0.05},
@@ -511,10 +511,20 @@ fn build_resnet10_arch() -> PipelineOperatorConfig {
     fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
     bwd_backend:    Conv2dBwdBackend::CudnnFastest,
   };
-  let proj_res_conv3_op_cfg = ProjStackResConv2dOperatorConfig{
+  let pool2_op_cfg = Pool2dOperatorConfig{
+    in_dims:        (128, 128, 128),
+    //in_dims:        (128, 128, 64),
+    //in_dims:        (112, 112, 64),
+    pool_size:      2,
+    pool_stride:    2,
+    pool_pad:       0,
+    pool_op:        PoolOperation::Max,
+    act_func:       ActivationFunction::Identity,
+  };
+  let res_conv3_op_cfg = ProjStackResConv2dOperatorConfig{
     in_dims:        (64, 64, 128),
     //in_dims:        (56, 56, 64),
-    out_dims:       (32, 32, 256),
+    out_dims:       (64, 64, 256),
     //out_dims:       (56, 56, 64),
     act_func:       ActivationFunction::Rect,
     //init_weights:   ParamsInit::Uniform{half_range: 0.05},
@@ -522,10 +532,20 @@ fn build_resnet10_arch() -> PipelineOperatorConfig {
     fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
     bwd_backend:    Conv2dBwdBackend::CudnnFastest,
   };
-  let proj_res_conv4_op_cfg = ProjStackResConv2dOperatorConfig{
+  let pool3_op_cfg = Pool2dOperatorConfig{
+    in_dims:        (64, 64, 256),
+    //in_dims:        (128, 128, 64),
+    //in_dims:        (112, 112, 64),
+    pool_size:      2,
+    pool_stride:    2,
+    pool_pad:       0,
+    pool_op:        PoolOperation::Max,
+    act_func:       ActivationFunction::Identity,
+  };
+  let res_conv4_op_cfg = ProjStackResConv2dOperatorConfig{
     in_dims:        (32, 32, 256),
     //in_dims:        (56, 56, 64),
-    out_dims:       (16, 16, 512),
+    out_dims:       (32, 32, 512),
     //out_dims:       (56, 56, 64),
     act_func:       ActivationFunction::Rect,
     //init_weights:   ParamsInit::Uniform{half_range: 0.05},
@@ -533,16 +553,36 @@ fn build_resnet10_arch() -> PipelineOperatorConfig {
     fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
     bwd_backend:    Conv2dBwdBackend::CudnnFastest,
   };
-  let proj_res_conv5_op_cfg = ProjStackResConv2dOperatorConfig{
+  let pool4_op_cfg = Pool2dOperatorConfig{
+    in_dims:        (32, 32, 512),
+    //in_dims:        (128, 128, 64),
+    //in_dims:        (112, 112, 64),
+    pool_size:      2,
+    pool_stride:    2,
+    pool_pad:       0,
+    pool_op:        PoolOperation::Max,
+    act_func:       ActivationFunction::Identity,
+  };
+  let res_conv5_op_cfg = StackResConv2dOperatorConfig{
     in_dims:        (16, 16, 512),
     //in_dims:        (7, 7, 512),
-    out_dims:       (8, 8, 512),
+    //out_dims:       (16, 16, 512),
     //out_dims:       (7, 7, 512),
     act_func:       ActivationFunction::Rect,
     //init_weights:   ParamsInit::Uniform{half_range: 0.05},
     init_weights:   ParamsInit::KaimingFwd,
     fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
     bwd_backend:    Conv2dBwdBackend::CudnnFastest,
+  };
+  let pool5_op_cfg = Pool2dOperatorConfig{
+    in_dims:        (16, 16, 512),
+    //in_dims:        (128, 128, 64),
+    //in_dims:        (112, 112, 64),
+    pool_size:      2,
+    pool_stride:    2,
+    pool_pad:       0,
+    pool_op:        PoolOperation::Max,
+    act_func:       ActivationFunction::Identity,
   };
   let global_pool_op_cfg = Pool2dOperatorConfig{
     in_dims:        (8, 8, 512),
@@ -571,10 +611,14 @@ fn build_resnet10_arch() -> PipelineOperatorConfig {
     .data3d(data_op_cfg)
     .conv2d(conv1_op_cfg)
     .pool2d(pool1_op_cfg)
-    .proj_stack_res_conv2d(proj_res_conv2_op_cfg)
-    .proj_stack_res_conv2d(proj_res_conv3_op_cfg)
-    .proj_stack_res_conv2d(proj_res_conv4_op_cfg)
-    .proj_stack_res_conv2d(proj_res_conv5_op_cfg)
+    .proj_stack_res_conv2d(res_conv2_op_cfg)
+    .pool2d(pool2_op_cfg)
+    .proj_stack_res_conv2d(res_conv3_op_cfg)
+    .pool2d(pool3_op_cfg)
+    .proj_stack_res_conv2d(res_conv4_op_cfg)
+    .pool2d(pool4_op_cfg)
+    .stack_res_conv2d(res_conv5_op_cfg)
+    .pool2d(pool5_op_cfg)
     .pool2d(global_pool_op_cfg)
     .affine(aff1_op_cfg)
     .softmax_kl_loss(loss_cfg);
