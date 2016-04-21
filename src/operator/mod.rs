@@ -273,18 +273,6 @@ pub enum ParamsInit {
   KaimingFwd,
 }
 
-#[derive(Clone)]
-pub enum Data3dPreproc {
-  Crop{
-    crop_width:     usize,
-    crop_height:    usize,
-  },
-  SubtractElemwiseMean{
-    mean_path:      PathBuf,
-  },
-  XFlip,
-}
-
 #[derive(Clone, Copy)]
 pub enum PoolOperation {
   Max,
@@ -379,6 +367,18 @@ impl Operator for SplitOperator {
 pub struct JoinOperator;
 
 #[derive(Clone)]
+pub enum Data3dPreproc {
+  Crop{
+    crop_width:     usize,
+    crop_height:    usize,
+  },
+  SubtractElemwiseMean{
+    mean_path:      PathBuf,
+  },
+  XFlip,
+}
+
+#[derive(Clone)]
 pub struct Data3dOperatorConfig {
   pub in_dims:      (usize, usize, usize),
   pub normalize:    bool,
@@ -419,7 +419,9 @@ pub enum Data3dPreprocOperator {
     mean_arr_h: Array3d<f32>,
     mean_array: DeviceBuffer<f32>,
   },
-  XFlip,
+  XFlip{
+    coin_flip:  Range<usize>,
+  },
 }
 
 pub struct Data3dOperator {
@@ -492,7 +494,9 @@ impl Data3dOperator {
           });
         }
         &Data3dPreproc::XFlip => {
-          preprocs.push(Data3dPreprocOperator::XFlip);
+          preprocs.push(Data3dPreprocOperator::XFlip{
+            coin_flip:  Range::new(0, 2),
+          });
         }
       }
     }
@@ -505,7 +509,10 @@ impl Data3dOperator {
       // FIXME(20160407): assuming that `in_frame_len` is as large as any
       // intermediate frame_len.
       tmp_buf:      DeviceBuffer::zeros(batch_size * in_frame_len, ctx),
-      out_buf:      Rc::new(RefCell::new(DeviceBuffer::zeros(batch_size * out_frame_len, ctx))),
+      //tmp1_buf:     DeviceBuffer::zeros(batch_size * in_frame_len, ctx),
+      //tmp2_buf:     DeviceBuffer::zeros(batch_size * in_frame_len, ctx),
+      out_buf:      Rc::new(RefCell::new(DeviceBuffer::zeros(batch_size * in_frame_len, ctx))),
+      //out_buf:      Rc::new(RefCell::new(DeviceBuffer::zeros(batch_size * out_frame_len, ctx))),
       rng:          Xorshiftplus128Rng::new(&mut thread_rng()),
       preprocs:     preprocs,
     }
@@ -530,8 +537,7 @@ impl Operator for Data3dOperator {
     let ctx = &(*self.context).as_ref();
     //let length = self.config.in_dims.len();
     let in_dims = self.config.in_dims;
-    //let (in_width, in_height, in_channels) = in_dims;
-    let (in_width, in_height, _) = in_dims;
+    let (in_width, in_height, in_channels) = in_dims;
     let mut out_buf = self.out_buf.borrow_mut();
     let num_preprocs = self.config.preprocs.len();
     {
@@ -601,10 +607,23 @@ impl Operator for Data3dOperator {
         }
 
         ( &Data3dPreproc::XFlip,
-          &mut Data3dPreprocOperator::XFlip,
+          &mut Data3dPreprocOperator::XFlip{ref coin_flip},
         ) => {
-          // FIXME(20160421)
-          unimplemented!();
+          match coin_flip.ind_sample(&mut self.rng) {
+            0 => {
+              src_buf.send(&mut target_buf);
+            }
+            1 => {
+              unsafe { rembrandt_kernel_batch_blockmap256_flip(
+                  src_buf.as_ptr(),
+                  in_width as i32,
+                  (in_height * in_channels * batch_size) as i32,
+                  target_buf.as_mut_ptr(),
+                  ctx.stream.ptr,
+              ) };
+            }
+            _ => unreachable!(),
+          }
         }
 
         _ => unreachable!(),

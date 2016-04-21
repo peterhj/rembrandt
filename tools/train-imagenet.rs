@@ -17,7 +17,7 @@ use rembrandt::data_new::{
 use rembrandt::operator::{
   OpCapability,
   ActivationFunction, ParamsInit,
-  AffineBackend, Conv2dFwdBackend, Conv2dBwdBackend, PoolOperation,
+  Data3dPreproc, AffineBackend, Conv2dFwdBackend, Conv2dBwdBackend, PoolOperation,
   Data3dOperatorConfig,
   AffineOperatorConfig,
   Conv2dOperatorConfig,
@@ -54,13 +54,20 @@ use std::sync::{Arc, Barrier};
 fn build_vgg_a_arch() -> PipelineOperatorConfig {
   let data_op_cfg = Data3dOperatorConfig{
     in_dims:        (256, 256, 3),
-    //in_dims:        (224, 224, 3),
     normalize:      true,
-    preprocs:       vec![],
+    preprocs:       vec![
+      Data3dPreproc::SubtractElemwiseMean{
+        mean_path:  PathBuf::from("imagenet_mean_256x256x3.ndarray"),
+      },
+      Data3dPreproc::XFlip,
+      Data3dPreproc::Crop{
+        crop_width:     224,
+        crop_height:    224,
+      },
+    ],
   };
   let conv1_op_cfg = Conv2dOperatorConfig{
-    in_dims:        (256, 256, 3),
-    //in_dims:        (224, 224, 3),
+    in_dims:        (224, 224, 3),
     conv_size:      3,
     conv_stride:    1,
     conv_pad:       1,
@@ -72,8 +79,7 @@ fn build_vgg_a_arch() -> PipelineOperatorConfig {
     bwd_backend:    Conv2dBwdBackend::CudnnFastest,
   };
   let pool1_op_cfg = Pool2dOperatorConfig{
-    in_dims:        (256, 256, 64),
-    //in_dims:        (224, 224, 64),
+    in_dims:        (224, 224, 64),
     pool_size:      2,
     pool_stride:    2,
     pool_pad:       0,
@@ -81,8 +87,7 @@ fn build_vgg_a_arch() -> PipelineOperatorConfig {
     act_func:       ActivationFunction::Identity,
   };
   let conv2_op_cfg = Conv2dOperatorConfig{
-    in_dims:        (128, 128, 64),
-    //in_dims:        (112, 112, 64),
+    in_dims:        (112, 112, 64),
     conv_size:      3,
     conv_stride:    1,
     conv_pad:       1,
@@ -94,8 +99,7 @@ fn build_vgg_a_arch() -> PipelineOperatorConfig {
     bwd_backend:    Conv2dBwdBackend::CudnnFastest,
   };
   let pool2_op_cfg = Pool2dOperatorConfig{
-    in_dims:        (128, 128, 128),
-    //in_dims:        (112, 112, 128),
+    in_dims:        (112, 112, 128),
     pool_size:      2,
     pool_stride:    2,
     pool_pad:       0,
@@ -103,8 +107,7 @@ fn build_vgg_a_arch() -> PipelineOperatorConfig {
     act_func:       ActivationFunction::Identity,
   };
   let conv3_1_op_cfg = Conv2dOperatorConfig{
-    in_dims:        (64, 64, 128),
-    //in_dims:        (56, 56, 128),
+    in_dims:        (56, 56, 128),
     conv_size:      3,
     conv_stride:    1,
     conv_pad:       1,
@@ -116,8 +119,7 @@ fn build_vgg_a_arch() -> PipelineOperatorConfig {
     bwd_backend:    Conv2dBwdBackend::CudnnFastest,
   };
   let conv3_2_op_cfg = Conv2dOperatorConfig{
-    in_dims:        (64, 64, 256),
-    //in_dims:        (56, 56, 256),
+    in_dims:        (56, 56, 256),
     conv_size:      3,
     conv_stride:    1,
     conv_pad:       1,
@@ -129,8 +131,7 @@ fn build_vgg_a_arch() -> PipelineOperatorConfig {
     bwd_backend:    Conv2dBwdBackend::CudnnFastest,
   };
   let pool3_op_cfg = Pool2dOperatorConfig{
-    in_dims:        (64, 64, 256),
-    //in_dims:        (56, 56, 256),
+    in_dims:        (56, 56, 256),
     pool_size:      2,
     pool_stride:    2,
     pool_pad:       0,
@@ -138,8 +139,7 @@ fn build_vgg_a_arch() -> PipelineOperatorConfig {
     act_func:       ActivationFunction::Identity,
   };
   let conv4_1_op_cfg = Conv2dOperatorConfig{
-    in_dims:        (32, 32, 256),
-    //in_dims:        (28, 28, 256),
+    in_dims:        (28, 28, 256),
     conv_size:      3,
     conv_stride:    1,
     conv_pad:       1,
@@ -151,8 +151,7 @@ fn build_vgg_a_arch() -> PipelineOperatorConfig {
     bwd_backend:    Conv2dBwdBackend::CudnnFastest,
   };
   let conv4_2_op_cfg = Conv2dOperatorConfig{
-    in_dims:        (32, 32, 512),
-    //in_dims:        (28, 28, 512),
+    in_dims:        (28, 28, 512),
     conv_size:      3,
     conv_stride:    1,
     conv_pad:       1,
@@ -164,8 +163,7 @@ fn build_vgg_a_arch() -> PipelineOperatorConfig {
     bwd_backend:    Conv2dBwdBackend::CudnnFastest,
   };
   let pool4_op_cfg = Pool2dOperatorConfig{
-    in_dims:        (32, 32, 512),
-    //in_dims:        (28, 28, 512),
+    in_dims:        (28, 28, 512),
     pool_size:      2,
     pool_stride:    2,
     pool_pad:       0,
@@ -173,8 +171,7 @@ fn build_vgg_a_arch() -> PipelineOperatorConfig {
     act_func:       ActivationFunction::Identity,
   };
   let conv5_1_op_cfg = Conv2dOperatorConfig{
-    in_dims:        (16, 16, 512),
-    //in_dims:        (14, 14, 512),
+    in_dims:        (14, 14, 512),
     conv_size:      3,
     conv_stride:    1,
     conv_pad:       1,
@@ -186,8 +183,7 @@ fn build_vgg_a_arch() -> PipelineOperatorConfig {
     bwd_backend:    Conv2dBwdBackend::CudnnFastest,
   };
   let conv5_2_op_cfg = Conv2dOperatorConfig{
-    in_dims:        (16, 16, 512),
-    //in_dims:        (14, 14, 512),
+    in_dims:        (14, 14, 512),
     conv_size:      3,
     conv_stride:    1,
     conv_pad:       1,
@@ -199,8 +195,7 @@ fn build_vgg_a_arch() -> PipelineOperatorConfig {
     bwd_backend:    Conv2dBwdBackend::CudnnFastest,
   };
   let pool5_op_cfg = Pool2dOperatorConfig{
-    in_dims:        (16, 16, 512),
-    //in_dims:        (14, 14, 512),
+    in_dims:        (14, 14, 512),
     pool_size:      2,
     pool_stride:    2,
     pool_pad:       0,
@@ -208,8 +203,7 @@ fn build_vgg_a_arch() -> PipelineOperatorConfig {
     act_func:       ActivationFunction::Identity,
   };
   let aff1_op_cfg = AffineOperatorConfig{
-    in_channels:    32768,
-    //in_channels:    25088,
+    in_channels:    25088,
     out_channels:   4096,
     act_func:       ActivationFunction::Rect,
     init_weights:   ParamsInit::Uniform{half_range: 0.01},
@@ -591,7 +585,7 @@ fn main() {
 
   let num_workers = 1;
   //let num_workers = 4;
-  let batch_size = 16;
+  let batch_size = 32;
   info!("num workers: {} batch size: {}",
       num_workers, batch_size);
 
@@ -604,8 +598,8 @@ fn main() {
     //momentum:       MomentumStyle::Nesterov{momentum: 0.9},
     l2_reg_coef:    1.0e-4,
     display_iters:  20,
-    valid_iters:    10000,
-    save_iters:     10000,
+    valid_iters:    5000,
+    save_iters:     5000,
   };
   info!("sgd: {:?}", sgd_opt_cfg);
 
@@ -614,9 +608,9 @@ fn main() {
     num_categories: 1000,
   };
 
-  //let worker_cfg = build_vgg_a_arch();
+  let worker_cfg = build_vgg_a_arch();
   //let worker_cfg = build_vgg_a_avgpool_arch();
-  let worker_cfg = build_resnet10_arch();
+  //let worker_cfg = build_resnet10_arch();
 
   // FIXME(20160331)
   let comm_worker_builder = DeviceSyncGossipCommWorkerBuilder::new(num_workers, 1, worker_cfg.params_len());

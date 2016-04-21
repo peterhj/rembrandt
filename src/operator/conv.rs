@@ -49,6 +49,11 @@ use std::iter::{repeat};
 use std::marker::{PhantomData};
 use std::rc::{Rc};
 
+pub enum BnormMovingAverage {
+  Cumulative,
+  Exponential{ema_factor: f64},
+}
+
 pub struct BnormConv2dOperator<Comm> {
   batch_cap:    usize,
   _capability:  OpCapability,
@@ -535,6 +540,7 @@ impl<Comm> Operator for BnormConv2dOperator<Comm> where Comm: CommWorker {
 #[derive(Clone, Copy)]
 pub struct StackResConv2dOperatorConfig {
   pub in_dims:      (usize, usize, usize),
+  //pub out_dims:     (usize, usize, usize),
   pub act_func:     ActivationFunction,
   pub init_weights: ParamsInit,
   pub fwd_backend:  Conv2dFwdBackend,
@@ -1001,8 +1007,8 @@ impl<Comm> Operator for StackResConv2dOperator<Comm> where Comm: CommWorker {
             epsilon,
             self.bn_scale1.as_view(ctx).as_ptr(),
             self.bn_bias1.as_view(ctx).as_ptr(),
-            self.bn_cached_mean1.as_view(ctx).as_ptr(),
-            self.bn_cached_ivar1.as_view(ctx).as_ptr(),
+            self.bn_running_mean1.as_view(ctx).as_ptr(),
+            self.bn_running_ivar1.as_view(ctx).as_ptr(),
             &*ctx.get_dnn(),
         ) }.unwrap();
       }
@@ -1016,7 +1022,7 @@ impl<Comm> Operator for StackResConv2dOperator<Comm> where Comm: CommWorker {
             backward.first_batch1 = false;
             1.0
           }
-          false => 0.99,
+          false => 0.01,
         };
         let epsilon = 1.0e-4;
         self.batchnorm1.set_batch_size(batch_size).unwrap();
@@ -1083,8 +1089,8 @@ impl<Comm> Operator for StackResConv2dOperator<Comm> where Comm: CommWorker {
             epsilon,
             self.bn_scale2.as_view(ctx).as_ptr(),
             self.bn_bias2.as_view(ctx).as_ptr(),
-            self.bn_cached_mean2.as_view(ctx).as_ptr(),
-            self.bn_cached_ivar2.as_view(ctx).as_ptr(),
+            self.bn_running_mean2.as_view(ctx).as_ptr(),
+            self.bn_running_ivar2.as_view(ctx).as_ptr(),
             &*ctx.get_dnn(),
         ) }.unwrap();
       }
@@ -1098,7 +1104,7 @@ impl<Comm> Operator for StackResConv2dOperator<Comm> where Comm: CommWorker {
             backward.first_batch2 = false;
             1.0
           }
-          false => 0.99,
+          false => 0.01,
         };
         let epsilon = 1.0e-4;
         self.batchnorm2.set_batch_size(batch_size).unwrap();
@@ -1550,9 +1556,45 @@ pub struct ProjStackResConv2dOperator<Comm> {
   add_bias3:    CudnnAddOp,
   //add_input:    CudnnAddOp,
 
-  batchnorm1:   CudnnBatchNormOp,
-  batchnorm2:   CudnnBatchNormOp,
-  batchnorm3:   CudnnBatchNormOp,
+  //batchnorm1:   CudnnBatchNormOp,
+  //batchnorm2:   CudnnBatchNormOp,
+  //batchnorm3:   CudnnBatchNormOp,
+
+  bn_scale1:            DeviceArray2d<f32>,
+  bn_scale1_grad:       DeviceArray2d<f32>,
+  acc_bn_scale1_grad:   DeviceArray2d<f32>,
+  bn_bias1:             DeviceArray2d<f32>,
+  bn_bias1_grad:        DeviceArray2d<f32>,
+  acc_bn_bias1_grad:    DeviceArray2d<f32>,
+  bn_running_mean1:     DeviceArray2d<f32>,
+  bn_running_ivar1:     DeviceArray2d<f32>,
+  bn_cached_mean1:      DeviceArray2d<f32>,
+  bn_cached_ivar1:      DeviceArray2d<f32>,
+  batchnorm1:           CudnnBatchNormOp,
+
+  bn_scale2:            DeviceArray2d<f32>,
+  bn_scale2_grad:       DeviceArray2d<f32>,
+  acc_bn_scale2_grad:   DeviceArray2d<f32>,
+  bn_bias2:             DeviceArray2d<f32>,
+  bn_bias2_grad:        DeviceArray2d<f32>,
+  acc_bn_bias2_grad:    DeviceArray2d<f32>,
+  bn_running_mean2:     DeviceArray2d<f32>,
+  bn_running_ivar2:     DeviceArray2d<f32>,
+  bn_cached_mean2:      DeviceArray2d<f32>,
+  bn_cached_ivar2:      DeviceArray2d<f32>,
+  batchnorm2:           CudnnBatchNormOp,
+
+  bn_scale3:            DeviceArray2d<f32>,
+  bn_scale3_grad:       DeviceArray2d<f32>,
+  acc_bn_scale3_grad:   DeviceArray2d<f32>,
+  bn_bias3:             DeviceArray2d<f32>,
+  bn_bias3_grad:        DeviceArray2d<f32>,
+  acc_bn_bias3_grad:    DeviceArray2d<f32>,
+  bn_running_mean3:     DeviceArray2d<f32>,
+  bn_running_ivar3:     DeviceArray2d<f32>,
+  bn_cached_mean3:      DeviceArray2d<f32>,
+  bn_cached_ivar3:      DeviceArray2d<f32>,
+  batchnorm3:           CudnnBatchNormOp,
 
   backward:     Option<ProjStackResConv2dBwdOperator<Comm>>,
   //hv_backward:  Option<BotResConv2dHvBwdOperator>,
@@ -1566,6 +1608,8 @@ struct ProjStackResConv2dBwdOperator<Comm> {
   conv1_bwd_w:  CudnnConvBwdFilterOp,
   conv1_bwd_d:  CudnnConvBwdDataOp,
 
+  first_batch_1:    bool,
+
   grad_weights2:      DeviceArray2d<f32>,
   grad_bias2:      DeviceArray2d<f32>,
   acc_grad_weights2:  DeviceArray2d<f32>,
@@ -1573,12 +1617,16 @@ struct ProjStackResConv2dBwdOperator<Comm> {
   conv2_bwd_w:  CudnnConvBwdFilterOp,
   conv2_bwd_d:  CudnnConvBwdDataOp,
 
+  first_batch_2:    bool,
+
   grad_weights3:      DeviceArray2d<f32>,
   grad_bias3:      DeviceArray2d<f32>,
   acc_grad_weights3:  DeviceArray2d<f32>,
   acc_grad_bias3:  DeviceArray2d<f32>,
   conv3_bwd_w:  CudnnConvBwdFilterOp,
   conv3_bwd_d:  CudnnConvBwdDataOp,
+
+  first_batch_3:    bool,
 
   comm_worker:  Rc<RefCell<Comm>>,
 }
@@ -1738,12 +1786,18 @@ impl<Comm> ProjStackResConv2dOperator<Comm> where Comm: CommWorker {
         grad_bias3:         DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
         acc_grad_weights3:  DeviceArray2d::<f32>::zeros((1 * 1 * in_channels, out_channels), ctx),
         acc_grad_bias3:     DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
+
         conv1_bwd_w:   conv1_bwd_w,
         conv1_bwd_d:   conv1_bwd_d,
         conv2_bwd_w:   conv2_bwd_w,
         conv2_bwd_d:   conv2_bwd_d,
         conv3_bwd_w:   conv3_bwd_w,
         conv3_bwd_d:   conv3_bwd_d,
+
+        first_batch_1:  true,
+        first_batch_2:  true,
+        first_batch_3:  true,
+
         comm_worker:  comm_worker.unwrap(),
       })
     } else {
@@ -1786,8 +1840,10 @@ impl<Comm> ProjStackResConv2dOperator<Comm> where Comm: CommWorker {
       bias2:        DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
       weights3:     DeviceArray2d::<f32>::zeros((1 * 1 * in_channels, out_channels), ctx),
       bias3:        DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
+
       tmp_act:      DeviceBuffer::<f32>::zeros(out_length * batch_size, ctx),
       tmp_delta:    DeviceBuffer::<f32>::zeros(out_length * batch_size, ctx),
+
       workspace:    DeviceBuffer::<u8>::zeros(workspace_size, ctx),
       conv1_fwd:    conv1_fwd,
       add_bias1:    add_bias1,
@@ -1796,9 +1852,47 @@ impl<Comm> ProjStackResConv2dOperator<Comm> where Comm: CommWorker {
       conv3_fwd:    conv3_fwd,
       add_bias3:    add_bias3,
       //add_input:    add_input,
-      batchnorm1:   batchnorm1,
+
+      /*batchnorm1:   batchnorm1,
       batchnorm2:   batchnorm2,
-      batchnorm3:   batchnorm3,
+      batchnorm3:   batchnorm3,*/
+
+      bn_scale1:            DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
+      bn_scale1_grad:       DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
+      acc_bn_scale1_grad:   DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
+      bn_bias1:             DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
+      bn_bias1_grad:        DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
+      acc_bn_bias1_grad:    DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
+      bn_running_mean1:     DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
+      bn_running_ivar1:     DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
+      bn_cached_mean1:      DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
+      bn_cached_ivar1:      DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
+      batchnorm1:           batchnorm1,
+
+      bn_scale2:            DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
+      bn_scale2_grad:       DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
+      acc_bn_scale2_grad:   DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
+      bn_bias2:             DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
+      bn_bias2_grad:        DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
+      acc_bn_bias2_grad:    DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
+      bn_running_mean2:     DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
+      bn_running_ivar2:     DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
+      bn_cached_mean2:      DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
+      bn_cached_ivar2:      DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
+      batchnorm2:           batchnorm2,
+
+      bn_scale3:            DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
+      bn_scale3_grad:       DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
+      acc_bn_scale3_grad:   DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
+      bn_bias3:             DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
+      bn_bias3_grad:        DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
+      acc_bn_bias3_grad:    DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
+      bn_running_mean3:     DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
+      bn_running_ivar3:     DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
+      bn_cached_mean3:      DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
+      bn_cached_ivar3:      DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
+      batchnorm3:           batchnorm3,
+
       backward:     backward,
       //hv_backward:  None,
     }
