@@ -20,7 +20,7 @@ use array_cuda::device::memory::{DeviceZeroExt, DeviceBuffer};
 use array_cuda::device::random::{RandomSampleExt, UniformDist};
 use array_new::{
   Array, AsyncArray, ArrayView, ArrayViewMut, ArrayZeroExt, NdArraySerialize,
-  Shape, Array2d,
+  Shape, Array2d, Array3d,
 };
 use cuda_dnn::v4::{
   CudnnConvFwdOp, CudnnConvBwdFilterOp, CudnnConvBwdDataOp,
@@ -38,9 +38,11 @@ use rand::distributions::normal::{Normal};
 use rand::distributions::range::{Range};
 use std::cell::{RefCell};
 use std::cmp::{max};
+use std::fs::{File};
 use std::io::{Cursor};
 use std::iter::{repeat};
 use std::marker::{PhantomData};
+use std::path::{PathBuf};
 use std::rc::{Rc};
 
 pub mod comm;
@@ -271,12 +273,16 @@ pub enum ParamsInit {
   KaimingFwd,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub enum Data3dPreproc {
   Crop{
     crop_width:     usize,
     crop_height:    usize,
   },
+  SubtractElemwiseMean{
+    mean_path:      PathBuf,
+  },
+  XFlip,
 }
 
 #[derive(Clone, Copy)]
@@ -390,18 +396,30 @@ impl Data3dOperatorConfig {
           out_dims = (crop_width, crop_height, out_dims.2);
           assert!(self.in_dims.len() >= out_dims.len());
         }
+        &Data3dPreproc::SubtractElemwiseMean{..} => {
+          // Do nothing.
+        }
+        &Data3dPreproc::XFlip => {
+          // Do nothing.
+        }
       }
     }
     out_dims
   }
 }
 
-enum Data3dPreprocOperator {
+pub enum Data3dPreprocOperator {
   Crop{
     transform:  CudnnTransformOp,
-    w_range:    Range<usize>,
-    h_range:    Range<usize>,
-  }
+    woff_range: Range<usize>,
+    hoff_range: Range<usize>,
+  },
+  SubtractElemwiseMean{
+    add:        CudnnAddOp,
+    mean_arr_h: Array3d<f32>,
+    mean_array: DeviceBuffer<f32>,
+  },
+  XFlip,
 }
 
 pub struct Data3dOperator {
@@ -412,8 +430,8 @@ pub struct Data3dOperator {
 
   in_buf_h:     Vec<u8>,
   in_buf:       DeviceBuffer<u8>,
-  out_buf:      SharedDeviceBuf<f32>,
   tmp_buf:      DeviceBuffer<f32>,
+  out_buf:      SharedDeviceBuf<f32>,
 
   rng:          Xorshiftplus128Rng,
   preprocs:     Vec<Data3dPreprocOperator>,
@@ -445,9 +463,36 @@ impl Data3dOperator {
                     crop_width, crop_height, in_channels, batch_size,
                 ).unwrap(),
             ),
-            w_range:    Range::new(0, max_offset_w),
-            h_range:    Range::new(0, max_offset_h),
+            woff_range: Range::new(0, max_offset_w),
+            hoff_range: Range::new(0, max_offset_h),
           });
+        }
+        &Data3dPreproc::SubtractElemwiseMean{ref mean_path} => {
+          let mut mean_file = match File::open(mean_path) {
+            Ok(file) => file,
+            Err(e) => panic!("failed to open mean path: {:?}", e),
+          };
+          let mean_arr_h: Array3d<f32> = match Array3d::deserialize(&mut mean_file) {
+            Ok(arr) => arr,
+            Err(_) => panic!("failed to deserialize mean array"),
+          };
+          let mut mean_array = DeviceBuffer::zeros(in_frame_len, ctx);
+          mean_array.as_ref_mut(ctx).sync_load(mean_arr_h.as_slice());
+          preprocs.push(Data3dPreprocOperator::SubtractElemwiseMean{
+            add:        CudnnAddOp::new(
+                CudnnTensorDesc::<f32>::create_4d(
+                    in_width, in_height, in_channels, 1,
+                ).unwrap(),
+                CudnnTensorDesc::<f32>::create_4d(
+                    in_width, in_height, in_channels, batch_size,
+                ).unwrap(),
+            ),
+            mean_arr_h: mean_arr_h,
+            mean_array: mean_array,
+          });
+        }
+        &Data3dPreproc::XFlip => {
+          preprocs.push(Data3dPreprocOperator::XFlip);
         }
       }
     }
@@ -457,10 +502,10 @@ impl Data3dOperator {
       context:      context.clone(),
       in_buf_h:     repeat(0).take(batch_size * in_frame_len).collect(),
       in_buf:       DeviceBuffer::zeros(batch_size * in_frame_len, ctx),
-      out_buf:      Rc::new(RefCell::new(DeviceBuffer::zeros(batch_size * out_frame_len, ctx))),
       // FIXME(20160407): assuming that `in_frame_len` is as large as any
       // intermediate frame_len.
       tmp_buf:      DeviceBuffer::zeros(batch_size * in_frame_len, ctx),
+      out_buf:      Rc::new(RefCell::new(DeviceBuffer::zeros(batch_size * out_frame_len, ctx))),
       rng:          Xorshiftplus128Rng::new(&mut thread_rng()),
       preprocs:     preprocs,
     }
@@ -480,14 +525,13 @@ impl Operator for Data3dOperator {
     None
   }
 
-  fn forward(&mut self, batch_size: usize, _phase: OpPhase) {
+  fn forward(&mut self, batch_size: usize, phase: OpPhase) {
     assert!(batch_size <= self.batch_cap);
     let ctx = &(*self.context).as_ref();
     //let length = self.config.in_dims.len();
     let in_dims = self.config.in_dims;
     //let (in_width, in_height, in_channels) = in_dims;
-    let (in_width, _, _) = in_dims;
-    let in_buf = self.in_buf.as_ref(ctx);
+    let (in_width, in_height, _) = in_dims;
     let mut out_buf = self.out_buf.borrow_mut();
     let num_preprocs = self.config.preprocs.len();
     {
@@ -496,6 +540,7 @@ impl Operator for Data3dOperator {
       } else {
         self.tmp_buf.as_ref_mut(ctx)
       };
+      let in_buf = self.in_buf.as_ref(ctx);
       if self.config.normalize {
         in_buf.cast_bytes_normalized(&mut dst_buf);
       } else {
@@ -508,16 +553,26 @@ impl Operator for Data3dOperator {
       } else {
         (out_buf.as_ref(ctx), self.tmp_buf.as_ref_mut(ctx))
       };
-      match (preproc, &self.preprocs[r]) {
+      match (preproc, &mut self.preprocs[r]) {
         ( &Data3dPreproc::Crop{crop_width, crop_height},
-          &Data3dPreprocOperator::Crop{ref transform, ref w_range, ref h_range},
+          &mut Data3dPreprocOperator::Crop{ref transform, ref woff_range, ref hoff_range},
         ) => {
           // FIXME(20160407): this formulation is only valid for a single
           // crop, as it references `in_dims`.
           /*let offset_w = self.rng.gen_range(0, in_width - crop_width);
           let offset_h = self.rng.gen_range(0, in_height - crop_height);*/
-          let offset_w = w_range.ind_sample(&mut self.rng);
-          let offset_h = h_range.ind_sample(&mut self.rng);
+          let (offset_w, offset_h) = match phase {
+            OpPhase::Inference => {
+              let offset_w = (in_width - crop_width) / 2;
+              let offset_h = (in_height - crop_height) / 2;
+              (offset_w, offset_h)
+            }
+            OpPhase::Training => {
+              let offset_w = woff_range.ind_sample(&mut self.rng);
+              let offset_h = hoff_range.ind_sample(&mut self.rng);
+              (offset_w, offset_h)
+            }
+          };
           let buf_offset = offset_w + offset_h * in_width;
           unsafe { transform.transform(
               1.0, src_buf.as_ptr().offset(buf_offset as isize),
@@ -525,6 +580,34 @@ impl Operator for Data3dOperator {
               &*ctx.get_dnn(),
           ) }.unwrap();
         }
+
+        ( &Data3dPreproc::SubtractElemwiseMean{..},
+          &mut Data3dPreprocOperator::SubtractElemwiseMean{ref mut add, ref mut mean_array, ..},
+        ) => {
+          let alpha = if self.config.normalize {
+            -1.0 / 255.0
+          } else {
+            -1.0
+          };
+          src_buf.send(&mut target_buf);
+          add.set_batch_size(batch_size);
+          unsafe { add.forward(
+              alpha,
+              mean_array.as_ref(ctx).as_ptr(),
+              1.0,
+              target_buf.as_mut_ptr(),
+              &*ctx.get_dnn(),
+          ) }.unwrap();
+        }
+
+        ( &Data3dPreproc::XFlip,
+          &mut Data3dPreprocOperator::XFlip,
+        ) => {
+          // FIXME(20160421)
+          unimplemented!();
+        }
+
+        _ => unreachable!(),
       }
     }
   }
@@ -787,7 +870,9 @@ impl<Comm> Operator for AffineOperator<Comm> where Comm: CommWorker {
 
     self.add_bias.set_batch_size(batch_size).unwrap();
     unsafe { self.add_bias.forward(
+        1.0,
         bias.as_ptr(),
+        1.0,
         out_act.as_mut_ptr(),
         &*ctx.get_dnn(),
     ).unwrap() };
@@ -1288,7 +1373,9 @@ impl<Comm> Operator for Conv2dOperator<Comm> where Comm: CommWorker {
     }
     self.add_bias.set_batch_size(batch_size).unwrap();
     unsafe { self.add_bias.forward(
+        1.0,
         bias.as_view(ctx).as_ptr(),
+        1.0,
         out_act.as_mut_ptr(),
         &*ctx.get_dnn(),
     ).unwrap() };

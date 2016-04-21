@@ -513,7 +513,9 @@ impl Layer for AffineLayer {
 
     add_bias.set_batch_size(batch_size).unwrap();
     unsafe { add_bias.forward(
+        1.0,
         bias.as_ptr(),
+        1.0,
         out_act.as_mut_ptr(),
         &*ctx.get_dnn(),
     ).unwrap() };
@@ -1009,7 +1011,9 @@ impl Layer for Conv2dLayer<Disable<Conv2dHvData>> {
     }
     self.add_bias.set_batch_size(batch_size).unwrap();
     unsafe { self.add_bias.forward(
+        1.0,
         bias.as_view(ctx).as_ptr(),
+        1.0,
         out_act.as_mut_ptr(),
         &*ctx.get_dnn(),
     ).unwrap() };
@@ -1270,14 +1274,18 @@ impl Layer for ResidualConv2dLayer {
 
     add_bias.set_batch_size(batch_size).unwrap();
     unsafe { add_bias.forward(
+        1.0,
         bias.as_view(ctx).as_ptr(),
+        1.0,
         out_act.as_mut_ptr(),
         &*ctx.get_dnn(),
     ).unwrap() };
 
     add_res.set_batch_size(batch_size).unwrap();
     unsafe { add_res.forward(
+        1.0,
         in_act.as_ptr(),
+        1.0,
         out_act.as_mut_ptr(),
         &*ctx.get_dnn(),
     ).unwrap() };
@@ -1378,7 +1386,9 @@ impl Layer for ResidualConv2dLayer {
 
       add_res.set_batch_size(batch_size).unwrap();
       unsafe { add_res.forward(
+          1.0,
           res_unit.as_ref(ctx).as_ptr(),
+          1.0,
           in_delta.as_mut_ptr(),
           &*ctx.get_dnn(),
       ).unwrap() };
@@ -1634,7 +1644,9 @@ impl Layer for AffineConv2dLayer {
     ).unwrap() };
     self.add_bias.set_batch_size(batch_size).unwrap();
     unsafe { self.add_bias.forward(
+        1.0,
         bias.as_view(ctx).as_ptr(),
+        1.0,
         out_act.as_mut_ptr(),
         &*ctx.get_dnn(),
     ).unwrap() };

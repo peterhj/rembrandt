@@ -294,7 +294,9 @@ impl<Comm> Operator for BnormConv2dOperator<Comm> where Comm: CommWorker {
     }
     self.add_bias.set_batch_size(batch_size).unwrap();
     unsafe { self.add_bias.forward(
+        1.0,
         bias.as_view(ctx).as_ptr(),
+        1.0,
         out_act.as_mut_ptr(),
         &*ctx.get_dnn(),
     ).unwrap() };
@@ -1989,7 +1991,9 @@ impl<Comm> Operator for ProjStackResConv2dOperator<Comm> where Comm: CommWorker 
     }
     self.add_bias1.set_batch_size(batch_size).unwrap();
     unsafe { self.add_bias1.forward(
+        1.0,
         bias1.as_view(ctx).as_ptr(),
+        1.0,
         tmp_act.as_ref_mut(ctx).as_mut_ptr(),
         &*ctx.get_dnn(),
     ).unwrap() };
@@ -2022,7 +2026,9 @@ impl<Comm> Operator for ProjStackResConv2dOperator<Comm> where Comm: CommWorker 
     }
     self.add_bias2.set_batch_size(batch_size).unwrap();
     unsafe { self.add_bias2.forward(
+        1.0,
         bias2.as_view(ctx).as_ptr(),
+        1.0,
         out_act.as_ref_mut(ctx).as_mut_ptr(),
         &*ctx.get_dnn(),
     ).unwrap() };
@@ -2042,7 +2048,9 @@ impl<Comm> Operator for ProjStackResConv2dOperator<Comm> where Comm: CommWorker 
     }
     self.add_bias3.set_batch_size(batch_size).unwrap();
     unsafe { self.add_bias3.forward(
+        1.0,
         bias3.as_view(ctx).as_ptr(),
+        1.0,
         out_act.as_ref_mut(ctx).as_mut_ptr(),
         &*ctx.get_dnn(),
     ).unwrap() };

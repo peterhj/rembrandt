@@ -21,6 +21,14 @@ name = "sleep-test"
 path = "tools/sleep-test.rs"
 
 [[bin]]
+name = "dump-array3d-header"
+path = "tools/dump-array3d-header.rs"
+
+[[bin]]
+name = "load-array3d"
+path = "tools/load-array3d.rs"
+
+[[bin]]
 name = "train-mnist"
 path = "tools/train-mnist.rs"
 
