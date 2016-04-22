@@ -127,8 +127,8 @@ impl OptSharedData {
   }
 
   pub fn sync(&self) {
-    fence(Ordering::AcqRel);
     self.barrier.wait();
+    fence(Ordering::AcqRel);
   }
 }
 

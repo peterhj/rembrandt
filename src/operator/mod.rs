@@ -614,20 +614,27 @@ impl Operator for Data3dOperator {
         ( &Data3dPreproc::FlipX,
           &mut Data3dPreprocOperator::FlipX{ref coin_flip},
         ) => {
-          match coin_flip.ind_sample(&mut self.rng) {
-            0 => {
+          match phase {
+            OpPhase::Inference => {
               src_buf.send(&mut target_buf);
             }
-            1 => {
-              unsafe { rembrandt_kernel_batch_blockmap256_flip(
-                  src_buf.as_ptr(),
-                  in_width as i32,
-                  (in_height * in_channels * batch_size) as i32,
-                  target_buf.as_mut_ptr(),
-                  ctx.stream.ptr,
-              ) };
+            OpPhase::Training => {
+              match coin_flip.ind_sample(&mut self.rng) {
+                0 => {
+                  src_buf.send(&mut target_buf);
+                }
+                1 => {
+                  unsafe { rembrandt_kernel_batch_blockmap256_flip(
+                      src_buf.as_ptr(),
+                      in_width as i32,
+                      (in_height * in_channels * batch_size) as i32,
+                      target_buf.as_mut_ptr(),
+                      ctx.stream.ptr,
+                  ) };
+                }
+                _ => unreachable!(),
+              }
             }
-            _ => unreachable!(),
           }
         }
 

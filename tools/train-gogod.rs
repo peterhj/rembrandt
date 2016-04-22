@@ -32,6 +32,8 @@ use rembrandt::operator::comm::{
   DeviceSyncGossipCommWorkerBuilder,
 };
 use rembrandt::operator::conv::{
+  BNormMovingAverage,
+  BNormConv2dOperatorConfig,
   StackResConv2dOperatorConfig,
   ProjStackResConv2dOperatorConfig,
 };
@@ -64,7 +66,19 @@ fn build_vgg_a_arch() -> PipelineOperatorConfig {
     conv_pad:       1,
     out_channels:   128,
     act_func:       ActivationFunction::Rect,
-    //init_weights:   ParamsInit::Uniform{half_range: 0.05},
+    init_weights:   ParamsInit::KaimingFwd,
+    fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
+    bwd_backend:    Conv2dBwdBackend::CudnnFastest,
+  };
+  let bnorm_conv1_op_cfg = BNormConv2dOperatorConfig{
+    in_dims:        (19, 19, 32),
+    conv_size:      3,
+    conv_stride:    1,
+    conv_pad:       1,
+    out_channels:   128,
+    bnorm_mov_avg:  BNormMovingAverage::Exponential{ema_factor: 0.01},
+    bnorm_epsilon:  1.0e-4,
+    act_func:       ActivationFunction::Rect,
     init_weights:   ParamsInit::KaimingFwd,
     fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
     bwd_backend:    Conv2dBwdBackend::CudnnFastest,
@@ -76,7 +90,15 @@ fn build_vgg_a_arch() -> PipelineOperatorConfig {
     conv_pad:       1,
     out_channels:   128,
     act_func:       ActivationFunction::Rect,
-    //init_weights:   ParamsInit::Uniform{half_range: 0.05},
+    init_weights:   ParamsInit::KaimingFwd,
+    fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
+    bwd_backend:    Conv2dBwdBackend::CudnnFastest,
+  };
+  let hidden_res_conv_op_cfg = StackResConv2dOperatorConfig{
+    in_dims:        (19, 19, 128),
+    bnorm_mov_avg:  BNormMovingAverage::Exponential{ema_factor: 0.01},
+    bnorm_epsilon:  1.0e-4,
+    act_func:       ActivationFunction::Rect,
     init_weights:   ParamsInit::KaimingFwd,
     fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
     bwd_backend:    Conv2dBwdBackend::CudnnFastest,
@@ -93,6 +115,20 @@ fn build_vgg_a_arch() -> PipelineOperatorConfig {
     fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
     bwd_backend:    Conv2dBwdBackend::CudnnFastest,
   };
+  /*let final_bnorm_conv_op_cfg = BNormConv2dOperatorConfig{
+    in_dims:        (19, 19, 128),
+    conv_size:      3,
+    conv_stride:    1,
+    conv_pad:       1,
+    out_channels:   1,
+    bnorm_mov_avg:  BNormMovingAverage::Exponential{ema_factor: 0.01},
+    bnorm_epsilon:  1.0e-4,
+    act_func:       ActivationFunction::Identity,
+    //init_weights:   ParamsInit::Uniform{half_range: 0.05},
+    init_weights:   ParamsInit::KaimingFwd,
+    fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
+    bwd_backend:    Conv2dBwdBackend::CudnnFastest,
+  };*/
   let loss_cfg = CategoricalLossConfig{
     num_categories: 361,
   };
@@ -100,7 +136,9 @@ fn build_vgg_a_arch() -> PipelineOperatorConfig {
   let mut worker_cfg = PipelineOperatorConfig::new();
   worker_cfg
     .data3d(data_op_cfg)
-    .conv2d(conv1_op_cfg)
+    //.conv2d(conv1_op_cfg)
+    .bnorm_conv2d(bnorm_conv1_op_cfg)
+    /*.conv2d(hidden_conv_op_cfg)
     .conv2d(hidden_conv_op_cfg)
     .conv2d(hidden_conv_op_cfg)
     .conv2d(hidden_conv_op_cfg)
@@ -109,9 +147,14 @@ fn build_vgg_a_arch() -> PipelineOperatorConfig {
     .conv2d(hidden_conv_op_cfg)
     .conv2d(hidden_conv_op_cfg)
     .conv2d(hidden_conv_op_cfg)
-    .conv2d(hidden_conv_op_cfg)
-    .conv2d(hidden_conv_op_cfg)
+    .conv2d(hidden_conv_op_cfg)*/
+    .stack_res_conv2d(hidden_res_conv_op_cfg)
+    .stack_res_conv2d(hidden_res_conv_op_cfg)
+    .stack_res_conv2d(hidden_res_conv_op_cfg)
+    .stack_res_conv2d(hidden_res_conv_op_cfg)
+    .stack_res_conv2d(hidden_res_conv_op_cfg)
     .conv2d(final_conv_op_cfg)
+    //.bnorm_conv2d(final_bnorm_conv_op_cfg)
     .softmax_kl_loss(loss_cfg);
   worker_cfg
 }
@@ -128,22 +171,25 @@ fn main() {
   let sgd_opt_cfg = SgdOptConfig{
     init_t:         None,
     minibatch_size: batch_size,
-    step_size:      StepSizeSchedule::Constant{step_size: 0.01},
+    step_size:      StepSizeSchedule::Constant{step_size: 0.1},
     momentum:       MomentumStyle::Zero,
+    //momentum:       MomentumStyle::Nesterov{momentum: 0.9},
     l2_reg_coef:    0.0,
-    display_iters:  100,
-    valid_iters:    10000,
-    save_iters:     10000,
+    display_iters:  50,
+    valid_iters:    1500,
+    save_iters:     1500,
   };
   info!("sgd: {:?}", sgd_opt_cfg);
 
   //let datum_cfg = SampleDatumConfig::Bytes3d;
   let datum_cfg = SampleDatumConfig::BitsThenBytes3d{scale: 255};
   let label_cfg = SampleLabelConfig::Category{
-    num_categories: 1000,
+    num_categories: 361,
   };
 
   let worker_cfg = build_vgg_a_arch();
+
+  info!("operator: {:?}", worker_cfg);
 
   // FIXME(20160331)
   let comm_worker_builder = DeviceSyncGossipCommWorkerBuilder::new(num_workers, 1, worker_cfg.params_len());

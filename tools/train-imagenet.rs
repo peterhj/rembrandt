@@ -611,9 +611,9 @@ fn build_resnet18_arch() -> PipelineOperatorConfig {
   };
   let pool1_op_cfg = Pool2dOperatorConfig{
     in_dims:        (112, 112, 64),
-    pool_size:      2,
+    pool_size:      3,
     pool_stride:    2,
-    pool_pad:       0,
+    pool_pad:       1,
     pool_op:        PoolOperation::Max,
     act_func:       ActivationFunction::Identity,
   };
@@ -741,16 +741,17 @@ fn main() {
   let num_workers = 1;
   //let num_workers = 4;
   let batch_size = 64;
+  let minibatch_size = 256;
   info!("num workers: {} batch size: {}",
       num_workers, batch_size);
 
   let sgd_opt_cfg = SgdOptConfig{
     init_t:         None,
-    minibatch_size: batch_size,
+    minibatch_size: minibatch_size,
     step_size:      StepSizeSchedule::Constant{step_size: 0.1},
     //momentum:       MomentumStyle::Zero,
-    momentum:       MomentumStyle::Sgd{momentum: 0.9},
-    //momentum:       MomentumStyle::Nesterov{momentum: 0.9},
+    //momentum:       MomentumStyle::Sgd{momentum: 0.9},
+    momentum:       MomentumStyle::Nesterov{momentum: 0.9},
     l2_reg_coef:    1.0e-4,
     display_iters:  20,
     valid_iters:    5000,
