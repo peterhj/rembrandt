@@ -32,7 +32,8 @@ use rembrandt::operator::comm::{
   DeviceSyncGossipCommWorkerBuilder,
 };
 use rembrandt::operator::conv::{
-  BnormMovingAverage,
+  BNormMovingAverage,
+  BNormConv2dOperatorConfig,
   StackResConv2dOperatorConfig,
   ProjStackResConv2dOperatorConfig,
 };
@@ -60,7 +61,7 @@ fn build_vgg_a_arch() -> PipelineOperatorConfig {
       Data3dPreproc::SubtractElemwiseMean{
         mean_path:  PathBuf::from("imagenet_mean_256x256x3.ndarray"),
       },
-      Data3dPreproc::XFlip,
+      Data3dPreproc::FlipX,
       Data3dPreproc::Crop{
         crop_width:     224,
         crop_height:    224,
@@ -467,13 +468,12 @@ fn build_vgg_a_avgpool_arch() -> PipelineOperatorConfig {
 fn build_resnet10_arch() -> PipelineOperatorConfig {
   let data_op_cfg = Data3dOperatorConfig{
     in_dims:        (256, 256, 3),
-    //in_dims:        (224, 224, 3),
     normalize:      true,
     preprocs:       vec![
       Data3dPreproc::SubtractElemwiseMean{
         mean_path:  PathBuf::from("imagenet_mean_256x256x3.ndarray"),
       },
-      Data3dPreproc::XFlip,
+      Data3dPreproc::FlipX,
       Data3dPreproc::Crop{
         crop_width:     224,
         crop_height:    224,
@@ -493,7 +493,7 @@ fn build_resnet10_arch() -> PipelineOperatorConfig {
     bwd_backend:    Conv2dBwdBackend::CudnnFastest,
   };
   let pool1_op_cfg = Pool2dOperatorConfig{
-    in_dims:        (112, 112, 64),
+    in_dims:        (224, 224, 64),
     pool_size:      2,
     pool_stride:    2,
     pool_pad:       0,
@@ -501,9 +501,9 @@ fn build_resnet10_arch() -> PipelineOperatorConfig {
     act_func:       ActivationFunction::Identity,
   };
   let proj_res_conv2_op_cfg = ProjStackResConv2dOperatorConfig{
-    in_dims:        (56, 56, 64),
+    in_dims:        (112, 112, 64),
     out_dims:       (56, 56, 128),
-    bnorm_mov_avg:  BnormMovingAverage::Exponential{ema_factor: 0.01},
+    bnorm_mov_avg:  BNormMovingAverage::Exponential{ema_factor: 0.01},
     bnorm_epsilon:  1.0e-4,
     act_func:       ActivationFunction::Rect,
     //init_weights:   ParamsInit::Uniform{half_range: 0.05},
@@ -514,7 +514,7 @@ fn build_resnet10_arch() -> PipelineOperatorConfig {
   let proj_res_conv3_op_cfg = ProjStackResConv2dOperatorConfig{
     in_dims:        (56, 56, 128),
     out_dims:       (28, 28, 256),
-    bnorm_mov_avg:  BnormMovingAverage::Exponential{ema_factor: 0.01},
+    bnorm_mov_avg:  BNormMovingAverage::Exponential{ema_factor: 0.01},
     bnorm_epsilon:  1.0e-4,
     act_func:       ActivationFunction::Rect,
     //init_weights:   ParamsInit::Uniform{half_range: 0.05},
@@ -525,7 +525,7 @@ fn build_resnet10_arch() -> PipelineOperatorConfig {
   let proj_res_conv4_op_cfg = ProjStackResConv2dOperatorConfig{
     in_dims:        (28, 28, 256),
     out_dims:       (14, 14, 512),
-    bnorm_mov_avg:  BnormMovingAverage::Exponential{ema_factor: 0.01},
+    bnorm_mov_avg:  BNormMovingAverage::Exponential{ema_factor: 0.01},
     bnorm_epsilon:  1.0e-4,
     act_func:       ActivationFunction::Rect,
     //init_weights:   ParamsInit::Uniform{half_range: 0.05},
@@ -536,7 +536,7 @@ fn build_resnet10_arch() -> PipelineOperatorConfig {
   let proj_res_conv5_op_cfg = ProjStackResConv2dOperatorConfig{
     in_dims:        (14, 14, 512),
     out_dims:       (7, 7, 512),
-    bnorm_mov_avg:  BnormMovingAverage::Exponential{ema_factor: 0.01},
+    bnorm_mov_avg:  BNormMovingAverage::Exponential{ema_factor: 0.01},
     bnorm_epsilon:  1.0e-4,
     act_func:       ActivationFunction::Rect,
     //init_weights:   ParamsInit::Uniform{half_range: 0.05},
@@ -581,8 +581,153 @@ fn build_resnet10_arch() -> PipelineOperatorConfig {
 }
 
 fn build_resnet18_arch() -> PipelineOperatorConfig {
-  // FIXME(20160420)
-  unimplemented!();
+  let data_op_cfg = Data3dOperatorConfig{
+    in_dims:        (256, 256, 3),
+    normalize:      true,
+    preprocs:       vec![
+      Data3dPreproc::SubtractElemwiseMean{
+        mean_path:  PathBuf::from("imagenet_mean_256x256x3.ndarray"),
+      },
+      Data3dPreproc::FlipX,
+      Data3dPreproc::Crop{
+        crop_width:     224,
+        crop_height:    224,
+      },
+    ],
+  };
+  let bnorm_conv1_op_cfg = BNormConv2dOperatorConfig{
+    in_dims:        (224, 224, 3),
+    conv_size:      7,
+    conv_stride:    2,
+    conv_pad:       3,
+    out_channels:   64,
+    bnorm_mov_avg:  BNormMovingAverage::Exponential{ema_factor: 0.01},
+    bnorm_epsilon:  1.0e-4,
+    act_func:       ActivationFunction::Rect,
+    //init_weights:   ParamsInit::Uniform{half_range: 0.05},
+    init_weights:   ParamsInit::KaimingFwd,
+    fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
+    bwd_backend:    Conv2dBwdBackend::CudnnFastest,
+  };
+  let pool1_op_cfg = Pool2dOperatorConfig{
+    in_dims:        (112, 112, 64),
+    pool_size:      2,
+    pool_stride:    2,
+    pool_pad:       0,
+    pool_op:        PoolOperation::Max,
+    act_func:       ActivationFunction::Identity,
+  };
+  let res_conv2_op_cfg = StackResConv2dOperatorConfig{
+    in_dims:        (56, 56, 64),
+    bnorm_mov_avg:  BNormMovingAverage::Exponential{ema_factor: 0.01},
+    bnorm_epsilon:  1.0e-4,
+    act_func:       ActivationFunction::Rect,
+    //init_weights:   ParamsInit::Uniform{half_range: 0.05},
+    init_weights:   ParamsInit::KaimingFwd,
+    fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
+    bwd_backend:    Conv2dBwdBackend::CudnnFastest,
+  };
+  let proj_res_conv3_op_cfg = ProjStackResConv2dOperatorConfig{
+    in_dims:        (56, 56, 64),
+    out_dims:       (28, 28, 128),
+    bnorm_mov_avg:  BNormMovingAverage::Exponential{ema_factor: 0.01},
+    bnorm_epsilon:  1.0e-4,
+    act_func:       ActivationFunction::Rect,
+    //init_weights:   ParamsInit::Uniform{half_range: 0.05},
+    init_weights:   ParamsInit::KaimingFwd,
+    fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
+    bwd_backend:    Conv2dBwdBackend::CudnnFastest,
+  };
+  let res_conv3_op_cfg = StackResConv2dOperatorConfig{
+    in_dims:        (28, 28, 128),
+    bnorm_mov_avg:  BNormMovingAverage::Exponential{ema_factor: 0.01},
+    bnorm_epsilon:  1.0e-4,
+    act_func:       ActivationFunction::Rect,
+    //init_weights:   ParamsInit::Uniform{half_range: 0.05},
+    init_weights:   ParamsInit::KaimingFwd,
+    fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
+    bwd_backend:    Conv2dBwdBackend::CudnnFastest,
+  };
+  let proj_res_conv4_op_cfg = ProjStackResConv2dOperatorConfig{
+    in_dims:        (28, 28, 128),
+    out_dims:       (14, 14, 256),
+    bnorm_mov_avg:  BNormMovingAverage::Exponential{ema_factor: 0.01},
+    bnorm_epsilon:  1.0e-4,
+    act_func:       ActivationFunction::Rect,
+    //init_weights:   ParamsInit::Uniform{half_range: 0.05},
+    init_weights:   ParamsInit::KaimingFwd,
+    fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
+    bwd_backend:    Conv2dBwdBackend::CudnnFastest,
+  };
+  let res_conv4_op_cfg = StackResConv2dOperatorConfig{
+    in_dims:        (14, 14, 256),
+    bnorm_mov_avg:  BNormMovingAverage::Exponential{ema_factor: 0.01},
+    bnorm_epsilon:  1.0e-4,
+    act_func:       ActivationFunction::Rect,
+    //init_weights:   ParamsInit::Uniform{half_range: 0.05},
+    init_weights:   ParamsInit::KaimingFwd,
+    fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
+    bwd_backend:    Conv2dBwdBackend::CudnnFastest,
+  };
+  let proj_res_conv5_op_cfg = ProjStackResConv2dOperatorConfig{
+    in_dims:        (14, 14, 256),
+    out_dims:       (7, 7, 512),
+    bnorm_mov_avg:  BNormMovingAverage::Exponential{ema_factor: 0.01},
+    bnorm_epsilon:  1.0e-4,
+    act_func:       ActivationFunction::Rect,
+    //init_weights:   ParamsInit::Uniform{half_range: 0.05},
+    init_weights:   ParamsInit::KaimingFwd,
+    fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
+    bwd_backend:    Conv2dBwdBackend::CudnnFastest,
+  };
+  let res_conv5_op_cfg = StackResConv2dOperatorConfig{
+    in_dims:        (7, 7, 512),
+    bnorm_mov_avg:  BNormMovingAverage::Exponential{ema_factor: 0.01},
+    bnorm_epsilon:  1.0e-4,
+    act_func:       ActivationFunction::Rect,
+    //init_weights:   ParamsInit::Uniform{half_range: 0.05},
+    init_weights:   ParamsInit::KaimingFwd,
+    fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
+    bwd_backend:    Conv2dBwdBackend::CudnnFastest,
+  };
+  let global_pool_op_cfg = Pool2dOperatorConfig{
+    in_dims:        (7, 7, 512),
+    pool_size:      7,
+    pool_stride:    1,
+    pool_pad:       0,
+    pool_op:        PoolOperation::Average,
+    act_func:       ActivationFunction::Identity,
+  };
+  let aff1_op_cfg = AffineOperatorConfig{
+    in_channels:    512,
+    out_channels:   1000,
+    act_func:       ActivationFunction::Identity,
+    init_weights:   ParamsInit::Uniform{half_range: 0.05},
+    //init_weights:   ParamsInit::Normal{std: 0.05},
+    //init_weights:   ParamsInit::KaimingFwd,
+    backend:        AffineBackend::CublasGemm,
+  };
+  let loss_cfg = CategoricalLossConfig{
+    num_categories: 1000,
+  };
+
+  let mut worker_cfg = PipelineOperatorConfig::new();
+  worker_cfg
+    .data3d(data_op_cfg)
+    .bnorm_conv2d(bnorm_conv1_op_cfg)
+    .pool2d(pool1_op_cfg)
+    .stack_res_conv2d(res_conv2_op_cfg)
+    .stack_res_conv2d(res_conv2_op_cfg)
+    .proj_stack_res_conv2d(proj_res_conv3_op_cfg)
+    .stack_res_conv2d(res_conv3_op_cfg)
+    .proj_stack_res_conv2d(proj_res_conv4_op_cfg)
+    .stack_res_conv2d(res_conv4_op_cfg)
+    .proj_stack_res_conv2d(proj_res_conv5_op_cfg)
+    .stack_res_conv2d(res_conv5_op_cfg)
+    .pool2d(global_pool_op_cfg)
+    .affine(aff1_op_cfg)
+    .softmax_kl_loss(loss_cfg);
+  worker_cfg
 }
 
 fn build_resnet34_arch() -> PipelineOperatorConfig {
@@ -602,7 +747,7 @@ fn main() {
   let sgd_opt_cfg = SgdOptConfig{
     init_t:         None,
     minibatch_size: batch_size,
-    step_size:      StepSizeSchedule::Constant{step_size: 0.01},
+    step_size:      StepSizeSchedule::Constant{step_size: 0.1},
     //momentum:       MomentumStyle::Zero,
     momentum:       MomentumStyle::Sgd{momentum: 0.9},
     //momentum:       MomentumStyle::Nesterov{momentum: 0.9},
@@ -620,7 +765,8 @@ fn main() {
 
   //let worker_cfg = build_vgg_a_arch();
   //let worker_cfg = build_vgg_a_avgpool_arch();
-  let worker_cfg = build_resnet10_arch();
+  //let worker_cfg = build_resnet10_arch();
+  let worker_cfg = build_resnet18_arch();
 
   info!("operator: {:?}", worker_cfg);
 

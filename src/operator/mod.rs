@@ -1,6 +1,8 @@
 use data_new::{SampleLabel};
 use operator::comm::{CommWorker};
 use operator::conv::{
+  BNormConv2dOperatorConfig,
+  BNormConv2dOperator,
   StackResConv2dOperatorConfig,
   StackResConv2dOperator,
   ProjStackResConv2dOperatorConfig,
@@ -108,6 +110,7 @@ pub enum OperatorConfig {
   Data3d(Data3dOperatorConfig),
   Affine(AffineOperatorConfig),
   Conv2d(Conv2dOperatorConfig),
+  BNormConv2d(BNormConv2dOperatorConfig),
   StackResConv2d(StackResConv2dOperatorConfig),
   ProjStackResConv2d(ProjStackResConv2dOperatorConfig),
   Pool2d(Pool2dOperatorConfig),
@@ -142,6 +145,7 @@ impl OperatorConfig {
     match self {
       &OperatorConfig::Affine(ref cfg) => cfg.params_len(),
       &OperatorConfig::Conv2d(ref cfg) => cfg.params_len(),
+      &OperatorConfig::BNormConv2d(ref cfg) => cfg.params_len(),
       &OperatorConfig::StackResConv2d(ref cfg) => cfg.params_len(),
       &OperatorConfig::ProjStackResConv2d(ref cfg) => cfg.params_len(),
       _ => 0,
@@ -155,6 +159,9 @@ impl OperatorConfig {
       }
       &OperatorConfig::Conv2d(ref cfg) => {
         OperatorNode::Hidden(Box::new(Conv2dOperator::new(batch_size, capability, params_offset.unwrap(), *cfg, prev_op, comm_worker, context)))
+      }
+      &OperatorConfig::BNormConv2d(ref cfg) => {
+        OperatorNode::Hidden(Box::new(BNormConv2dOperator::new(batch_size, capability, params_offset.unwrap(), *cfg, prev_op, comm_worker, context)))
       }
       &OperatorConfig::StackResConv2d(ref cfg) => {
         OperatorNode::Hidden(Box::new(StackResConv2dOperator::new(batch_size, capability, params_offset.unwrap(), *cfg, prev_op, comm_worker, context)))
@@ -369,7 +376,7 @@ pub enum Data3dPreproc {
   SubtractElemwiseMean{
     mean_path:      PathBuf,
   },
-  XFlip,
+  FlipX,
 }
 
 #[derive(Clone, Debug)]
@@ -393,7 +400,7 @@ impl Data3dOperatorConfig {
         &Data3dPreproc::SubtractElemwiseMean{..} => {
           // Do nothing.
         }
-        &Data3dPreproc::XFlip => {
+        &Data3dPreproc::FlipX => {
           // Do nothing.
         }
       }
@@ -413,7 +420,7 @@ pub enum Data3dPreprocOperator {
     mean_arr_h: Array3d<f32>,
     mean_array: DeviceBuffer<f32>,
   },
-  XFlip{
+  FlipX{
     coin_flip:  Range<usize>,
   },
 }
@@ -487,8 +494,8 @@ impl Data3dOperator {
             mean_array: mean_array,
           });
         }
-        &Data3dPreproc::XFlip => {
-          preprocs.push(Data3dPreprocOperator::XFlip{
+        &Data3dPreproc::FlipX => {
+          preprocs.push(Data3dPreprocOperator::FlipX{
             coin_flip:  Range::new(0, 2),
           });
         }
@@ -604,8 +611,8 @@ impl Operator for Data3dOperator {
           ) }.unwrap();
         }
 
-        ( &Data3dPreproc::XFlip,
-          &mut Data3dPreprocOperator::XFlip{ref coin_flip},
+        ( &Data3dPreproc::FlipX,
+          &mut Data3dPreprocOperator::FlipX{ref coin_flip},
         ) => {
           match coin_flip.ind_sample(&mut self.rng) {
             0 => {

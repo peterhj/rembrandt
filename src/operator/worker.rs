@@ -11,6 +11,7 @@ use operator::{
 };
 use operator::comm::{CommWorkerBuilder, CommWorker};
 use operator::conv::{
+  BNormConv2dOperatorConfig,
   StackResConv2dOperatorConfig,
   ProjStackResConv2dOperatorConfig,
   BotResConv2dOperatorConfig,
@@ -155,6 +156,11 @@ impl PipelineOperatorConfig {
 
   pub fn conv2d(&mut self, cfg: Conv2dOperatorConfig) -> &mut Self  {
     self.hidden_ops.push(OperatorConfig::Conv2d(cfg));
+    self
+  }
+
+  pub fn bnorm_conv2d(&mut self, cfg: BNormConv2dOperatorConfig) -> &mut Self  {
+    self.hidden_ops.push(OperatorConfig::BNormConv2d(cfg));
     self
   }
 
