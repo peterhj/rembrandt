@@ -196,7 +196,7 @@ impl SyncSgdOpt {
           operator.input_operator().load_frames(batch_size);
           operator.loss_operator(0).load_labels(batch_size);
           operator.loss_operator(0).load_weights(batch_size);
-          operator.forward(batch_size, OpPhase::Training);
+          operator.forward(batch_size, OpPhase::Training{t: iter_counter});
           operator.loss_operator(0).store_output_categories(batch_size);
           operator.backward(batch_size);
           let local_correct_count = operator.loss_operator(0).accuracy_count(batch_size);

@@ -53,6 +53,8 @@ use std::rc::{Rc};
 use std::path::{PathBuf};
 use std::sync::{Arc, Barrier};
 
+const BNORM_EMA_FACTOR: f64 = 0.01;
+
 fn build_krizh26_arch() -> PipelineOperatorConfig {
   let data_op_cfg = Data3dOperatorConfig{
     in_dims:        (32, 32, 3),
@@ -274,7 +276,7 @@ fn build_krizh26_preproc_arch() -> PipelineOperatorConfig {
   worker_cfg
 }
 
-fn build_allconv_arch() -> PipelineOperatorConfig {
+/*fn build_allconv_arch() -> PipelineOperatorConfig {
   let data_op_cfg = Data3dOperatorConfig{
     in_dims:        (32, 32, 3),
     normalize:      true,
@@ -400,7 +402,7 @@ fn build_allconv_arch() -> PipelineOperatorConfig {
     .pool2d(pool5_op_cfg)
     .softmax_kl_loss(loss_cfg);
   worker_cfg
-}
+}*/
 
 fn build_resnet20_arch() -> PipelineOperatorConfig {
   let data_op_cfg = Data3dOperatorConfig{
@@ -434,7 +436,7 @@ fn build_resnet20_arch() -> PipelineOperatorConfig {
     conv_stride:    1,
     conv_pad:       1,
     out_channels:   16,
-    bnorm_mov_avg:  BNormMovingAverage::Exponential{ema_factor: 0.01},
+    bnorm_mov_avg:  BNormMovingAverage::Exponential{ema_factor: BNORM_EMA_FACTOR},
     bnorm_epsilon:  1.0e-4,
     act_func:       ActivationFunction::Rect,
     init_weights:   ParamsInit::KaimingFwd,
@@ -443,7 +445,7 @@ fn build_resnet20_arch() -> PipelineOperatorConfig {
   };
   let res_conv1_op_cfg = StackResConv2dOperatorConfig{
     in_dims:        (28, 28, 16),
-    bnorm_mov_avg:  BNormMovingAverage::Exponential{ema_factor: 0.01},
+    bnorm_mov_avg:  BNormMovingAverage::Exponential{ema_factor: BNORM_EMA_FACTOR},
     bnorm_epsilon:  1.0e-4,
     act_func:       ActivationFunction::Rect,
     init_weights:   ParamsInit::KaimingFwd,
@@ -453,7 +455,7 @@ fn build_resnet20_arch() -> PipelineOperatorConfig {
   let proj_res_conv2_op_cfg = ProjStackResConv2dOperatorConfig{
     in_dims:        (28, 28, 16),
     out_dims:       (14, 14, 32),
-    bnorm_mov_avg:  BNormMovingAverage::Exponential{ema_factor: 0.01},
+    bnorm_mov_avg:  BNormMovingAverage::Exponential{ema_factor: BNORM_EMA_FACTOR},
     bnorm_epsilon:  1.0e-4,
     act_func:       ActivationFunction::Rect,
     init_weights:   ParamsInit::KaimingFwd,
@@ -462,7 +464,7 @@ fn build_resnet20_arch() -> PipelineOperatorConfig {
   };
   let res_conv2_op_cfg = StackResConv2dOperatorConfig{
     in_dims:        (14, 14, 32),
-    bnorm_mov_avg:  BNormMovingAverage::Exponential{ema_factor: 0.01},
+    bnorm_mov_avg:  BNormMovingAverage::Exponential{ema_factor: BNORM_EMA_FACTOR},
     bnorm_epsilon:  1.0e-4,
     act_func:       ActivationFunction::Rect,
     init_weights:   ParamsInit::KaimingFwd,
@@ -472,7 +474,7 @@ fn build_resnet20_arch() -> PipelineOperatorConfig {
   let proj_res_conv3_op_cfg = ProjStackResConv2dOperatorConfig{
     in_dims:        (14, 14, 32),
     out_dims:       (7, 7, 64),
-    bnorm_mov_avg:  BNormMovingAverage::Exponential{ema_factor: 0.01},
+    bnorm_mov_avg:  BNormMovingAverage::Exponential{ema_factor: BNORM_EMA_FACTOR},
     bnorm_epsilon:  1.0e-4,
     act_func:       ActivationFunction::Rect,
     init_weights:   ParamsInit::KaimingFwd,
@@ -481,7 +483,7 @@ fn build_resnet20_arch() -> PipelineOperatorConfig {
   };
   let res_conv3_op_cfg = StackResConv2dOperatorConfig{
     in_dims:        (7, 7, 64),
-    bnorm_mov_avg:  BNormMovingAverage::Exponential{ema_factor: 0.01},
+    bnorm_mov_avg:  BNormMovingAverage::Exponential{ema_factor: BNORM_EMA_FACTOR},
     bnorm_epsilon:  1.0e-4,
     act_func:       ActivationFunction::Rect,
     init_weights:   ParamsInit::KaimingFwd,
@@ -500,8 +502,9 @@ fn build_resnet20_arch() -> PipelineOperatorConfig {
     in_channels:    64,
     out_channels:   10,
     act_func:       ActivationFunction::Identity,
-    init_weights:   ParamsInit::Uniform{half_range: 0.15},
+    //init_weights:   ParamsInit::Uniform{half_range: 0.15},
     //init_weights:   ParamsInit::Normal{std: 0.15},
+    init_weights:   ParamsInit::Xavier,
     backend:        AffineBackend::CublasGemm,
   };
   let loss_cfg = CategoricalLossConfig{
@@ -546,8 +549,8 @@ fn main() {
       step2: 0.001, step2_iters: 48000,
     },
     //momentum:       MomentumStyle::Zero,
-    momentum:       MomentumStyle::Sgd{momentum: 0.9},
-    //momentum:       MomentumStyle::Nesterov{momentum: 0.9},
+    //momentum:       MomentumStyle::Sgd{momentum: 0.9},
+    momentum:       MomentumStyle::Nesterov{momentum: 0.9},
     l2_reg_coef:    1.0e-4,
     display_iters:  50,
     valid_iters:    1000,
@@ -562,11 +565,15 @@ fn main() {
 
   // This works and gets 74% test accuracy as claimed.
   //let worker_cfg = build_krizh26_arch();
+
   // This also works and gets 76% test accuracy.
   //let worker_cfg = build_krizh26_preproc_arch();
+
   // This doesn't really work.
   //let worker_cfg = build_allconv_arch();
-  // ResNets.
+
+  // ResNets. This gets under 10% error (not quite 8.75% from the paper, but my
+  // training setup is a little different).
   let worker_cfg = build_resnet20_arch();
 
   info!("operator: {:?}", worker_cfg);

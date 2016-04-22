@@ -245,7 +245,7 @@ impl OpCapability {
 #[derive(Clone, Copy, Debug)]
 pub enum OpPhase {
   Inference,
-  Training,
+  Training{t: usize},
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -369,12 +369,20 @@ pub struct JoinOperator;
 
 #[derive(Clone, Debug)]
 pub enum Data3dPreproc {
+  AddPixelwiseGaussianNoise{
+    std_dev:    f32,
+  },
+  AddPixelwisePCAGaussianNoise{
+    sing_vectors_path:  PathBuf,
+    sing_values_path:   PathBuf,
+    std_dev:    f32,
+  },
   Crop{
     crop_width:     usize,
     crop_height:    usize,
   },
   SubtractElemwiseMean{
-    mean_path:      PathBuf,
+    mean_path:  PathBuf,
   },
   FlipX,
 }
@@ -391,6 +399,12 @@ impl Data3dOperatorConfig {
     let mut out_dims = self.in_dims;
     for preproc in self.preprocs.iter() {
       match preproc {
+        &Data3dPreproc::AddPixelwiseGaussianNoise{..} => {
+          // Do nothing.
+        }
+        &Data3dPreproc::AddPixelwisePCAGaussianNoise{..} => {
+          // Do nothing.
+        }
         &Data3dPreproc::Crop{crop_width, crop_height} => {
           assert!(crop_width <= out_dims.0);
           assert!(crop_height <= out_dims.1);
@@ -410,6 +424,8 @@ impl Data3dOperatorConfig {
 }
 
 pub enum Data3dPreprocOperator {
+  AddPixelwiseGaussianNoise,
+  AddPixelwisePCAGaussianNoise,
   Crop{
     transform:  CudnnTransformOp,
     woff_range: Range<usize>,
@@ -451,6 +467,14 @@ impl Data3dOperator {
     let mut preprocs = Vec::with_capacity(config.preprocs.len());
     for preproc_cfg in config.preprocs.iter() {
       match preproc_cfg {
+        &Data3dPreproc::AddPixelwiseGaussianNoise{..} => {
+          // FIXME(20160422)
+          unimplemented!();
+        }
+        &Data3dPreproc::AddPixelwisePCAGaussianNoise{..} => {
+          // FIXME(20160422)
+          unimplemented!();
+        }
         &Data3dPreproc::Crop{crop_width, crop_height} => {
           // FIXME(20160407): this formulation is only valid for a single
           // crop, as it references `in_dims`.
@@ -578,7 +602,7 @@ impl Operator for Data3dOperator {
               let offset_h = (in_height - crop_height) / 2;
               (offset_w, offset_h)
             }
-            OpPhase::Training => {
+            OpPhase::Training{..} => {
               let offset_w = woff_range.ind_sample(&mut self.rng);
               let offset_h = hoff_range.ind_sample(&mut self.rng);
               (offset_w, offset_h)
@@ -618,7 +642,7 @@ impl Operator for Data3dOperator {
             OpPhase::Inference => {
               src_buf.send(&mut target_buf);
             }
-            OpPhase::Training => {
+            OpPhase::Training{..} => {
               match coin_flip.ind_sample(&mut self.rng) {
                 0 => {
                   src_buf.send(&mut target_buf);
@@ -638,7 +662,7 @@ impl Operator for Data3dOperator {
           }
         }
 
-        _ => unreachable!(),
+        _ => unimplemented!(),
       }
     }
   }
@@ -833,8 +857,13 @@ impl<Comm> Operator for AffineOperator<Comm> where Comm: CommWorker {
         }
       }
       ParamsInit::Xavier => {
-        // FIXME(20160420)
-        unimplemented!();
+        let in_conns = self.config.in_channels;
+        let out_conns = self.config.out_channels;
+        let half_range = (6.0 / (in_conns + out_conns) as f64).sqrt();
+        let dist = Range::new(-half_range, half_range);
+        for w in init_weights.as_view_mut().as_mut_slice().iter_mut() {
+          *w = dist.ind_sample(&mut rng) as f32;
+        }
       }
       ParamsInit::KaimingFwd => {
         let in_conns = self.config.in_channels;
@@ -1861,7 +1890,7 @@ impl Operator for DropoutOperator {
         self.in_act.borrow_mut().as_ref(ctx)
           .send(&mut self.out_act.borrow_mut().as_ref_mut(ctx));
       }
-      OpPhase::Training => {
+      OpPhase::Training{..} => {
         self.rand_samples.as_ref_mut(ctx).sample(&self.uniform_dist);
         unsafe { rembrandt_kernel_map_dropout(
             self.in_act.borrow_mut().as_ref(ctx).as_ptr(),
