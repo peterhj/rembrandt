@@ -37,7 +37,7 @@ pub trait LossOperator: Operator {
   fn hv_load_hessian_weights(&mut self, _batch_size: usize) { unimplemented!(); }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct CategoricalLossConfig {
   pub num_categories:   usize,
 }

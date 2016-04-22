@@ -32,6 +32,7 @@ use rembrandt::operator::comm::{
   DeviceSyncGossipCommWorkerBuilder,
 };
 use rembrandt::operator::conv::{
+  BnormMovingAverage,
   StackResConv2dOperatorConfig,
   ProjStackResConv2dOperatorConfig,
 };
@@ -400,7 +401,7 @@ fn build_allconv_arch() -> PipelineOperatorConfig {
   worker_cfg
 }
 
-fn build_resnet20_arch() -> PipelineOperatorConfig {
+/*fn build_resnet20_arch() -> PipelineOperatorConfig {
   let data_op_cfg = Data3dOperatorConfig{
     in_dims:        (32, 32, 3),
     normalize:      true,
@@ -503,7 +504,7 @@ fn build_resnet20_arch() -> PipelineOperatorConfig {
     .softmax_kl_loss(loss_cfg);
 
   worker_cfg
-}
+}*/
 
 fn build_resnet20_preproc_arch() -> PipelineOperatorConfig {
   let data_op_cfg = Data3dOperatorConfig{
@@ -515,13 +516,13 @@ fn build_resnet20_preproc_arch() -> PipelineOperatorConfig {
       },
       Data3dPreproc::XFlip,
       Data3dPreproc::Crop{
-        crop_width:     24,
-        crop_height:    24,
+        crop_width:     28,
+        crop_height:    28,
       },
     ],
   };
   let conv1_op_cfg = Conv2dOperatorConfig{
-    in_dims:        (24, 24, 3),
+    in_dims:        (28, 28, 3),
     conv_size:      3,
     conv_stride:    1,
     conv_pad:       1,
@@ -532,45 +533,55 @@ fn build_resnet20_preproc_arch() -> PipelineOperatorConfig {
     bwd_backend:    Conv2dBwdBackend::CudnnFastest,
   };
   let res_conv1_op_cfg = StackResConv2dOperatorConfig{
-    in_dims:        (24, 24, 16),
+    in_dims:        (28, 28, 16),
+    bnorm_mov_avg:  BnormMovingAverage::Exponential{ema_factor: 0.01},
+    bnorm_epsilon:  1.0e-4,
     act_func:       ActivationFunction::Rect,
     init_weights:   ParamsInit::KaimingFwd,
     fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
     bwd_backend:    Conv2dBwdBackend::CudnnFastest,
   };
   let proj_res_conv2_op_cfg = ProjStackResConv2dOperatorConfig{
-    in_dims:        (24, 24, 16),
-    out_dims:       (12, 12, 32),
+    in_dims:        (28, 28, 16),
+    out_dims:       (14, 14, 32),
+    bnorm_mov_avg:  BnormMovingAverage::Exponential{ema_factor: 0.01},
+    bnorm_epsilon:  1.0e-4,
     act_func:       ActivationFunction::Rect,
     init_weights:   ParamsInit::KaimingFwd,
     fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
     bwd_backend:    Conv2dBwdBackend::CudnnFastest,
   };
   let res_conv2_op_cfg = StackResConv2dOperatorConfig{
-    in_dims:        (12, 12, 32),
+    in_dims:        (14, 14, 32),
+    bnorm_mov_avg:  BnormMovingAverage::Exponential{ema_factor: 0.01},
+    bnorm_epsilon:  1.0e-4,
     act_func:       ActivationFunction::Rect,
     init_weights:   ParamsInit::KaimingFwd,
     fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
     bwd_backend:    Conv2dBwdBackend::CudnnFastest,
   };
   let proj_res_conv3_op_cfg = ProjStackResConv2dOperatorConfig{
-    in_dims:        (12, 12, 32),
-    out_dims:       (6, 6, 64),
+    in_dims:        (14, 14, 32),
+    out_dims:       (7, 7, 64),
+    bnorm_mov_avg:  BnormMovingAverage::Exponential{ema_factor: 0.01},
+    bnorm_epsilon:  1.0e-4,
     act_func:       ActivationFunction::Rect,
     init_weights:   ParamsInit::KaimingFwd,
     fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
     bwd_backend:    Conv2dBwdBackend::CudnnFastest,
   };
   let res_conv3_op_cfg = StackResConv2dOperatorConfig{
-    in_dims:        (6, 6, 64),
+    in_dims:        (7, 7, 64),
+    bnorm_mov_avg:  BnormMovingAverage::Exponential{ema_factor: 0.01},
+    bnorm_epsilon:  1.0e-4,
     act_func:       ActivationFunction::Rect,
     init_weights:   ParamsInit::KaimingFwd,
     fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
     bwd_backend:    Conv2dBwdBackend::CudnnFastest,
   };
   let global_pool_op_cfg = Pool2dOperatorConfig{
-    in_dims:        (6, 6, 64),
-    pool_size:      6,
+    in_dims:        (7, 7, 64),
+    pool_size:      7,
     pool_stride:    1,
     pool_pad:       0,
     pool_op:        PoolOperation::Average,
@@ -627,8 +638,8 @@ fn main() {
       step2: 0.001, step2_iters: 48000,
     },
     //momentum:       MomentumStyle::Zero,
-    momentum:       MomentumStyle::Sgd{momentum: 0.9},
-    //momentum:       MomentumStyle::Nesterov{momentum: 0.9},
+    //momentum:       MomentumStyle::Sgd{momentum: 0.9},
+    momentum:       MomentumStyle::Nesterov{momentum: 0.9},
     l2_reg_coef:    1.0e-4,
     display_iters:  50,
     valid_iters:    1000,
@@ -643,12 +654,15 @@ fn main() {
 
   // This works and gets 74% test accuracy as claimed.
   //let worker_cfg = build_krizh26_arch();
+  // This also works and gets 76% test accuracy.
   //let worker_cfg = build_krizh26_preproc_arch();
   // This doesn't really work.
   //let worker_cfg = build_allconv_arch();
   // ResNets.
   //let worker_cfg = build_resnet20_arch();
   let worker_cfg = build_resnet20_preproc_arch();
+
+  info!("operator: {:?}", worker_cfg);
 
   // FIXME(20160331)
   let comm_worker_builder = DeviceSyncGossipCommWorkerBuilder::new(num_workers, 1, worker_cfg.params_len());

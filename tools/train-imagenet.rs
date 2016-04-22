@@ -32,6 +32,7 @@ use rembrandt::operator::comm::{
   DeviceSyncGossipCommWorkerBuilder,
 };
 use rembrandt::operator::conv::{
+  BnormMovingAverage,
   StackResConv2dOperatorConfig,
   ProjStackResConv2dOperatorConfig,
 };
@@ -468,14 +469,21 @@ fn build_resnet10_arch() -> PipelineOperatorConfig {
     in_dims:        (256, 256, 3),
     //in_dims:        (224, 224, 3),
     normalize:      true,
-    preprocs:       vec![],
+    preprocs:       vec![
+      Data3dPreproc::SubtractElemwiseMean{
+        mean_path:  PathBuf::from("imagenet_mean_256x256x3.ndarray"),
+      },
+      Data3dPreproc::XFlip,
+      Data3dPreproc::Crop{
+        crop_width:     224,
+        crop_height:    224,
+      },
+    ],
   };
   let conv1_op_cfg = Conv2dOperatorConfig{
-    in_dims:        (256, 256, 3),
-    //in_dims:        (224, 224, 3),
+    in_dims:        (224, 224, 3),
     conv_size:      3,
     conv_stride:    1,
-    //conv_stride:    2,
     conv_pad:       1,
     out_channels:   64,
     act_func:       ActivationFunction::Rect,
@@ -485,9 +493,7 @@ fn build_resnet10_arch() -> PipelineOperatorConfig {
     bwd_backend:    Conv2dBwdBackend::CudnnFastest,
   };
   let pool1_op_cfg = Pool2dOperatorConfig{
-    in_dims:        (256, 256, 64),
-    //in_dims:        (128, 128, 64),
-    //in_dims:        (112, 112, 64),
+    in_dims:        (112, 112, 64),
     pool_size:      2,
     pool_stride:    2,
     pool_pad:       0,
@@ -495,10 +501,10 @@ fn build_resnet10_arch() -> PipelineOperatorConfig {
     act_func:       ActivationFunction::Identity,
   };
   let proj_res_conv2_op_cfg = ProjStackResConv2dOperatorConfig{
-    in_dims:        (128, 128, 64),
-    //in_dims:        (56, 56, 64),
-    out_dims:       (64, 64, 128),
-    //out_dims:       (56, 56, 128),
+    in_dims:        (56, 56, 64),
+    out_dims:       (56, 56, 128),
+    bnorm_mov_avg:  BnormMovingAverage::Exponential{ema_factor: 0.01},
+    bnorm_epsilon:  1.0e-4,
     act_func:       ActivationFunction::Rect,
     //init_weights:   ParamsInit::Uniform{half_range: 0.05},
     init_weights:   ParamsInit::KaimingFwd,
@@ -506,10 +512,10 @@ fn build_resnet10_arch() -> PipelineOperatorConfig {
     bwd_backend:    Conv2dBwdBackend::CudnnFastest,
   };
   let proj_res_conv3_op_cfg = ProjStackResConv2dOperatorConfig{
-    in_dims:        (64, 64, 128),
-    //in_dims:        (56, 56, 64),
-    out_dims:       (32, 32, 256),
-    //out_dims:       (56, 56, 64),
+    in_dims:        (56, 56, 128),
+    out_dims:       (28, 28, 256),
+    bnorm_mov_avg:  BnormMovingAverage::Exponential{ema_factor: 0.01},
+    bnorm_epsilon:  1.0e-4,
     act_func:       ActivationFunction::Rect,
     //init_weights:   ParamsInit::Uniform{half_range: 0.05},
     init_weights:   ParamsInit::KaimingFwd,
@@ -517,10 +523,10 @@ fn build_resnet10_arch() -> PipelineOperatorConfig {
     bwd_backend:    Conv2dBwdBackend::CudnnFastest,
   };
   let proj_res_conv4_op_cfg = ProjStackResConv2dOperatorConfig{
-    in_dims:        (32, 32, 256),
-    //in_dims:        (56, 56, 64),
-    out_dims:       (16, 16, 512),
-    //out_dims:       (56, 56, 64),
+    in_dims:        (28, 28, 256),
+    out_dims:       (14, 14, 512),
+    bnorm_mov_avg:  BnormMovingAverage::Exponential{ema_factor: 0.01},
+    bnorm_epsilon:  1.0e-4,
     act_func:       ActivationFunction::Rect,
     //init_weights:   ParamsInit::Uniform{half_range: 0.05},
     init_weights:   ParamsInit::KaimingFwd,
@@ -528,10 +534,10 @@ fn build_resnet10_arch() -> PipelineOperatorConfig {
     bwd_backend:    Conv2dBwdBackend::CudnnFastest,
   };
   let proj_res_conv5_op_cfg = ProjStackResConv2dOperatorConfig{
-    in_dims:        (16, 16, 512),
-    //in_dims:        (7, 7, 512),
-    out_dims:       (8, 8, 512),
-    //out_dims:       (7, 7, 512),
+    in_dims:        (14, 14, 512),
+    out_dims:       (7, 7, 512),
+    bnorm_mov_avg:  BnormMovingAverage::Exponential{ema_factor: 0.01},
+    bnorm_epsilon:  1.0e-4,
     act_func:       ActivationFunction::Rect,
     //init_weights:   ParamsInit::Uniform{half_range: 0.05},
     init_weights:   ParamsInit::KaimingFwd,
@@ -539,9 +545,8 @@ fn build_resnet10_arch() -> PipelineOperatorConfig {
     bwd_backend:    Conv2dBwdBackend::CudnnFastest,
   };
   let global_pool_op_cfg = Pool2dOperatorConfig{
-    in_dims:        (8, 8, 512),
-    //in_dims:        (7, 7, 512),
-    pool_size:      8,
+    in_dims:        (7, 7, 512),
+    pool_size:      7,
     pool_stride:    1,
     pool_pad:       0,
     pool_op:        PoolOperation::Average,
@@ -580,12 +585,17 @@ fn build_resnet18_arch() -> PipelineOperatorConfig {
   unimplemented!();
 }
 
+fn build_resnet34_arch() -> PipelineOperatorConfig {
+  // FIXME(20160421)
+  unimplemented!();
+}
+
 fn main() {
   env_logger::init().unwrap();
 
   let num_workers = 1;
   //let num_workers = 4;
-  let batch_size = 32;
+  let batch_size = 64;
   info!("num workers: {} batch size: {}",
       num_workers, batch_size);
 
@@ -608,9 +618,11 @@ fn main() {
     num_categories: 1000,
   };
 
-  let worker_cfg = build_vgg_a_arch();
+  //let worker_cfg = build_vgg_a_arch();
   //let worker_cfg = build_vgg_a_avgpool_arch();
-  //let worker_cfg = build_resnet10_arch();
+  let worker_cfg = build_resnet10_arch();
+
+  info!("operator: {:?}", worker_cfg);
 
   // FIXME(20160331)
   let comm_worker_builder = DeviceSyncGossipCommWorkerBuilder::new(num_workers, 1, worker_cfg.params_len());

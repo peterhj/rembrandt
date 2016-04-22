@@ -49,9 +49,27 @@ use std::iter::{repeat};
 use std::marker::{PhantomData};
 use std::rc::{Rc};
 
+#[derive(Clone, Copy, Debug)]
 pub enum BnormMovingAverage {
   Cumulative,
   Exponential{ema_factor: f64},
+}
+
+impl BnormMovingAverage {
+  pub fn at_iter(&self, t: usize) -> f64 {
+    match self {
+      &BnormMovingAverage::Cumulative => {
+        1.0 / (1.0 + t as f64)
+      }
+      &BnormMovingAverage::Exponential{ema_factor} => {
+        if t == 0 {
+          1.0
+        } else {
+          ema_factor
+        }
+      }
+    }
+  }
 }
 
 pub struct BnormConv2dOperator<Comm> {
@@ -537,10 +555,12 @@ impl<Comm> Operator for BnormConv2dOperator<Comm> where Comm: CommWorker {
   }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct StackResConv2dOperatorConfig {
   pub in_dims:      (usize, usize, usize),
   //pub out_dims:     (usize, usize, usize),
+  pub bnorm_mov_avg:    BnormMovingAverage,
+  pub bnorm_epsilon:    f64,
   pub act_func:     ActivationFunction,
   pub init_weights: ParamsInit,
   pub fwd_backend:  Conv2dFwdBackend,
@@ -772,6 +792,12 @@ impl<Comm> StackResConv2dOperator<Comm> where Comm: CommWorker {
         CudnnTensorDesc::<f32>::create_4d(in_width, in_height, in_channels, batch_size).unwrap(),
     );
 
+    // XXX(20160421): Initialize gammas to all ones.
+    let mut bn_scale1 = DeviceArray2d::<f32>::zeros((1, in_channels), ctx);
+    bn_scale1.as_view_mut(ctx).set_constant(1.0);
+    let mut bn_scale2 = DeviceArray2d::<f32>::zeros((1, in_channels), ctx);
+    bn_scale2.as_view_mut(ctx).set_constant(1.0);
+
     StackResConv2dOperator{
       batch_cap:    batch_size,
       _capability:  capability,
@@ -798,7 +824,7 @@ impl<Comm> StackResConv2dOperator<Comm> where Comm: CommWorker {
       tmp2_pre_act:     DeviceBuffer::<f32>::zeros(out_length * batch_size, ctx),
       tmp2_pre_delta:   DeviceBuffer::<f32>::zeros(out_length * batch_size, ctx),
 
-      bn_scale1:        DeviceArray2d::<f32>::zeros((1, in_channels), ctx),
+      bn_scale1:        bn_scale1,
       bn_scale1_grad:  DeviceArray2d::<f32>::zeros((1, in_channels), ctx),
       acc_bn_scale1_grad:  DeviceArray2d::<f32>::zeros((1, in_channels), ctx),
       bn_bias1:         DeviceArray2d::<f32>::zeros((1, in_channels), ctx),
@@ -810,7 +836,7 @@ impl<Comm> StackResConv2dOperator<Comm> where Comm: CommWorker {
       bn_cached_ivar1:  DeviceArray2d::<f32>::zeros((1, in_channels), ctx),
       batchnorm1: batchnorm1,
 
-      bn_scale2:        DeviceArray2d::<f32>::zeros((1, in_channels), ctx),
+      bn_scale2:        bn_scale2,
       bn_scale2_grad:  DeviceArray2d::<f32>::zeros((1, in_channels), ctx),
       acc_bn_scale2_grad:  DeviceArray2d::<f32>::zeros((1, in_channels), ctx),
       bn_bias2:         DeviceArray2d::<f32>::zeros((1, in_channels), ctx),
@@ -997,14 +1023,13 @@ impl<Comm> Operator for StackResConv2dOperator<Comm> where Comm: CommWorker {
 
     match phase {
       OpPhase::Inference => {
-        let epsilon = 1.0e-4;
         self.batchnorm1.set_batch_size(batch_size).unwrap();
         unsafe { self.batchnorm1.forward_inference(
             1.0,
             tmp1_pre_act.as_ref(ctx).as_ptr(),
             0.0,
             tmp1_post_act.as_ref_mut(ctx).as_mut_ptr(),
-            epsilon,
+            self.config.bnorm_epsilon,
             self.bn_scale1.as_view(ctx).as_ptr(),
             self.bn_bias1.as_view(ctx).as_ptr(),
             self.bn_running_mean1.as_view(ctx).as_ptr(),
@@ -1024,7 +1049,6 @@ impl<Comm> Operator for StackResConv2dOperator<Comm> where Comm: CommWorker {
           }
           false => 0.01,
         };
-        let epsilon = 1.0e-4;
         self.batchnorm1.set_batch_size(batch_size).unwrap();
         unsafe { self.batchnorm1.forward_training(
             1.0,
@@ -1032,7 +1056,7 @@ impl<Comm> Operator for StackResConv2dOperator<Comm> where Comm: CommWorker {
             0.0,
             tmp1_post_act.as_ref_mut(ctx).as_mut_ptr(),
             ema_factor,
-            epsilon,
+            self.config.bnorm_epsilon,
             self.bn_scale1.as_view(ctx).as_ptr(),
             self.bn_bias1.as_view(ctx).as_ptr(),
             self.bn_running_mean1.as_view_mut(ctx).as_mut_ptr(),
@@ -1079,14 +1103,13 @@ impl<Comm> Operator for StackResConv2dOperator<Comm> where Comm: CommWorker {
 
     match phase {
       OpPhase::Inference => {
-        let epsilon = 1.0e-4;
         self.batchnorm2.set_batch_size(batch_size).unwrap();
         unsafe { self.batchnorm2.forward_inference(
             1.0,
             tmp2_pre_act.as_ref(ctx).as_ptr(),
             1.0,
             out_act.as_ref_mut(ctx).as_mut_ptr(),
-            epsilon,
+            self.config.bnorm_epsilon,
             self.bn_scale2.as_view(ctx).as_ptr(),
             self.bn_bias2.as_view(ctx).as_ptr(),
             self.bn_running_mean2.as_view(ctx).as_ptr(),
@@ -1106,7 +1129,6 @@ impl<Comm> Operator for StackResConv2dOperator<Comm> where Comm: CommWorker {
           }
           false => 0.01,
         };
-        let epsilon = 1.0e-4;
         self.batchnorm2.set_batch_size(batch_size).unwrap();
         unsafe { self.batchnorm2.forward_training(
             1.0,
@@ -1114,7 +1136,7 @@ impl<Comm> Operator for StackResConv2dOperator<Comm> where Comm: CommWorker {
             1.0,
             out_act.as_ref_mut(ctx).as_mut_ptr(),
             ema_factor,
-            epsilon,
+            self.config.bnorm_epsilon,
             self.bn_scale2.as_view(ctx).as_ptr(),
             self.bn_bias2.as_view(ctx).as_ptr(),
             self.bn_running_mean2.as_view_mut(ctx).as_mut_ptr(),
@@ -1132,10 +1154,6 @@ impl<Comm> Operator for StackResConv2dOperator<Comm> where Comm: CommWorker {
         out_act.as_ref_mut(ctx).as_mut_ptr(),
         &*ctx.get_dnn(),
     ).unwrap() };*/
-
-    /*out_act.as_ref_mut(ctx).row_vector_sum(
-        1.0, &in_act.borrow_mut().as_ref(ctx),
-    );*/
 
     match self.config.act_func {
       ActivationFunction::Identity => {}
@@ -1214,7 +1232,6 @@ impl<Comm> Operator for StackResConv2dOperator<Comm> where Comm: CommWorker {
     // FIXME(20160420): backward pass of residuals.
 
     {
-      let epsilon = 1.0e-4;
       self.batchnorm2.set_batch_size(batch_size).unwrap();
       unsafe { self.batchnorm2.backward(
           1.0, 0.0,
@@ -1222,7 +1239,7 @@ impl<Comm> Operator for StackResConv2dOperator<Comm> where Comm: CommWorker {
           out_delta.as_ptr(),
           tmp2_pre_delta.as_ref_mut(ctx).as_mut_ptr(),
           1.0, 1.0,
-          epsilon,
+          self.config.bnorm_epsilon,
           self.bn_scale2.as_view(ctx).as_ptr(),
           self.bn_scale2_grad.as_view_mut(ctx).as_mut_ptr(),
           self.bn_bias2_grad.as_view_mut(ctx).as_mut_ptr(),
@@ -1291,7 +1308,7 @@ impl<Comm> Operator for StackResConv2dOperator<Comm> where Comm: CommWorker {
           tmp1_post_delta.as_ref(ctx).as_ptr(),
           tmp1_pre_delta.as_ref_mut(ctx).as_mut_ptr(),
           1.0, 1.0,
-          epsilon,
+          self.config.bnorm_epsilon,
           self.bn_scale1.as_view(ctx).as_ptr(),
           self.bn_scale1_grad.as_view_mut(ctx).as_mut_ptr(),
           self.bn_bias1_grad.as_view_mut(ctx).as_mut_ptr(),
@@ -1479,18 +1496,22 @@ impl<Comm> Operator for StackResConv2dOperator<Comm> where Comm: CommWorker {
     assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
     let mut backward = self.backward.as_mut().unwrap();
+
     backward.grad_weights1.as_view_mut(ctx)
       .matrix_scale(0.0);
     backward.grad_bias1.as_view_mut(ctx)
       .row_vector_scale(0.0);
+
     self.bn_scale1_grad.as_view_mut(ctx)
       .row_vector_scale(0.0);
     self.bn_bias1_grad.as_view_mut(ctx)
       .row_vector_scale(0.0);
+
     backward.grad_weights2.as_view_mut(ctx)
       .matrix_scale(0.0);
     backward.grad_bias2.as_view_mut(ctx)
       .row_vector_scale(0.0);
+
     self.bn_scale2_grad.as_view_mut(ctx)
       .row_vector_scale(0.0);
     self.bn_bias2_grad.as_view_mut(ctx)
@@ -1498,10 +1519,12 @@ impl<Comm> Operator for StackResConv2dOperator<Comm> where Comm: CommWorker {
   }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct ProjStackResConv2dOperatorConfig {
   pub in_dims:      (usize, usize, usize),
   pub out_dims:     (usize, usize, usize),
+  pub bnorm_mov_avg:    BnormMovingAverage,
+  pub bnorm_epsilon:    f64,
   pub act_func:     ActivationFunction,
   pub init_weights: ParamsInit,
   pub fwd_backend:  Conv2dFwdBackend,
@@ -1544,8 +1567,16 @@ pub struct ProjStackResConv2dOperator<Comm> {
   weights3:     DeviceArray2d<f32>,
   bias3:        DeviceArray2d<f32>,
 
-  tmp_act:      DeviceBuffer<f32>,
-  tmp_delta:    DeviceBuffer<f32>,
+  /*tmp_act:      DeviceBuffer<f32>,
+  tmp_delta:    DeviceBuffer<f32>,*/
+  tmp1_pre_act:     DeviceBuffer<f32>,
+  tmp1_pre_delta:   DeviceBuffer<f32>,
+  tmp1_post_act:    DeviceBuffer<f32>,
+  tmp1_post_delta:  DeviceBuffer<f32>,
+  tmp2_pre_act:     DeviceBuffer<f32>,
+  tmp2_pre_delta:   DeviceBuffer<f32>,
+  tmp3_pre_act:     DeviceBuffer<f32>,
+  tmp3_pre_delta:   DeviceBuffer<f32>,
 
   workspace:    DeviceBuffer<u8>,
   conv1_fwd:    CudnnConvFwdOp,
@@ -1555,10 +1586,6 @@ pub struct ProjStackResConv2dOperator<Comm> {
   conv3_fwd:    CudnnConvFwdOp,
   add_bias3:    CudnnAddOp,
   //add_input:    CudnnAddOp,
-
-  //batchnorm1:   CudnnBatchNormOp,
-  //batchnorm2:   CudnnBatchNormOp,
-  //batchnorm3:   CudnnBatchNormOp,
 
   bn_scale1:            DeviceArray2d<f32>,
   bn_scale1_grad:       DeviceArray2d<f32>,
@@ -1608,7 +1635,7 @@ struct ProjStackResConv2dBwdOperator<Comm> {
   conv1_bwd_w:  CudnnConvBwdFilterOp,
   conv1_bwd_d:  CudnnConvBwdDataOp,
 
-  first_batch_1:    bool,
+  first_batch1:    bool,
 
   grad_weights2:      DeviceArray2d<f32>,
   grad_bias2:      DeviceArray2d<f32>,
@@ -1617,7 +1644,7 @@ struct ProjStackResConv2dBwdOperator<Comm> {
   conv2_bwd_w:  CudnnConvBwdFilterOp,
   conv2_bwd_d:  CudnnConvBwdDataOp,
 
-  first_batch_2:    bool,
+  first_batch2:    bool,
 
   grad_weights3:      DeviceArray2d<f32>,
   grad_bias3:      DeviceArray2d<f32>,
@@ -1626,7 +1653,7 @@ struct ProjStackResConv2dBwdOperator<Comm> {
   conv3_bwd_w:  CudnnConvBwdFilterOp,
   conv3_bwd_d:  CudnnConvBwdDataOp,
 
-  first_batch_3:    bool,
+  first_batch3:    bool,
 
   comm_worker:  Rc<RefCell<Comm>>,
 }
@@ -1641,9 +1668,6 @@ impl<Comm> ProjStackResConv2dOperator<Comm> where Comm: CommWorker {
     let out_length = out_dims.len();
 
     // FIXME(20160420): a hack, but should always be satisfied in usual archs.
-    /*assert_eq!(in_width, 2 * out_width);
-    assert_eq!(in_height, 2 * out_height);
-    let conv1_stride = 2;*/
     let conv1_stride = if in_width == out_width && in_height == out_height {
       1
     } else if in_width == 2 * out_width && in_height == 2 * out_height {
@@ -1778,10 +1802,12 @@ impl<Comm> ProjStackResConv2dOperator<Comm> where Comm: CommWorker {
         grad_bias1:         DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
         acc_grad_weights1:  DeviceArray2d::<f32>::zeros((3 * 3 * in_channels, out_channels), ctx),
         acc_grad_bias1:     DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
+
         grad_weights2:      DeviceArray2d::<f32>::zeros((3 * 3 * out_channels, out_channels), ctx),
         grad_bias2:         DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
         acc_grad_weights2:  DeviceArray2d::<f32>::zeros((3 * 3 * out_channels, out_channels), ctx),
         acc_grad_bias2:     DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
+
         grad_weights3:      DeviceArray2d::<f32>::zeros((1 * 1 * in_channels, out_channels), ctx),
         grad_bias3:         DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
         acc_grad_weights3:  DeviceArray2d::<f32>::zeros((1 * 1 * in_channels, out_channels), ctx),
@@ -1794,9 +1820,9 @@ impl<Comm> ProjStackResConv2dOperator<Comm> where Comm: CommWorker {
         conv3_bwd_w:   conv3_bwd_w,
         conv3_bwd_d:   conv3_bwd_d,
 
-        first_batch_1:  true,
-        first_batch_2:  true,
-        first_batch_3:  true,
+        first_batch1:  true,
+        first_batch2:  true,
+        first_batch3:  true,
 
         comm_worker:  comm_worker.unwrap(),
       })
@@ -1821,6 +1847,14 @@ impl<Comm> ProjStackResConv2dOperator<Comm> where Comm: CommWorker {
         CudnnTensorDesc::<f32>::create_4d(in_width, in_height, in_channels, batch_size).unwrap(),
     );*/
 
+    // XXX(20160421): Initialize gammas to all ones.
+    let mut bn_scale1 = DeviceArray2d::<f32>::zeros((1, out_channels), ctx);
+    bn_scale1.as_view_mut(ctx).set_constant(1.0);
+    let mut bn_scale2 = DeviceArray2d::<f32>::zeros((1, out_channels), ctx);
+    bn_scale2.as_view_mut(ctx).set_constant(1.0);
+    let mut bn_scale3 = DeviceArray2d::<f32>::zeros((1, out_channels), ctx);
+    bn_scale3.as_view_mut(ctx).set_constant(1.0);
+
     ProjStackResConv2dOperator{
       batch_cap:    batch_size,
       _capability:  capability,
@@ -1841,8 +1875,16 @@ impl<Comm> ProjStackResConv2dOperator<Comm> where Comm: CommWorker {
       weights3:     DeviceArray2d::<f32>::zeros((1 * 1 * in_channels, out_channels), ctx),
       bias3:        DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
 
-      tmp_act:      DeviceBuffer::<f32>::zeros(out_length * batch_size, ctx),
-      tmp_delta:    DeviceBuffer::<f32>::zeros(out_length * batch_size, ctx),
+      /*tmp_act:      DeviceBuffer::<f32>::zeros(out_length * batch_size, ctx),
+      tmp_delta:    DeviceBuffer::<f32>::zeros(out_length * batch_size, ctx),*/
+      tmp1_pre_act:     DeviceBuffer::<f32>::zeros(out_length * batch_size, ctx),
+      tmp1_pre_delta:   DeviceBuffer::<f32>::zeros(out_length * batch_size, ctx),
+      tmp1_post_act:    DeviceBuffer::<f32>::zeros(out_length * batch_size, ctx),
+      tmp1_post_delta:  DeviceBuffer::<f32>::zeros(out_length * batch_size, ctx),
+      tmp2_pre_act:     DeviceBuffer::<f32>::zeros(out_length * batch_size, ctx),
+      tmp2_pre_delta:   DeviceBuffer::<f32>::zeros(out_length * batch_size, ctx),
+      tmp3_pre_act:     DeviceBuffer::<f32>::zeros(out_length * batch_size, ctx),
+      tmp3_pre_delta:   DeviceBuffer::<f32>::zeros(out_length * batch_size, ctx),
 
       workspace:    DeviceBuffer::<u8>::zeros(workspace_size, ctx),
       conv1_fwd:    conv1_fwd,
@@ -1853,11 +1895,8 @@ impl<Comm> ProjStackResConv2dOperator<Comm> where Comm: CommWorker {
       add_bias3:    add_bias3,
       //add_input:    add_input,
 
-      /*batchnorm1:   batchnorm1,
-      batchnorm2:   batchnorm2,
-      batchnorm3:   batchnorm3,*/
-
-      bn_scale1:            DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
+      //bn_scale1:            DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
+      bn_scale1:            bn_scale1,
       bn_scale1_grad:       DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
       acc_bn_scale1_grad:   DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
       bn_bias1:             DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
@@ -1869,7 +1908,8 @@ impl<Comm> ProjStackResConv2dOperator<Comm> where Comm: CommWorker {
       bn_cached_ivar1:      DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
       batchnorm1:           batchnorm1,
 
-      bn_scale2:            DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
+      //bn_scale2:            DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
+      bn_scale2:            bn_scale2,
       bn_scale2_grad:       DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
       acc_bn_scale2_grad:   DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
       bn_bias2:             DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
@@ -1881,7 +1921,8 @@ impl<Comm> ProjStackResConv2dOperator<Comm> where Comm: CommWorker {
       bn_cached_ivar2:      DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
       batchnorm2:           batchnorm2,
 
-      bn_scale3:            DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
+      //bn_scale3:            DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
+      bn_scale3:            bn_scale3,
       bn_scale3_grad:       DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
       acc_bn_scale3_grad:   DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
       bn_bias3:             DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
@@ -2048,9 +2089,8 @@ impl<Comm> Operator for ProjStackResConv2dOperator<Comm> where Comm: CommWorker 
     save_bias3.serialize(blob).unwrap();
   }
 
-  fn forward(&mut self, batch_size: usize, _phase: OpPhase) {
+  fn forward(&mut self, batch_size: usize, phase: OpPhase) {
     assert!(batch_size <= self.batch_cap);
-    //let out_dims = self.config.get_out_dims();
     let out_dims = self.config.out_dims;
     //let (out_width, out_height, out_channels) = out_dims;
     let out_length = out_dims.len();
@@ -2060,10 +2100,14 @@ impl<Comm> Operator for ProjStackResConv2dOperator<Comm> where Comm: CommWorker 
     let &mut ProjStackResConv2dOperator{
       ref context,
       ref mut in_act, ref mut out_act,
-      ref mut tmp_act,
       ref mut weights1, ref mut bias1,
       ref mut weights2, ref mut bias2,
       ref mut weights3, ref mut bias3,
+      //ref mut tmp_act,
+      ref mut tmp1_pre_act,
+      ref mut tmp1_post_act,
+      ref mut tmp2_pre_act,
+      ref mut tmp3_pre_act,
       ref mut workspace,
       .. } = self;
 
@@ -2076,27 +2120,75 @@ impl<Comm> Operator for ProjStackResConv2dOperator<Comm> where Comm: CommWorker 
         in_act.borrow_mut().as_ref(ctx).as_ptr(),
         weights1.as_view(ctx).as_ptr(),
         0.0,
-        tmp_act.as_ref_mut(ctx).as_mut_ptr(),
+        tmp1_pre_act.as_ref_mut(ctx).as_mut_ptr(),
         workspace.as_ref_mut(ctx).as_mut_ptr(),
         &*ctx.get_dnn(),
     ) } {
       Ok(_) => {}
       Err(e) => { panic!("conv2d forward failed: {:?}", e); }
     }
-    self.add_bias1.set_batch_size(batch_size).unwrap();
+
+    /*self.add_bias1.set_batch_size(batch_size).unwrap();
     unsafe { self.add_bias1.forward(
         1.0,
         bias1.as_view(ctx).as_ptr(),
         1.0,
         tmp_act.as_ref_mut(ctx).as_mut_ptr(),
         &*ctx.get_dnn(),
-    ).unwrap() };
+    ).unwrap() };*/
+
+    match phase {
+      OpPhase::Inference => {
+        self.batchnorm1.set_batch_size(batch_size).unwrap();
+        unsafe { self.batchnorm1.forward_inference(
+            1.0,
+            tmp1_pre_act.as_ref(ctx).as_ptr(),
+            0.0,
+            tmp1_post_act.as_ref_mut(ctx).as_mut_ptr(),
+            self.config.bnorm_epsilon,
+            self.bn_scale1.as_view(ctx).as_ptr(),
+            self.bn_bias1.as_view(ctx).as_ptr(),
+            self.bn_running_mean1.as_view(ctx).as_ptr(),
+            self.bn_running_ivar1.as_view(ctx).as_ptr(),
+            &*ctx.get_dnn(),
+        ) }.unwrap();
+      }
+      OpPhase::Training => {
+        let mut backward = match self.backward.as_mut() {
+          Some(backward) => backward,
+          None => panic!("batch norm training missing backward operator"),
+        };
+        let ema_factor = match backward.first_batch1 {
+          true  => {
+            backward.first_batch1 = false;
+            1.0
+          }
+          false => 0.01,
+        };
+        self.batchnorm1.set_batch_size(batch_size).unwrap();
+        unsafe { self.batchnorm1.forward_training(
+            1.0,
+            tmp1_pre_act.as_ref(ctx).as_ptr(),
+            0.0,
+            tmp1_post_act.as_ref_mut(ctx).as_mut_ptr(),
+            ema_factor,
+            self.config.bnorm_epsilon,
+            self.bn_scale1.as_view(ctx).as_ptr(),
+            self.bn_bias1.as_view(ctx).as_ptr(),
+            self.bn_running_mean1.as_view_mut(ctx).as_mut_ptr(),
+            self.bn_running_ivar1.as_view_mut(ctx).as_mut_ptr(),
+            self.bn_cached_mean1.as_view_mut(ctx).as_mut_ptr(),
+            self.bn_cached_ivar1.as_view_mut(ctx).as_mut_ptr(),
+            &*ctx.get_dnn(),
+        ) }.unwrap();
+      }
+    }
 
     match self.config.act_func {
       ActivationFunction::Identity => {}
       ActivationFunction::Rect => {
         unsafe { rembrandt_kernel_batch_map_rect_inplace(
-            tmp_act.as_ref_mut(ctx).as_mut_ptr(),
+            tmp1_post_act.as_ref_mut(ctx).as_mut_ptr(),
             out_length as i32,
             batch_size as i32,
             ctx.stream.ptr,
@@ -2108,46 +2200,142 @@ impl<Comm> Operator for ProjStackResConv2dOperator<Comm> where Comm: CommWorker 
     self.conv2_fwd.set_batch_size(batch_size).unwrap();
     match unsafe { self.conv2_fwd.forward(
         1.0,
-        tmp_act.as_ref(ctx).as_ptr(),
+        tmp1_post_act.as_ref(ctx).as_ptr(),
         weights2.as_view(ctx).as_ptr(),
         0.0,
-        out_act.as_ref_mut(ctx).as_mut_ptr(),
+        tmp2_pre_act.as_ref_mut(ctx).as_mut_ptr(),
         workspace.as_ref_mut(ctx).as_mut_ptr(),
         &*ctx.get_dnn(),
     ) } {
       Ok(_) => {}
       Err(e) => { panic!("conv2d forward failed: {:?}", e); }
     }
-    self.add_bias2.set_batch_size(batch_size).unwrap();
+
+    /*self.add_bias2.set_batch_size(batch_size).unwrap();
     unsafe { self.add_bias2.forward(
         1.0,
         bias2.as_view(ctx).as_ptr(),
         1.0,
         out_act.as_ref_mut(ctx).as_mut_ptr(),
         &*ctx.get_dnn(),
-    ).unwrap() };
+    ).unwrap() };*/
+
+    match phase {
+      OpPhase::Inference => {
+        self.batchnorm2.set_batch_size(batch_size).unwrap();
+        unsafe { self.batchnorm2.forward_inference(
+            1.0,
+            tmp2_pre_act.as_ref(ctx).as_ptr(),
+            0.0,
+            out_act.as_ref_mut(ctx).as_mut_ptr(),
+            self.config.bnorm_epsilon,
+            self.bn_scale2.as_view(ctx).as_ptr(),
+            self.bn_bias2.as_view(ctx).as_ptr(),
+            self.bn_running_mean2.as_view(ctx).as_ptr(),
+            self.bn_running_ivar2.as_view(ctx).as_ptr(),
+            &*ctx.get_dnn(),
+        ) }.unwrap();
+      }
+      OpPhase::Training => {
+        let mut backward = match self.backward.as_mut() {
+          Some(backward) => backward,
+          None => panic!("batch norm training missing backward operator"),
+        };
+        let ema_factor = match backward.first_batch2 {
+          true  => {
+            backward.first_batch2 = false;
+            1.0
+          }
+          false => 0.01,
+        };
+        self.batchnorm2.set_batch_size(batch_size).unwrap();
+        unsafe { self.batchnorm2.forward_training(
+            1.0,
+            tmp2_pre_act.as_ref(ctx).as_ptr(),
+            0.0,
+            out_act.as_ref_mut(ctx).as_mut_ptr(),
+            ema_factor,
+            self.config.bnorm_epsilon,
+            self.bn_scale2.as_view(ctx).as_ptr(),
+            self.bn_bias2.as_view(ctx).as_ptr(),
+            self.bn_running_mean2.as_view_mut(ctx).as_mut_ptr(),
+            self.bn_running_ivar2.as_view_mut(ctx).as_mut_ptr(),
+            self.bn_cached_mean2.as_view_mut(ctx).as_mut_ptr(),
+            self.bn_cached_ivar2.as_view_mut(ctx).as_mut_ptr(),
+            &*ctx.get_dnn(),
+        ) }.unwrap();
+      }
+    }
 
     self.conv3_fwd.set_batch_size(batch_size).unwrap();
     match unsafe { self.conv3_fwd.forward(
         1.0,
         in_act.borrow_mut().as_ref(ctx).as_ptr(),
         weights3.as_view(ctx).as_ptr(),
-        1.0,
-        out_act.as_ref_mut(ctx).as_mut_ptr(),
+        0.0,
+        tmp3_pre_act.as_ref_mut(ctx).as_mut_ptr(),
         workspace.as_ref_mut(ctx).as_mut_ptr(),
         &*ctx.get_dnn(),
     ) } {
       Ok(_) => {}
       Err(e) => { panic!("conv2d forward failed: {:?}", e); }
     }
-    self.add_bias3.set_batch_size(batch_size).unwrap();
+
+    /*self.add_bias3.set_batch_size(batch_size).unwrap();
     unsafe { self.add_bias3.forward(
         1.0,
         bias3.as_view(ctx).as_ptr(),
         1.0,
         out_act.as_ref_mut(ctx).as_mut_ptr(),
         &*ctx.get_dnn(),
-    ).unwrap() };
+    ).unwrap() };*/
+
+    match phase {
+      OpPhase::Inference => {
+        self.batchnorm3.set_batch_size(batch_size).unwrap();
+        unsafe { self.batchnorm3.forward_inference(
+            1.0,
+            tmp3_pre_act.as_ref(ctx).as_ptr(),
+            1.0,
+            out_act.as_ref_mut(ctx).as_mut_ptr(),
+            self.config.bnorm_epsilon,
+            self.bn_scale3.as_view(ctx).as_ptr(),
+            self.bn_bias3.as_view(ctx).as_ptr(),
+            self.bn_running_mean3.as_view(ctx).as_ptr(),
+            self.bn_running_ivar3.as_view(ctx).as_ptr(),
+            &*ctx.get_dnn(),
+        ) }.unwrap();
+      }
+      OpPhase::Training => {
+        let mut backward = match self.backward.as_mut() {
+          Some(backward) => backward,
+          None => panic!("batch norm training missing backward operator"),
+        };
+        let ema_factor = match backward.first_batch3 {
+          true  => {
+            backward.first_batch3 = false;
+            1.0
+          }
+          false => 0.01,
+        };
+        self.batchnorm3.set_batch_size(batch_size).unwrap();
+        unsafe { self.batchnorm3.forward_training(
+            1.0,
+            tmp3_pre_act.as_ref(ctx).as_ptr(),
+            1.0,
+            out_act.as_ref_mut(ctx).as_mut_ptr(),
+            ema_factor,
+            self.config.bnorm_epsilon,
+            self.bn_scale3.as_view(ctx).as_ptr(),
+            self.bn_bias3.as_view(ctx).as_ptr(),
+            self.bn_running_mean3.as_view_mut(ctx).as_mut_ptr(),
+            self.bn_running_ivar3.as_view_mut(ctx).as_mut_ptr(),
+            self.bn_cached_mean3.as_view_mut(ctx).as_mut_ptr(),
+            self.bn_cached_ivar3.as_view_mut(ctx).as_mut_ptr(),
+            &*ctx.get_dnn(),
+        ) }.unwrap();
+      }
+    }
 
     match self.config.act_func {
       ActivationFunction::Identity => {}
@@ -2166,12 +2354,6 @@ impl<Comm> Operator for ProjStackResConv2dOperator<Comm> where Comm: CommWorker 
   fn backward(&mut self, batch_size: usize) {
     assert!(self.backward.is_some());
     assert!(batch_size <= self.batch_cap);
-    /*let BotResConv2dOperatorConfig{
-      in_dims, conv_size, conv_stride, conv_pad,
-      .. } = self.config;*/
-    //let (in_width, in_height, in_channels) = in_dims;
-    //let in_length = in_dims.len();
-    //let out_dims = self.config.get_out_dims();
     let out_dims = self.config.out_dims;
     //let (out_width, out_height, out_channels) = out_dims;
     let out_length = out_dims.len();
@@ -2187,7 +2369,14 @@ impl<Comm> Operator for ProjStackResConv2dOperator<Comm> where Comm: CommWorker 
       ref mut weights1, //ref mut bias,
       ref mut weights2, //ref mut bias,
       ref mut weights3, //ref mut bias,
-      ref mut tmp_act, ref mut tmp_delta,
+      ref mut tmp1_pre_act,
+      ref mut tmp1_pre_delta,
+      ref mut tmp1_post_act,
+      ref mut tmp1_post_delta,
+      ref mut tmp2_pre_act,
+      ref mut tmp2_pre_delta,
+      ref mut tmp3_pre_act,
+      ref mut tmp3_pre_delta,
       ref mut workspace,
       ref mut backward,
       .. } = self;
@@ -2200,7 +2389,7 @@ impl<Comm> Operator for ProjStackResConv2dOperator<Comm> where Comm: CommWorker 
 
     let ctx = &(**context).as_ref();
     let in_act = in_act.borrow_mut().as_ref(ctx);
-    let tmp_act = tmp_act.as_ref(ctx);
+    //let tmp_act = tmp_act.as_ref(ctx);
     let out_act = out_act.borrow_mut().as_ref(ctx);
     let mut workspace = workspace.as_ref_mut(ctx);
 
@@ -2226,56 +2415,53 @@ impl<Comm> Operator for ProjStackResConv2dOperator<Comm> where Comm: CommWorker 
     // FIXME(20160420): backward pass of residuals.
 
     {
-      backward.conv3_bwd_w.set_batch_size(batch_size).unwrap();
-      unsafe { backward.conv3_bwd_w.backward_filter(
-          1.0,
-          in_act.as_ptr(),
+      self.batchnorm2.set_batch_size(batch_size).unwrap();
+      unsafe { self.batchnorm2.backward(
+          1.0, 0.0,
+          tmp2_pre_act.as_ref(ctx).as_ptr(),
           out_delta.as_ptr(),
-          1.0,
-          grad_weights3.as_view_mut(ctx).as_mut_ptr(),
-          workspace.as_mut_ptr(),
+          tmp2_pre_delta.as_ref_mut(ctx).as_mut_ptr(),
+          1.0, 1.0,
+          self.config.bnorm_epsilon,
+          self.bn_scale2.as_view(ctx).as_ptr(),
+          self.bn_scale2_grad.as_view_mut(ctx).as_mut_ptr(),
+          self.bn_bias2_grad.as_view_mut(ctx).as_mut_ptr(),
+          self.bn_cached_mean2.as_view(ctx).as_ptr(),
+          self.bn_cached_ivar2.as_view(ctx).as_ptr(),
           &*ctx.get_dnn(),
-      ).unwrap() };
-      unsafe { backward.conv3_bwd_w.backward_bias(
-          1.0,
-          out_delta.as_ptr(),
-          1.0,
-          grad_bias3.as_view_mut(ctx).as_mut_ptr(),
-          &*ctx.get_dnn(),
-      ).unwrap() };
+      ) }.unwrap();
     }
 
     {
-      let tmp_delta = tmp_delta.as_ref(ctx);
       backward.conv2_bwd_w.set_batch_size(batch_size).unwrap();
       unsafe { backward.conv2_bwd_w.backward_filter(
           1.0,
-          tmp_act.as_ptr(),
-          out_delta.as_ptr(),
+          tmp1_post_act.as_ref(ctx).as_ptr(),
+          tmp2_pre_delta.as_ref(ctx).as_ptr(),
           1.0,
           grad_weights2.as_view_mut(ctx).as_mut_ptr(),
           workspace.as_mut_ptr(),
           &*ctx.get_dnn(),
       ).unwrap() };
-      unsafe { backward.conv2_bwd_w.backward_bias(
+      /*unsafe { backward.conv2_bwd_w.backward_bias(
           1.0,
           out_delta.as_ptr(),
           1.0,
           grad_bias2.as_view_mut(ctx).as_mut_ptr(),
           &*ctx.get_dnn(),
-      ).unwrap() };
+      ).unwrap() };*/
     }
 
     {
-      let mut tmp_delta = tmp_delta.as_ref_mut(ctx);
+      let mut tmp1_post_delta = tmp1_post_delta.as_ref_mut(ctx);
 
       backward.conv2_bwd_d.set_batch_size(batch_size).unwrap();
       unsafe { backward.conv2_bwd_d.backward_data(
           1.0,
           weights2.as_view(ctx).as_ptr(),
-          out_delta.as_ptr(),
+          tmp2_pre_delta.as_ref(ctx).as_ptr(),
           0.0,
-          tmp_delta.as_mut_ptr(),
+          tmp1_post_delta.as_mut_ptr(),
           workspace.as_mut_ptr(),
           &*ctx.get_dnn(),
       ).unwrap() };
@@ -2284,10 +2470,10 @@ impl<Comm> Operator for ProjStackResConv2dOperator<Comm> where Comm: CommWorker 
         ActivationFunction::Identity => {}
         ActivationFunction::Rect => {
           unsafe { rembrandt_kernel_batch_map_rect_backprop_inplace(
-              tmp_act.as_ptr(),
+              tmp1_post_act.as_ref(ctx).as_ptr(),
               out_length as i32,
               batch_size as i32,
-              tmp_delta.as_mut_ptr(),
+              tmp1_post_delta.as_mut_ptr(),
               ctx.stream.ptr,
           ) };
         }
@@ -2296,46 +2482,102 @@ impl<Comm> Operator for ProjStackResConv2dOperator<Comm> where Comm: CommWorker 
     }
 
     {
-      let tmp_delta = tmp_delta.as_ref(ctx);
+      self.batchnorm1.set_batch_size(batch_size).unwrap();
+      unsafe { self.batchnorm1.backward(
+          1.0, 0.0,
+          tmp1_pre_act.as_ref(ctx).as_ptr(),
+          tmp1_post_delta.as_ref(ctx).as_ptr(),
+          tmp1_pre_delta.as_ref_mut(ctx).as_mut_ptr(),
+          1.0, 1.0,
+          self.config.bnorm_epsilon,
+          self.bn_scale1.as_view(ctx).as_ptr(),
+          self.bn_scale1_grad.as_view_mut(ctx).as_mut_ptr(),
+          self.bn_bias1_grad.as_view_mut(ctx).as_mut_ptr(),
+          self.bn_cached_mean1.as_view(ctx).as_ptr(),
+          self.bn_cached_ivar1.as_view(ctx).as_ptr(),
+          &*ctx.get_dnn(),
+      ) }.unwrap();
+    }
+
+    {
+      //let tmp_delta = tmp_delta.as_ref(ctx);
       backward.conv1_bwd_w.set_batch_size(batch_size).unwrap();
       unsafe { backward.conv1_bwd_w.backward_filter(
           1.0,
           in_act.as_ptr(),
-          tmp_delta.as_ptr(),
+          tmp1_pre_delta.as_ref(ctx).as_ptr(),
           1.0,
           grad_weights1.as_view_mut(ctx).as_mut_ptr(),
           workspace.as_mut_ptr(),
           &*ctx.get_dnn(),
       ).unwrap() };
-      unsafe { backward.conv1_bwd_w.backward_bias(
+      /*unsafe { backward.conv1_bwd_w.backward_bias(
           1.0,
           tmp_delta.as_ptr(),
           1.0,
           grad_bias1.as_view_mut(ctx).as_mut_ptr(),
           &*ctx.get_dnn(),
+      ).unwrap() };*/
+    }
+
+    {
+      self.batchnorm3.set_batch_size(batch_size).unwrap();
+      unsafe { self.batchnorm3.backward(
+          1.0, 0.0,
+          tmp3_pre_act.as_ref(ctx).as_ptr(),
+          out_delta.as_ptr(),
+          tmp3_pre_delta.as_ref_mut(ctx).as_mut_ptr(),
+          1.0, 1.0,
+          self.config.bnorm_epsilon,
+          self.bn_scale3.as_view(ctx).as_ptr(),
+          self.bn_scale3_grad.as_view_mut(ctx).as_mut_ptr(),
+          self.bn_bias3_grad.as_view_mut(ctx).as_mut_ptr(),
+          self.bn_cached_mean3.as_view(ctx).as_ptr(),
+          self.bn_cached_ivar3.as_view(ctx).as_ptr(),
+          &*ctx.get_dnn(),
+      ) }.unwrap();
+    }
+
+    {
+      backward.conv3_bwd_w.set_batch_size(batch_size).unwrap();
+      unsafe { backward.conv3_bwd_w.backward_filter(
+          1.0,
+          in_act.as_ptr(),
+          tmp3_pre_delta.as_ref(ctx).as_ptr(),
+          1.0,
+          grad_weights3.as_view_mut(ctx).as_mut_ptr(),
+          workspace.as_mut_ptr(),
+          &*ctx.get_dnn(),
       ).unwrap() };
+      /*unsafe { backward.conv3_bwd_w.backward_bias(
+          1.0,
+          out_delta.as_ptr(),
+          1.0,
+          grad_bias3.as_view_mut(ctx).as_mut_ptr(),
+          &*ctx.get_dnn(),
+      ).unwrap() };*/
     }
 
     if let &mut Some(ref mut in_delta) = in_delta {
-      let tmp_delta = tmp_delta.as_ref(ctx);
+      //let tmp_delta = tmp_delta.as_ref(ctx);
       let mut in_delta = in_delta.borrow_mut().as_ref_mut(ctx);
 
-      backward.conv3_bwd_d.set_batch_size(batch_size).unwrap();
-      unsafe { backward.conv3_bwd_d.backward_data(
+      backward.conv1_bwd_d.set_batch_size(batch_size).unwrap();
+      unsafe { backward.conv1_bwd_d.backward_data(
           1.0,
-          weights3.as_view(ctx).as_ptr(),
-          out_delta.as_ptr(),
+          weights1.as_view(ctx).as_ptr(),
+          tmp1_pre_delta.as_ref(ctx).as_ptr(),
           0.0,
           in_delta.as_mut_ptr(),
           workspace.as_mut_ptr(),
           &*ctx.get_dnn(),
       ).unwrap() };
 
-      backward.conv1_bwd_d.set_batch_size(batch_size).unwrap();
-      unsafe { backward.conv1_bwd_d.backward_data(
+      backward.conv3_bwd_d.set_batch_size(batch_size).unwrap();
+      unsafe { backward.conv3_bwd_d.backward_data(
           1.0,
-          weights1.as_view(ctx).as_ptr(),
-          tmp_delta.as_ptr(),
+          weights3.as_view(ctx).as_ptr(),
+          tmp3_pre_delta.as_ref(ctx).as_ptr(),
           1.0,
           in_delta.as_mut_ptr(),
           workspace.as_mut_ptr(),
@@ -2364,6 +2606,7 @@ impl<Comm> Operator for ProjStackResConv2dOperator<Comm> where Comm: CommWorker 
             .matrix_sum(l2_reg_coef, &self.weights3.as_view(ctx));
           backward.grad_bias3.as_view_mut(ctx)
             .row_vector_sum(l2_reg_coef, &self.bias3.as_view(ctx));
+          // XXX(20160421): Do not regularize the batch norm params!
         }
       }
     }
@@ -2373,6 +2616,7 @@ impl<Comm> Operator for ProjStackResConv2dOperator<Comm> where Comm: CommWorker 
     assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
     let mut backward = self.backward.as_mut().unwrap();
+
     backward.acc_grad_weights1.as_view_mut(ctx)
       .matrix_scale(momentum);
     backward.acc_grad_bias1.as_view_mut(ctx)
@@ -2381,6 +2625,16 @@ impl<Comm> Operator for ProjStackResConv2dOperator<Comm> where Comm: CommWorker 
       .matrix_sum(scale, &backward.grad_weights1.as_view(ctx));
     backward.acc_grad_bias1.as_view_mut(ctx)
       .row_vector_sum(scale, &backward.grad_bias1.as_view(ctx));
+
+    self.acc_bn_scale1_grad.as_view_mut(ctx)
+      .row_vector_scale(momentum);
+    self.acc_bn_scale1_grad.as_view_mut(ctx)
+      .row_vector_sum(scale, &self.bn_scale1_grad.as_view(ctx));
+    self.acc_bn_bias1_grad.as_view_mut(ctx)
+      .row_vector_scale(momentum);
+    self.acc_bn_bias1_grad.as_view_mut(ctx)
+      .row_vector_sum(scale, &self.bn_bias1_grad.as_view(ctx));
+
     backward.acc_grad_weights2.as_view_mut(ctx)
       .matrix_scale(momentum);
     backward.acc_grad_bias2.as_view_mut(ctx)
@@ -2389,6 +2643,16 @@ impl<Comm> Operator for ProjStackResConv2dOperator<Comm> where Comm: CommWorker 
       .matrix_sum(scale, &backward.grad_weights2.as_view(ctx));
     backward.acc_grad_bias2.as_view_mut(ctx)
       .row_vector_sum(scale, &backward.grad_bias2.as_view(ctx));
+
+    self.acc_bn_scale2_grad.as_view_mut(ctx)
+      .row_vector_scale(momentum);
+    self.acc_bn_scale2_grad.as_view_mut(ctx)
+      .row_vector_sum(scale, &self.bn_scale2_grad.as_view(ctx));
+    self.acc_bn_bias2_grad.as_view_mut(ctx)
+      .row_vector_scale(momentum);
+    self.acc_bn_bias2_grad.as_view_mut(ctx)
+      .row_vector_sum(scale, &self.bn_bias2_grad.as_view(ctx));
+
     backward.acc_grad_weights3.as_view_mut(ctx)
       .matrix_scale(momentum);
     backward.acc_grad_bias3.as_view_mut(ctx)
@@ -2397,24 +2661,51 @@ impl<Comm> Operator for ProjStackResConv2dOperator<Comm> where Comm: CommWorker 
       .matrix_sum(scale, &backward.grad_weights3.as_view(ctx));
     backward.acc_grad_bias3.as_view_mut(ctx)
       .row_vector_sum(scale, &backward.grad_bias3.as_view(ctx));
+
+    self.acc_bn_scale3_grad.as_view_mut(ctx)
+      .row_vector_scale(momentum);
+    self.acc_bn_scale3_grad.as_view_mut(ctx)
+      .row_vector_sum(scale, &self.bn_scale3_grad.as_view(ctx));
+    self.acc_bn_bias3_grad.as_view_mut(ctx)
+      .row_vector_scale(momentum);
+    self.acc_bn_bias3_grad.as_view_mut(ctx)
+      .row_vector_sum(scale, &self.bn_bias3_grad.as_view(ctx));
   }
 
   fn update_params(&mut self, scale: f32) {
     assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
     let mut backward = self.backward.as_mut().unwrap();
+
     self.weights1.as_view_mut(ctx)
       .matrix_sum(scale, &backward.acc_grad_weights1.as_view(ctx));
     self.bias1.as_view_mut(ctx)
       .row_vector_sum(scale, &backward.acc_grad_bias1.as_view(ctx));
+
+    self.bn_scale1.as_view_mut(ctx)
+      .row_vector_sum(scale, &self.acc_bn_scale1_grad.as_view(ctx));
+    self.bn_bias1.as_view_mut(ctx)
+      .row_vector_sum(scale, &self.acc_bn_bias1_grad.as_view(ctx));
+
     self.weights2.as_view_mut(ctx)
       .matrix_sum(scale, &backward.acc_grad_weights2.as_view(ctx));
     self.bias2.as_view_mut(ctx)
       .row_vector_sum(scale, &backward.acc_grad_bias2.as_view(ctx));
+
+    self.bn_scale2.as_view_mut(ctx)
+      .row_vector_sum(scale, &self.acc_bn_scale2_grad.as_view(ctx));
+    self.bn_bias2.as_view_mut(ctx)
+      .row_vector_sum(scale, &self.acc_bn_bias2_grad.as_view(ctx));
+
     self.weights3.as_view_mut(ctx)
       .matrix_sum(scale, &backward.acc_grad_weights3.as_view(ctx));
     self.bias3.as_view_mut(ctx)
       .row_vector_sum(scale, &backward.acc_grad_bias3.as_view(ctx));
+
+    self.bn_scale3.as_view_mut(ctx)
+      .row_vector_sum(scale, &self.acc_bn_scale3_grad.as_view(ctx));
+    self.bn_bias3.as_view_mut(ctx)
+      .row_vector_sum(scale, &self.acc_bn_bias3_grad.as_view(ctx));
   }
 
   fn save_params(&mut self) {
@@ -2444,6 +2735,8 @@ impl<Comm> Operator for ProjStackResConv2dOperator<Comm> where Comm: CommWorker 
     comm_worker.load(self.params_off, &mut self.bias2, ctx);
     comm_worker.load(self.params_off, &mut self.weights3, ctx);
     comm_worker.load(self.params_off, &mut self.bias3, ctx);
+    // FIXME(20160421): batch norm params.
+    unimplemented!();
   }
 
   fn sync_params(&mut self) {
@@ -2457,6 +2750,8 @@ impl<Comm> Operator for ProjStackResConv2dOperator<Comm> where Comm: CommWorker 
     comm_worker.store(self.params_off, &mut self.bias2, ctx);
     comm_worker.store(self.params_off, &mut self.weights3, ctx);
     comm_worker.store(self.params_off, &mut self.bias3, ctx);
+    // FIXME(20160421): batch norm params.
+    unimplemented!();
   }
 
   fn reset_grads(&mut self, scale: f32) {
@@ -2467,17 +2762,35 @@ impl<Comm> Operator for ProjStackResConv2dOperator<Comm> where Comm: CommWorker 
     assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
     let mut backward = self.backward.as_mut().unwrap();
+
     backward.grad_weights1.as_view_mut(ctx)
       .matrix_scale(0.0);
     backward.grad_bias1.as_view_mut(ctx)
       .row_vector_scale(0.0);
+
+    self.bn_scale1_grad.as_view_mut(ctx)
+      .row_vector_scale(0.0);
+    self.bn_bias1_grad.as_view_mut(ctx)
+      .row_vector_scale(0.0);
+
     backward.grad_weights2.as_view_mut(ctx)
       .matrix_scale(0.0);
     backward.grad_bias2.as_view_mut(ctx)
       .row_vector_scale(0.0);
+
+    self.bn_scale2_grad.as_view_mut(ctx)
+      .row_vector_scale(0.0);
+    self.bn_bias2_grad.as_view_mut(ctx)
+      .row_vector_scale(0.0);
+
     backward.grad_weights3.as_view_mut(ctx)
       .matrix_scale(0.0);
     backward.grad_bias3.as_view_mut(ctx)
+      .row_vector_scale(0.0);
+
+    self.bn_scale3_grad.as_view_mut(ctx)
+      .row_vector_scale(0.0);
+    self.bn_bias3_grad.as_view_mut(ctx)
       .row_vector_scale(0.0);
   }
 }

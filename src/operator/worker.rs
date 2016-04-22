@@ -107,7 +107,7 @@ where Comm: 'static + CommWorker + Sync,
   pub loss_op:      Option<OperatorConfig<Comm>>,
 }*/
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct PipelineOperatorConfig {
   pub input_op:     Option<OperatorConfig>,
   pub hidden_ops:   Vec<OperatorConfig>,

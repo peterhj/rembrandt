@@ -102,7 +102,7 @@ pub enum OperatorNode {
   //Join(Box<Operator>),
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 //pub enum OperatorConfig<Comm> {
 pub enum OperatorConfig {
   Data3d(Data3dOperatorConfig),
@@ -207,7 +207,7 @@ impl OperatorConfig {
   }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum OpCapability {
   Forward,
   Backward,
@@ -235,28 +235,28 @@ impl OpCapability {
   }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum OpPhase {
   Inference,
   Training,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum Regularization {
   L2{l2_reg_coef: f32},
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum HvDirectionInit {
   Gradient,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum HvDirectionSolver {
   PrecondConjGrad,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum ActivationFunction {
   Identity,
   Rect,
@@ -264,19 +264,13 @@ pub enum ActivationFunction {
   Tanh,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum ParamsInit {
   Disabled,
   Uniform{half_range: f32},
   Normal{std: f32},
   Xavier,
   KaimingFwd,
-}
-
-#[derive(Clone, Copy)]
-pub enum PoolOperation {
-  Max,
-  Average,
 }
 
 pub type SharedDeviceBuf<T> = Rc<RefCell<DeviceBuffer<T>>>;
@@ -366,7 +360,7 @@ impl Operator for SplitOperator {
 
 pub struct JoinOperator;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum Data3dPreproc {
   Crop{
     crop_width:     usize,
@@ -378,7 +372,7 @@ pub enum Data3dPreproc {
   XFlip,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Data3dOperatorConfig {
   pub in_dims:      (usize, usize, usize),
   pub normalize:    bool,
@@ -511,6 +505,10 @@ impl Data3dOperator {
       tmp_buf:      DeviceBuffer::zeros(batch_size * in_frame_len, ctx),
       //tmp1_buf:     DeviceBuffer::zeros(batch_size * in_frame_len, ctx),
       //tmp2_buf:     DeviceBuffer::zeros(batch_size * in_frame_len, ctx),
+      // FIXME(20160421): `out_buf` should have `out_frame_len` instead,
+      // and a second temporary buffer should be used for intermediate values...
+      // but in practice, if only pointers are used, then this does not cause
+      // any problem to appear in downstream operators.
       out_buf:      Rc::new(RefCell::new(DeviceBuffer::zeros(batch_size * in_frame_len, ctx))),
       //out_buf:      Rc::new(RefCell::new(DeviceBuffer::zeros(batch_size * out_frame_len, ctx))),
       rng:          Xorshiftplus128Rng::new(&mut thread_rng()),
@@ -673,12 +671,12 @@ impl InputOperator for Data3dOperator {
   }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum AffineBackend {
   CublasGemm,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct AffineOperatorConfig {
   pub in_channels:  usize,
   pub out_channels: usize,
@@ -1099,20 +1097,20 @@ impl<Comm> Operator for AffineOperator<Comm> where Comm: CommWorker {
   }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum Conv2dFwdBackend {
   CudnnFastest,
   CudnnImplicitPrecompGemm,
   CudnnFftTiling,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum Conv2dBwdBackend {
   CudnnFastest,
   CudnnDeterministic,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct Conv2dOperatorConfig {
   pub in_dims:      (usize, usize, usize),
   pub conv_size:    usize,
@@ -1636,7 +1634,13 @@ impl<Comm> Operator for Conv2dOperator<Comm> where Comm: CommWorker {
   }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
+pub enum PoolOperation {
+  Max,
+  Average,
+}
+
+#[derive(Clone, Copy, Debug)]
 pub struct Pool2dOperatorConfig {
   pub in_dims:  (usize, usize, usize),
   pub pool_size:    usize,
@@ -1759,7 +1763,7 @@ impl Operator for Pool2dOperator {
   }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct DropoutOperatorConfig {
   pub channels:     usize,
   pub drop_ratio:   f32,
