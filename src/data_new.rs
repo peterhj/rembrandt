@@ -15,7 +15,7 @@ use rand::distributions::{IndependentSample};
 use rand::distributions::range::{Range};
 use std::collections::{HashMap};
 use std::fs::{File};
-use std::io::{Read, BufReader, Cursor};
+use std::io::{Read, Write, BufReader, Cursor};
 use std::marker::{PhantomData};
 use std::path::{PathBuf};
 
@@ -375,6 +375,26 @@ impl DatasetConfig {
       Some(&(ref src_name, ref data_cfg)) => {
         match src_name as &str {
           "lmdb_caffe"  => Box::new(LmdbCaffeDataIterator::open(data_cfg.clone())),
+          _ => panic!("unknown data iterator: '{}'", src_name),
+        }
+      }
+      None => panic!("dataset missing key: '{}'", key),
+    }
+  }
+
+  pub fn build_partition_iterator(&self, key: &str, part_rank: usize, num_parts: usize) -> Box<DataIterator> {
+    match self.datasets.get(key) {
+      Some(&(ref src_name, ref data_cfg)) => {
+        match src_name as &str {
+          "lmdb_caffe"  => {
+            let mut iter = LmdbCaffeDataIterator::open(data_cfg.clone());
+            let num_samples = iter.max_num_samples();
+            let num_part_samples = num_samples / num_parts;
+            let mut start_key: Vec<u8> = Vec::with_capacity(8);
+            write!(&mut start_key, "{:08}", part_rank * num_part_samples);
+            iter.set_start_key(start_key);
+            Box::new(iter)
+          }
           _ => panic!("unknown data iterator: '{}'", src_name),
         }
       }
@@ -862,6 +882,7 @@ impl DataSource for Cifar10DataSource {
 pub struct LmdbCaffeDataIterator {
   env:      LmdbEnv,
   length:   usize,
+  start_key:    Option<Vec<u8>>,
 }
 
 impl LmdbCaffeDataIterator {
@@ -880,8 +901,33 @@ impl LmdbCaffeDataIterator {
     LmdbCaffeDataIterator{
       env:      env,
       length:   length,
+      start_key:    None,
       //cursor:   cursor,
     }
+  }
+
+  pub fn open_seek(config: DataSourceConfig, start_key: Vec<u8>) -> LmdbCaffeDataIterator {
+    let mut env = match LmdbEnv::open_read_only(&config.data_path) {
+      Ok(env) => env,
+      Err(e) => panic!("failed to open lmdb env: {:?}", e),
+    };
+    if let Err(e) = env.set_map_size(1099511627776) {
+      panic!("failed to set lmdb env map size: {:?}", e);
+    }
+    let length = match env.stat() {
+      Ok(stat) => stat.entries(),
+      Err(e) => panic!("failed to query lmdb env stat: {:?}", e),
+    };
+    LmdbCaffeDataIterator{
+      env:      env,
+      length:   length,
+      start_key:    Some(start_key),
+      //cursor:   cursor,
+    }
+  }
+
+  pub fn set_start_key(&mut self, start_key: Vec<u8>) {
+    self.start_key = Some(start_key);
   }
 }
 
@@ -899,7 +945,11 @@ impl DataIterator for LmdbCaffeDataIterator {
       Ok(cursor) => cursor,
       Err(e) => panic!("failed to open lmdb cursor: {:?}", e),
     };
-    for (i, kv) in cursor.iter().enumerate() {
+    let iter = match self.start_key {
+      None => cursor.iter(),
+      Some(ref start_key) => cursor.seek_iter(start_key.clone()),
+    };
+    for (i, kv) in iter.enumerate() {
       let value_bytes: &[u8] = kv.value;
       let mut datum: Datum = match parse_from_bytes(value_bytes) {
         Ok(m) => m,
@@ -913,6 +963,28 @@ impl DataIterator for LmdbCaffeDataIterator {
       assert_eq!(image_flat_bytes.len(), width * height * channels);
       let image_bytes = Array3d::with_data(image_flat_bytes, (width, height, channels));
       func(i, &SampleDatum::WHCBytes(image_bytes), Some(&SampleLabel::Category{category: label}));
+    }
+  }
+}
+
+impl LmdbCaffeDataIterator {
+  pub fn each_kv(&mut self,
+      func: &mut FnMut(&[u8], &[u8]) -> Option<()>)
+  {
+    let cursor = match LmdbCursor::new_read_only(&self.env) {
+      Ok(cursor) => cursor,
+      Err(e) => panic!("failed to open lmdb cursor: {:?}", e),
+    };
+    let iter = match self.start_key {
+      None => cursor.iter(),
+      Some(ref start_key) => cursor.seek_iter(start_key.clone()),
+    };
+    for (i, kv) in iter.enumerate() {
+      let key_bytes: &[u8] = kv.key;
+      let value_bytes: &[u8] = kv.value;
+      if func(key_bytes, value_bytes).is_none() {
+        break;
+      }
     }
   }
 }

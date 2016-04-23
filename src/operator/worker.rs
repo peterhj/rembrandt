@@ -9,7 +9,10 @@ use operator::{
   Pool2dOperatorConfig,
   DropoutOperatorConfig,
 };
-use operator::comm::{CommWorkerBuilder, CommWorker};
+use operator::comm::{
+  //CommWorkerBuilder,
+  CommWorker,
+};
 use operator::conv::{
   BNormConv2dOperatorConfig,
   StackResConv2dOperatorConfig,
@@ -49,11 +52,13 @@ pub trait OperatorWorker: Operator {
   fn input_operator(&mut self) -> &mut InputOperator;
   fn loss_count(&self) -> usize;
   fn loss_operator(&mut self, rank: usize) -> &mut LossOperator;
-  fn wait_barrier(&self) { unimplemented!(); }
+
+  //fn wait_barrier(&self) { unimplemented!(); }
   fn next(&mut self) {}
+  fn sync_params_v2(&mut self) {}
 }
 
-pub struct DeviceParallelOperatorServer<Comm, CBuilder, WBuilder>
+/*pub struct DeviceParallelOperatorServer<Comm, CBuilder, WBuilder>
 where Comm: 'static + CommWorker,
       CBuilder: CommWorkerBuilder<Worker=Comm>,
       WBuilder: OperatorWorkerBuilder<Comm>,
@@ -98,7 +103,7 @@ where Comm: 'static + CommWorker + Sync,
   pub fn join(self) {
     self.join_barrier.wait();
   }
-}
+}*/
 
 // FIXME(20160330): why can't I derive Clone here?
 //#[derive(Clone)]
@@ -324,11 +329,6 @@ impl<Comm> OperatorWorker for SequentialOperatorWorker<Comm> where Comm: 'static
     assert_eq!(rank, 0);
     &mut *self.loss_op
   }
-
-  fn wait_barrier(&self) {
-    // FIXME(20160402)
-    unimplemented!();
-  }
 }
 
 impl<Comm> Operator for SequentialOperatorWorker<Comm> where Comm: 'static + CommWorker {
@@ -344,17 +344,17 @@ impl<Comm> Operator for SequentialOperatorWorker<Comm> where Comm: 'static + Com
     }
   }
 
-  fn read_params(&mut self, blob: &[u8]) -> usize {
+  fn decode_params(&mut self, blob: &[u8]) -> usize {
     let mut offset = 0;
     for op in self.hidden_ops.iter_mut() {
-      offset += op.read_params(&blob[offset .. ]);
+      offset += op.decode_params(&blob[offset .. ]);
     }
     offset
   }
 
-  fn write_params(&mut self, blob: &mut Vec<u8>) {
+  fn encode_params(&mut self, blob: &mut Vec<u8>) {
     for op in self.hidden_ops.iter_mut() {
-      op.write_params(blob);
+      op.encode_params(blob);
     }
   }
 
@@ -433,8 +433,8 @@ impl<Comm> Operator for SequentialOperatorWorker<Comm> where Comm: 'static + Com
       return;
     }
     {
-      let ctx = &(*self.context).as_ref();
-      self.comm_worker.borrow_mut().communicate(ctx);
+      //let ctx = &(*self.context).as_ref();
+      self.comm_worker.borrow_mut().communicate();
     }
     for op in self.hidden_ops.iter_mut() {
       op.sync_params();
@@ -670,12 +670,12 @@ where W: OperatorWorker,
     self.inner_worker.init_params(shared_seed);
   }
 
-  fn read_params(&mut self, blob: &[u8]) -> usize {
-    self.inner_worker.read_params(blob)
+  fn decode_params(&mut self, blob: &[u8]) -> usize {
+    self.inner_worker.decode_params(blob)
   }
 
-  fn write_params(&mut self, blob: &mut Vec<u8>) {
-    self.inner_worker.write_params(blob)
+  fn encode_params(&mut self, blob: &mut Vec<u8>) {
+    self.inner_worker.encode_params(blob)
   }
 
   fn forward(&mut self, batch_size: usize, phase: OpPhase) {

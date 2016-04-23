@@ -27,7 +27,7 @@ use rembrandt::operator::loss::{
   CategoricalLossConfig,
 };
 use rembrandt::operator::comm::{
-  CommWorkerBuilder,
+  //CommWorkerBuilder,
   DeviceSyncGossipCommWorkerBuilder,
 };
 use rembrandt::operator::worker::{
@@ -41,7 +41,7 @@ use rembrandt::worker::gossip_dist::{
   MpiDistSequentialOperatorWorker,
 };
 use rembrandt::opt::sgd::{
-  SgdOptConfig, StepSizeSchedule, MomentumStyle, OptSharedData, SyncSgdOpt,
+  SgdOptConfig, StepSizeSchedule, Momentum, OptSharedData, SyncSgdOpt,
 };
 use threadpool::{ThreadPool};
 
@@ -62,12 +62,15 @@ fn main() {
   let sgd_opt_cfg = SgdOptConfig{
     init_t:         None,
     minibatch_size: batch_size,
-    step_size:      StepSizeSchedule::Constant{step_size: 0.01},
-    //momentum:       MomentumStyle::Zero,
-    momentum:       MomentumStyle::Nesterov{momentum: 0.9},
+    step_size:      StepSizeSchedule::Constant{step_size: 0.001},
+    momentum:       Momentum::Zero,
+    //momentum:       Momentum::Gradient{mu: 0.9},
+    //momentum:       Momentum::GradientNesterov{mu: 0.9},
+    //momentum:       Momentum::Update{mu: 0.9},
+    //momentum:       Momentum::UpdateNesterov{mu: 0.9},
     l2_reg_coef:    1.0e-4,
     display_iters:  100,
-    valid_iters:    5000,
+    valid_iters:    1000,
     save_iters:     5000,
   };
   info!("sgd: {:?}", sgd_opt_cfg);

@@ -322,7 +322,7 @@ impl<Comm> Operator for BNormConv2dOperator<Comm> where Comm: CommWorker {
     self.bn_running_ivar1.as_view_mut(ctx).set_constant(1.0);
   }
 
-  fn read_params(&mut self, blob: &[u8]) -> usize {
+  fn decode_params(&mut self, blob: &[u8]) -> usize {
     let BNormConv2dOperatorConfig{in_dims, conv_size, out_channels, ..} = self.config;
     let ctx = &(*self.context).as_ref();
     let (_, _, in_channels) = in_dims;
@@ -337,7 +337,7 @@ impl<Comm> Operator for BNormConv2dOperator<Comm> where Comm: CommWorker {
     progress
   }
 
-  fn write_params(&mut self, blob: &mut Vec<u8>) {
+  fn encode_params(&mut self, blob: &mut Vec<u8>) {
     let ctx = &(*self.context).as_ref();
     let weights = self.weights.as_view(ctx);
     let mut save_weights = Array2d::zeros(weights.bound());
@@ -647,7 +647,7 @@ impl<Comm> Operator for BNormConv2dOperator<Comm> where Comm: CommWorker {
     let ctx = &(*self.context).as_ref();
     let backward = self.backward.as_ref().unwrap();
     let mut comm_worker = backward.comm_worker.borrow_mut();
-    comm_worker.load(self.params_off, &mut self.weights, ctx);
+    comm_worker.load(self.params_off, &mut self.weights); //, ctx);
     // FIXME(20160422): batch norm params.
     unimplemented!();
   }
@@ -657,7 +657,7 @@ impl<Comm> Operator for BNormConv2dOperator<Comm> where Comm: CommWorker {
     let ctx = &(*self.context).as_ref();
     let backward = self.backward.as_ref().unwrap();
     let mut comm_worker = backward.comm_worker.borrow_mut();
-    comm_worker.store(self.params_off, &mut self.weights, ctx);
+    comm_worker.store(self.params_off, &mut self.weights); //, ctx);
     // FIXME(20160422): batch norm params.
     unimplemented!();
   }
@@ -1029,7 +1029,7 @@ impl<Comm> Operator for StackResConv2dOperator<Comm> where Comm: CommWorker {
     self.bn_running_ivar2.as_view_mut(ctx).set_constant(1.0);
   }
 
-  fn read_params(&mut self, blob: &[u8]) -> usize {
+  fn decode_params(&mut self, blob: &[u8]) -> usize {
     let StackResConv2dOperatorConfig{in_dims, ..} = self.config;
     let ctx = &(*self.context).as_ref();
     let (_, _, in_channels) = in_dims;
@@ -1048,7 +1048,7 @@ impl<Comm> Operator for StackResConv2dOperator<Comm> where Comm: CommWorker {
     progress
   }
 
-  fn write_params(&mut self, blob: &mut Vec<u8>) {
+  fn encode_params(&mut self, blob: &mut Vec<u8>) {
     let ctx = &(*self.context).as_ref();
 
     let weights1 = self.weights1.as_view(ctx);
@@ -1514,8 +1514,8 @@ impl<Comm> Operator for StackResConv2dOperator<Comm> where Comm: CommWorker {
     let ctx = &(*self.context).as_ref();
     let backward = self.backward.as_ref().unwrap();
     let mut comm_worker = backward.comm_worker.borrow_mut();
-    comm_worker.load(self.params_off, &mut self.weights1, ctx);
-    comm_worker.load(self.params_off, &mut self.weights2, ctx);
+    comm_worker.load(self.params_off, &mut self.weights1); //, ctx);
+    comm_worker.load(self.params_off, &mut self.weights2); //, ctx);
     // FIXME(20160420): batch norm params.
   }
 
@@ -1524,8 +1524,8 @@ impl<Comm> Operator for StackResConv2dOperator<Comm> where Comm: CommWorker {
     let ctx = &(*self.context).as_ref();
     let backward = self.backward.as_ref().unwrap();
     let mut comm_worker = backward.comm_worker.borrow_mut();
-    comm_worker.store(self.params_off, &mut self.weights1, ctx);
-    comm_worker.store(self.params_off, &mut self.weights2, ctx);
+    comm_worker.store(self.params_off, &mut self.weights1); //, ctx);
+    comm_worker.store(self.params_off, &mut self.weights2); //, ctx);
     // FIXME(20160420): batch norm params.
   }
 
@@ -2019,7 +2019,7 @@ impl<Comm> Operator for ProjStackResConv2dOperator<Comm> where Comm: CommWorker 
     self.bn_running_ivar3.as_view_mut(ctx).set_constant(1.0);
   }
 
-  fn read_params(&mut self, blob: &[u8]) -> usize {
+  fn decode_params(&mut self, blob: &[u8]) -> usize {
     let ProjStackResConv2dOperatorConfig{in_dims, out_dims, ..} = self.config;
     let ctx = &(*self.context).as_ref();
     let (_, _, in_channels) = in_dims;
@@ -2043,7 +2043,7 @@ impl<Comm> Operator for ProjStackResConv2dOperator<Comm> where Comm: CommWorker 
     progress
   }
 
-  fn write_params(&mut self, blob: &mut Vec<u8>) {
+  fn encode_params(&mut self, blob: &mut Vec<u8>) {
     let ctx = &(*self.context).as_ref();
 
     let weights1 = self.weights1.as_view(ctx);
@@ -2636,9 +2636,9 @@ impl<Comm> Operator for ProjStackResConv2dOperator<Comm> where Comm: CommWorker 
     let ctx = &(*self.context).as_ref();
     let backward = self.backward.as_ref().unwrap();
     let mut comm_worker = backward.comm_worker.borrow_mut();
-    comm_worker.load(self.params_off, &mut self.weights1, ctx);
-    comm_worker.load(self.params_off, &mut self.weights2, ctx);
-    comm_worker.load(self.params_off, &mut self.weights3, ctx);
+    comm_worker.load(self.params_off, &mut self.weights1); //, ctx);
+    comm_worker.load(self.params_off, &mut self.weights2); //, ctx);
+    comm_worker.load(self.params_off, &mut self.weights3); //, ctx);
     // FIXME(20160421): batch norm params.
     unimplemented!();
   }
@@ -2648,9 +2648,9 @@ impl<Comm> Operator for ProjStackResConv2dOperator<Comm> where Comm: CommWorker 
     let ctx = &(*self.context).as_ref();
     let backward = self.backward.as_ref().unwrap();
     let mut comm_worker = backward.comm_worker.borrow_mut();
-    comm_worker.store(self.params_off, &mut self.weights1, ctx);
-    comm_worker.store(self.params_off, &mut self.weights2, ctx);
-    comm_worker.store(self.params_off, &mut self.weights3, ctx);
+    comm_worker.store(self.params_off, &mut self.weights1); //, ctx);
+    comm_worker.store(self.params_off, &mut self.weights2); //, ctx);
+    comm_worker.store(self.params_off, &mut self.weights3); //, ctx);
     // FIXME(20160421): batch norm params.
     unimplemented!();
   }
@@ -2942,7 +2942,7 @@ impl<Comm> Operator for BotResConv2dOperator<Comm> where Comm: CommWorker {
     self.bias.as_view_mut(ctx).sync_load(&init_bias.as_view());
   }
 
-  fn read_params(&mut self, blob: &[u8]) -> usize {
+  fn decode_params(&mut self, blob: &[u8]) -> usize {
     let BotResConv2dOperatorConfig{in_dims, conv_size, out_channels, ..} = self.config;
     let ctx = &(*self.context).as_ref();
     let (_, _, in_channels) = in_dims;
@@ -2959,7 +2959,7 @@ impl<Comm> Operator for BotResConv2dOperator<Comm> where Comm: CommWorker {
     progress
   }
 
-  fn write_params(&mut self, blob: &mut Vec<u8>) {
+  fn encode_params(&mut self, blob: &mut Vec<u8>) {
     let ctx = &(*self.context).as_ref();
     let weights = self.weights.as_view(ctx);
     let bias = self.bias.as_view(ctx);

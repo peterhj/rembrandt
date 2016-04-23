@@ -17,7 +17,7 @@ pub struct SgdOptConfig {
   pub init_t:         Option<usize>,
   pub minibatch_size: usize,
   pub step_size:      StepSizeSchedule,
-  pub momentum:       MomentumStyle,
+  pub momentum:       Momentum,
   pub l2_reg_coef:    f32,
 
   pub display_iters:  usize,
@@ -78,37 +78,12 @@ impl StepSizeSchedule {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub enum MomentumStyle {
+pub enum Momentum {
   Zero,
-  Sgd{momentum: f32},
-  Nesterov{momentum: f32},
-}
-
-impl MomentumStyle {
-  pub fn at_iter(&self, _t: usize) -> f32 {
-    match self {
-      &MomentumStyle::Zero => {
-        0.0
-      }
-      &MomentumStyle::Sgd{momentum} => {
-        momentum
-      }
-      &MomentumStyle::Nesterov{momentum} => {
-        momentum
-      }
-    }
-  }
-
-  pub fn is_nesterov(&self) -> bool {
-    match self {
-      &MomentumStyle::Nesterov{..} => {
-        true
-      }
-      _ => {
-        false
-      }
-    }
-  }
+  Update{mu: f32},
+  UpdateNesterov{mu: f32},
+  Gradient{mu: f32},
+  GradientNesterov{mu: f32},
 }
 
 pub struct OptSharedData {
@@ -146,7 +121,7 @@ impl SyncSgdOpt {
   pub fn train(&self, sgd_opt_cfg: SgdOptConfig, datum_cfg: SampleDatumConfig, label_cfg: SampleLabelConfig, train_data: &mut DataIterator, valid_data: &mut DataIterator, operator: &mut OperatorWorker) {
     let batch_size = operator.batch_size();
     let num_workers = operator.num_workers();
-    let tid = operator.worker_rank();
+    let rank = operator.worker_rank();
     let minibatch_size = sgd_opt_cfg.minibatch_size;
     let minibatch_weight = 1.0 / minibatch_size as f32;
     let epoch_size = (train_data.max_num_samples() / minibatch_size) * minibatch_size;
@@ -208,43 +183,70 @@ impl SyncSgdOpt {
         if local_counter % minibatch_size == 0 {
           let l2_reg_coef = sgd_opt_cfg.l2_reg_coef;
           let step_size = sgd_opt_cfg.step_size.at_iter(iter_counter);
-          let momentum = sgd_opt_cfg.momentum.at_iter(iter_counter);
-          let nesterov = sgd_opt_cfg.momentum.is_nesterov();
+          //let momentum = sgd_opt_cfg.momentum.at_iter(iter_counter);
+          //let nesterov = sgd_opt_cfg.momentum.is_nesterov();
+
           operator.regularize(Regularization::L2{l2_reg_coef: l2_reg_coef});
-          if nesterov {
-            operator.update_params(-momentum);
+
+          match sgd_opt_cfg.momentum {
+            Momentum::UpdateNesterov{mu} => {
+              if iter_counter > 0 {
+                operator.update_params(-mu);
+              }
+            }
+            _ => {}
           }
-          operator.accumulate_grads(-step_size, momentum);
-          //operator.save_params();
-          operator.update_params(1.0);
-          // FIXME(20160407): very useful to separate operator from comm.
-          //if comm_worker.update() {
-          if num_workers > 1 {
-            operator.stage_params();
-            operator.sync_params();
+
+          match sgd_opt_cfg.momentum {
+            Momentum::Zero => {
+              operator.accumulate_grads(1.0, 0.0);
+              operator.update_params(-step_size);
+            }
+            Momentum::Update{mu} |
+            Momentum::UpdateNesterov{mu} => {
+              operator.accumulate_grads(-step_size, mu);
+              operator.update_params(1.0);
+            }
+            Momentum::Gradient{mu} => {
+              operator.accumulate_grads(1.0, mu);
+              operator.update_params(-step_size);
+            }
+            Momentum::GradientNesterov{mu} => {
+              // XXX(20160422): This is the Torch `optim.sgd`-style update;
+              // see: <https://github.com/torch/optim/blob/master/sgd.lua>.
+              operator.accumulate_grads(1.0, mu);
+              operator.update_params2(-step_size, -step_size * mu);
+            }
           }
+
+          operator.sync_params_v2();
+
           // XXX(20160406): Interestingly, we should use the local update rather
           // than the communicated update with momentum.
           //operator.set_grads_with_params_diff();
-          if nesterov {
-            operator.update_params(momentum);
+          match sgd_opt_cfg.momentum {
+            Momentum::UpdateNesterov{mu} => {
+              operator.update_params(mu);
+            }
+            _ => {}
           }
+
           operator.reset();
           iter_counter += 1;
 
           if iter_counter % sgd_opt_cfg.display_iters == 0 {
             self.shared.sync();
-            if tid == 0 {
+            if rank == 0 {
               let lap_time = get_time();
               let elapsed_ms = (lap_time - start_time).num_milliseconds();
               start_time = lap_time;
               let acc_correct_count = self.shared.acc_correct_count.load(Ordering::Acquire);
               let acc_total_count = self.shared.acc_total_count.load(Ordering::Acquire);
               let accuracy = acc_correct_count as f32 / acc_total_count as f32;
-              info!("SyncSgdOpt: train: iter: {} epoch: {} sample: {}/{} step: {} momentum: {} loss: {:.06} accuracy: {:.03} elapsed: {:.03} s",
+              info!("SyncSgdOpt: train: iter: {} epoch: {} sample: {}/{} step: {} loss: {:.06} accuracy: {:.03} elapsed: {:.03} s",
                   iter_counter, epoch_counter,
                   epoch_offset, epoch_size,
-                  step_size, momentum,
+                  step_size,
                   0.0, //avg_loss,
                   accuracy,
                   elapsed_ms as f32 * 0.001,
@@ -272,7 +274,7 @@ impl SyncSgdOpt {
   pub fn validate(&self, sgd_opt_cfg: SgdOptConfig, datum_cfg: SampleDatumConfig, label_cfg: SampleLabelConfig, valid_data: &mut DataIterator, operator: &mut OperatorWorker) {
     let batch_size = operator.batch_size();
     let num_workers = operator.num_workers();
-    let tid = operator.worker_rank();
+    let rank = operator.worker_rank();
 
     let mut start_time = get_time();
     let mut batch_counter = 0;
@@ -320,7 +322,7 @@ impl SyncSgdOpt {
     }
 
     self.shared.sync();
-    if tid == 0 {
+    if rank == 0 {
       let lap_time = get_time();
       let elapsed_ms = (lap_time - start_time).num_milliseconds();
       start_time = lap_time;

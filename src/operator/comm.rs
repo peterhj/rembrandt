@@ -7,23 +7,26 @@ use rng::xorshift::{Xorshiftplus128Rng};
 use worker_::{WorkerData};
 
 use rand::{Rng, SeedableRng, thread_rng};
+use std::rc::{Rc};
 use std::sync::{Arc, Barrier};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-pub trait CommWorkerBuilder: Send + Clone {
+/*pub trait CommWorkerBuilder: Send + Clone {
   type Worker: CommWorker;
 
   fn into_worker(self, tid: usize) -> Self::Worker;
-}
+}*/
 
 pub trait CommWorker {
   fn next(&mut self) -> bool;
-  fn load(&mut self, offset: usize, data: &mut DeviceArray2d<f32>, ctx: &DeviceCtxRef);
-  fn communicate(&mut self, ctx: &DeviceCtxRef);
-  fn store(&mut self, offset: usize, data: &mut DeviceArray2d<f32>, ctx: &DeviceCtxRef);
+  fn load(&mut self, offset: usize, data: &mut DeviceArray2d<f32>/*, ctx: &DeviceCtxRef*/);
+  fn complete_load(&mut self);
+  fn communicate(&mut self/*, ctx: &DeviceCtxRef*/);
+  fn store(&mut self, offset: usize, data: &mut DeviceArray2d<f32>/*, ctx: &DeviceCtxRef*/);
+  fn complete_store(&mut self);
 }
 
-#[derive(Clone)]
+/*#[derive(Clone)]
 pub struct NullCommWorkerBuilder;
 
 impl CommWorkerBuilder for NullCommWorkerBuilder {
@@ -32,15 +35,17 @@ impl CommWorkerBuilder for NullCommWorkerBuilder {
   fn into_worker(self, tid: usize) -> Self::Worker {
     NullCommWorker
   }
-}
+}*/
 
 pub struct NullCommWorker;
 
 impl CommWorker for NullCommWorker {
   fn next(&mut self) -> bool { false }
-  fn load(&mut self, offset: usize, data: &mut DeviceArray2d<f32>, ctx: &DeviceCtxRef) {}
-  fn communicate(&mut self, ctx: &DeviceCtxRef) {}
-  fn store(&mut self, offset: usize, data: &mut DeviceArray2d<f32>, ctx: &DeviceCtxRef) {}
+  fn load(&mut self, offset: usize, data: &mut DeviceArray2d<f32>/*, ctx: &DeviceCtxRef*/) {}
+  fn complete_load(&mut self) {}
+  fn communicate(&mut self/*, ctx: &DeviceCtxRef*/) {}
+  fn store(&mut self, offset: usize, data: &mut DeviceArray2d<f32>/*, ctx: &DeviceCtxRef*/) {}
+  fn complete_store(&mut self) {}
 }
 
 #[derive(Clone)]
@@ -53,15 +58,23 @@ impl CommWorker for DeviceAllReduceCommWorker {
     unimplemented!();
   }
 
-  fn load(&mut self, offset: usize, data: &mut DeviceArray2d<f32>, ctx: &DeviceCtxRef) {
+  fn load(&mut self, offset: usize, data: &mut DeviceArray2d<f32>/*, ctx: &DeviceCtxRef*/) {
     unimplemented!();
   }
 
-  fn communicate(&mut self, ctx: &DeviceCtxRef) {
+  fn complete_load(&mut self) {
     unimplemented!();
   }
 
-  fn store(&mut self, offset: usize, data: &mut DeviceArray2d<f32>, ctx: &DeviceCtxRef) {
+  fn communicate(&mut self/*, ctx: &DeviceCtxRef*/) {
+    unimplemented!();
+  }
+
+  fn store(&mut self, offset: usize, data: &mut DeviceArray2d<f32>/*, ctx: &DeviceCtxRef*/) {
+    unimplemented!();
+  }
+
+  fn complete_store(&mut self) {
     unimplemented!();
   }
 }
@@ -119,16 +132,17 @@ impl DeviceSyncGossipCommWorkerBuilder {
       shared_seed:  [thread_rng().next_u64(), thread_rng().next_u64()],
     }
   }
-}
+/*}
 
 impl CommWorkerBuilder for DeviceSyncGossipCommWorkerBuilder {
-  type Worker = DeviceSyncGossipCommWorker;
+  type Worker = DeviceSyncGossipCommWorker;*/
 
-  fn into_worker(self, tid: usize) -> DeviceSyncGossipCommWorker {
+  pub fn into_worker(self, tid: usize, context: Rc<DeviceContext>) -> DeviceSyncGossipCommWorker {
     DeviceSyncGossipCommWorker{
       worker_data:  WorkerData::new(tid, self.num_workers),
       num_rounds:   self.num_rounds,
       period:       self.period,
+      context:      context,
       barrier:      self.barrier,
       avg_reduce:   AverageReduceOperation::new(self.num_workers),
       rng:          Xorshiftplus128Rng::from_seed(self.shared_seed),
@@ -144,6 +158,7 @@ pub struct DeviceSyncGossipCommWorker {
   worker_data:  WorkerData,
   num_rounds:   usize,
   period:       usize,
+  context:      Rc<DeviceContext>,
   barrier:      Arc<Barrier>,
   avg_reduce:   AverageReduceOperation<f32>,
   // FIXME(20160324): for larger populations, should use a larger RNG.
@@ -166,7 +181,8 @@ impl CommWorker for DeviceSyncGossipCommWorker {
     should_comm
   }
 
-  fn load(&mut self, offset: usize, data: &mut DeviceArray2d<f32>, ctx: &DeviceCtxRef) {
+  fn load(&mut self, offset: usize, data: &mut DeviceArray2d<f32>/*, ctx: &DeviceCtxRef*/) {
+    let ctx = &(*self.context).as_ref();
     let self_tid = self.worker_data.tid();
     let data = data.as_view(ctx).data;
     data.raw_send(
@@ -178,11 +194,17 @@ impl CommWorker for DeviceSyncGossipCommWorker {
     self.barrier.wait();
   }
 
-  fn communicate(&mut self, ctx: &DeviceCtxRef) {
+  fn complete_load(&mut self) {
+    //unimplemented!();
+  }
+
+  fn communicate(&mut self/*, ctx: &DeviceCtxRef*/) {
     let num_workers = self.worker_data.num_workers();
     if num_workers <= 1 {
       return;
     }
+
+    let ctx = &(*self.context).as_ref();
 
     /*let src_rn = self.shared_rns[src_tid].load(Ordering::Acquire);
     // FIXME(20160325): exponential backoff.
@@ -220,7 +242,8 @@ impl CommWorker for DeviceSyncGossipCommWorker {
     }
   }
 
-  fn store(&mut self, offset: usize, data: &mut DeviceArray2d<f32>, ctx: &DeviceCtxRef) {
+  fn store(&mut self, offset: usize, data: &mut DeviceArray2d<f32>/*, ctx: &DeviceCtxRef*/) {
+    let ctx = &(*self.context).as_ref();
     let num_workers = self.worker_data.num_workers();
     let self_tid = self.worker_data.tid();
     let mut data = data.as_view_mut(ctx).data;
@@ -233,5 +256,9 @@ impl CommWorker for DeviceSyncGossipCommWorker {
     // FIXME(20160329): should generally replace barriers w/ round numbers,
     // but this is less important for device-only communication.
     self.barrier.wait();
+  }
+
+  fn complete_store(&mut self) {
+    //unimplemented!();
   }
 }
