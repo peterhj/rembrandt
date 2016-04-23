@@ -39,8 +39,8 @@ use rembrandt::operator::conv::{
 };
 use rembrandt::operator::worker::{
   OperatorWorkerBuilder,
-  PipelineOperatorConfig,
-  PipelineOperatorWorkerBuilder,
+  SequentialOperatorConfig,
+  SequentialOperatorWorkerBuilder,
 };
 use rembrandt::opt::sgd::{
   SgdOptConfig, StepSizeSchedule, MomentumStyle, OptSharedData, SyncSgdOpt,
@@ -55,7 +55,7 @@ use std::sync::{Arc, Barrier};
 
 const BNORM_EMA_FACTOR: f64 = 0.01;
 
-fn build_krizh26_arch() -> PipelineOperatorConfig {
+fn build_krizh26_arch() -> SequentialOperatorConfig {
   let data_op_cfg = Data3dOperatorConfig{
     in_dims:        (32, 32, 3),
     normalize:      true,
@@ -145,7 +145,7 @@ fn build_krizh26_arch() -> PipelineOperatorConfig {
     num_categories: 10,
   };
 
-  let mut worker_cfg = PipelineOperatorConfig::new();
+  let mut worker_cfg = SequentialOperatorConfig::new();
   worker_cfg
     .data3d(data_op_cfg)
     .conv2d(conv1_op_cfg)
@@ -161,7 +161,7 @@ fn build_krizh26_arch() -> PipelineOperatorConfig {
   worker_cfg
 }
 
-fn build_krizh26_preproc_arch() -> PipelineOperatorConfig {
+fn build_krizh26_preproc_arch() -> SequentialOperatorConfig {
   let data_op_cfg = Data3dOperatorConfig{
     in_dims:        (32, 32, 3),
     normalize:      true,
@@ -260,7 +260,7 @@ fn build_krizh26_preproc_arch() -> PipelineOperatorConfig {
     num_categories: 10,
   };
 
-  let mut worker_cfg = PipelineOperatorConfig::new();
+  let mut worker_cfg = SequentialOperatorConfig::new();
   worker_cfg
     .data3d(data_op_cfg)
     .conv2d(conv1_op_cfg)
@@ -276,7 +276,7 @@ fn build_krizh26_preproc_arch() -> PipelineOperatorConfig {
   worker_cfg
 }
 
-/*fn build_allconv_arch() -> PipelineOperatorConfig {
+/*fn build_allconv_arch() -> SequentialOperatorConfig {
   let data_op_cfg = Data3dOperatorConfig{
     in_dims:        (32, 32, 3),
     normalize:      true,
@@ -387,7 +387,7 @@ fn build_krizh26_preproc_arch() -> PipelineOperatorConfig {
     num_categories: 10,
   };
 
-  let mut worker_cfg = PipelineOperatorConfig::new();
+  let mut worker_cfg = SequentialOperatorConfig::new();
   worker_cfg
     .data3d(data_op_cfg)
     .conv2d(conv1_1_op_cfg)
@@ -404,7 +404,7 @@ fn build_krizh26_preproc_arch() -> PipelineOperatorConfig {
   worker_cfg
 }*/
 
-fn build_resnet20_arch() -> PipelineOperatorConfig {
+fn build_resnet20_arch() -> SequentialOperatorConfig {
   let data_op_cfg = Data3dOperatorConfig{
     in_dims:        (32, 32, 3),
     normalize:      true,
@@ -511,7 +511,7 @@ fn build_resnet20_arch() -> PipelineOperatorConfig {
     num_categories: 10,
   };
 
-  let mut worker_cfg = PipelineOperatorConfig::new();
+  let mut worker_cfg = SequentialOperatorConfig::new();
   worker_cfg
     .data3d(data_op_cfg)
     .bnorm_conv2d(bnorm_conv1_op_cfg)
@@ -580,7 +580,7 @@ fn main() {
 
   // FIXME(20160331)
   let comm_worker_builder = DeviceSyncGossipCommWorkerBuilder::new(num_workers, 1, worker_cfg.params_len());
-  let worker_builder = PipelineOperatorWorkerBuilder::new(num_workers, batch_size, worker_cfg, OpCapability::Backward);
+  let worker_builder = SequentialOperatorWorkerBuilder::new(num_workers, batch_size, worker_cfg, OpCapability::Backward);
   let pool = ThreadPool::new(num_workers);
   let join_barrier = Arc::new(Barrier::new(num_workers + 1));
   let opt_shared = Arc::new(OptSharedData::new(num_workers));

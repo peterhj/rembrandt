@@ -102,22 +102,22 @@ where Comm: 'static + CommWorker + Sync,
 
 // FIXME(20160330): why can't I derive Clone here?
 //#[derive(Clone)]
-/*pub struct PipelineOperatorConfig<Comm> where Comm: 'static + CommWorker {
+/*pub struct SequentialOperatorConfig<Comm> where Comm: 'static + CommWorker {
   pub input_op:     Option<OperatorConfig<Comm>>,
   pub hidden_ops:   Vec<OperatorConfig<Comm>>,
   pub loss_op:      Option<OperatorConfig<Comm>>,
 }*/
 
 #[derive(Clone, Debug)]
-pub struct PipelineOperatorConfig {
+pub struct SequentialOperatorConfig {
   pub input_op:     Option<OperatorConfig>,
   pub hidden_ops:   Vec<OperatorConfig>,
   pub loss_op:      Option<OperatorConfig>,
 }
 
-/*impl<Comm> Clone for PipelineOperatorConfig<Comm> where Comm: 'static + CommWorker {
-  fn clone(&self) -> PipelineOperatorConfig<Comm> {
-    PipelineOperatorConfig{
+/*impl<Comm> Clone for SequentialOperatorConfig<Comm> where Comm: 'static + CommWorker {
+  fn clone(&self) -> SequentialOperatorConfig<Comm> {
+    SequentialOperatorConfig{
       input_op:     self.input_op.clone(),
       hidden_ops:   self.hidden_ops.clone(),
       loss_op:      self.loss_op.clone(),
@@ -125,11 +125,11 @@ pub struct PipelineOperatorConfig {
   }
 }*/
 
-//impl<Comm> PipelineOperatorConfig<Comm> where Comm: 'static + CommWorker {
-impl PipelineOperatorConfig {
-  //pub fn new() -> PipelineOperatorConfig<Comm> {
-  pub fn new() -> PipelineOperatorConfig {
-    PipelineOperatorConfig{
+//impl<Comm> SequentialOperatorConfig<Comm> where Comm: 'static + CommWorker {
+impl SequentialOperatorConfig {
+  //pub fn new() -> SequentialOperatorConfig<Comm> {
+  pub fn new() -> SequentialOperatorConfig {
+    SequentialOperatorConfig{
       input_op:     None,
       hidden_ops:   vec![],
       loss_op:      None,
@@ -200,21 +200,21 @@ impl PipelineOperatorConfig {
   }
 }
 
-pub struct PipelineOperatorWorkerBuilder<Comm> where Comm: 'static + CommWorker {
-//pub struct PipelineOperatorWorkerBuilder {
+pub struct SequentialOperatorWorkerBuilder<Comm> where Comm: 'static + CommWorker {
+//pub struct SequentialOperatorWorkerBuilder {
   num_workers:  usize,
   batch_size:   usize,
-  //config:       PipelineOperatorConfig<Comm>,
-  config:       PipelineOperatorConfig,
+  //config:       SequentialOperatorConfig<Comm>,
+  config:       SequentialOperatorConfig,
   capability:   OpCapability,
   shared_seed:  [u64; 2],
   // XXX: Contravariance.
   _marker:      PhantomData<fn () -> Comm>,
 }
 
-impl<Comm> Clone for PipelineOperatorWorkerBuilder<Comm> where Comm: 'static + CommWorker {
-  fn clone(&self) -> PipelineOperatorWorkerBuilder<Comm> {
-    PipelineOperatorWorkerBuilder{
+impl<Comm> Clone for SequentialOperatorWorkerBuilder<Comm> where Comm: 'static + CommWorker {
+  fn clone(&self) -> SequentialOperatorWorkerBuilder<Comm> {
+    SequentialOperatorWorkerBuilder{
       num_workers:  self.num_workers,
       batch_size:   self.batch_size,
       config:       self.config.clone(),
@@ -225,10 +225,10 @@ impl<Comm> Clone for PipelineOperatorWorkerBuilder<Comm> where Comm: 'static + C
   }
 }
 
-impl<Comm> PipelineOperatorWorkerBuilder<Comm> where Comm: 'static + CommWorker {
-  //pub fn new(num_workers: usize, batch_size: usize, config: PipelineOperatorConfig<Comm>, capability: OpCapability) -> PipelineOperatorWorkerBuilder<Comm> {
-  pub fn new(num_workers: usize, batch_size: usize, config: PipelineOperatorConfig, capability: OpCapability) -> PipelineOperatorWorkerBuilder<Comm> {
-    PipelineOperatorWorkerBuilder{
+impl<Comm> SequentialOperatorWorkerBuilder<Comm> where Comm: 'static + CommWorker {
+  //pub fn new(num_workers: usize, batch_size: usize, config: SequentialOperatorConfig<Comm>, capability: OpCapability) -> SequentialOperatorWorkerBuilder<Comm> {
+  pub fn new(num_workers: usize, batch_size: usize, config: SequentialOperatorConfig, capability: OpCapability) -> SequentialOperatorWorkerBuilder<Comm> {
+    SequentialOperatorWorkerBuilder{
       num_workers:  num_workers,
       batch_size:   batch_size,
       config:       config,
@@ -239,10 +239,10 @@ impl<Comm> PipelineOperatorWorkerBuilder<Comm> where Comm: 'static + CommWorker 
   }
 }
 
-impl<Comm> OperatorWorkerBuilder<Comm> for PipelineOperatorWorkerBuilder<Comm> where Comm: 'static + CommWorker {
-  type Worker = PipelineOperatorWorker<Comm>;
+impl<Comm> OperatorWorkerBuilder<Comm> for SequentialOperatorWorkerBuilder<Comm> where Comm: 'static + CommWorker {
+  type Worker = SequentialOperatorWorker<Comm>;
 
-  fn into_worker(self, tid: usize, context: Rc<DeviceContext>, comm_worker: Rc<RefCell<Comm>>) -> PipelineOperatorWorker<Comm> {
+  fn into_worker(self, tid: usize, context: Rc<DeviceContext>, comm_worker: Rc<RefCell<Comm>>) -> SequentialOperatorWorker<Comm> {
     let config = self.config.clone();
     let total_params_len = config.params_len();
     let input_op = config.input_op.unwrap().build_input_operator::<Comm>(self.batch_size, context.clone());
@@ -268,7 +268,7 @@ impl<Comm> OperatorWorkerBuilder<Comm> for PipelineOperatorWorkerBuilder<Comm> w
       };
       config.loss_op.unwrap().build_loss_operator::<Comm>(self.batch_size, Some(prev_op), context.clone())
     };
-    PipelineOperatorWorker{
+    SequentialOperatorWorker{
       worker_data:  WorkerData::new(tid, self.num_workers),
       batch_size:   self.batch_size,
       config:       self.config,
@@ -282,11 +282,11 @@ impl<Comm> OperatorWorkerBuilder<Comm> for PipelineOperatorWorkerBuilder<Comm> w
   }
 }
 
-pub struct PipelineOperatorWorker<Comm> where Comm: 'static + CommWorker {
+pub struct SequentialOperatorWorker<Comm> where Comm: 'static + CommWorker {
   worker_data:  WorkerData,
   batch_size:   usize,
-  //config:       PipelineOperatorConfig<Comm>,
-  config:       PipelineOperatorConfig,
+  //config:       SequentialOperatorConfig<Comm>,
+  config:       SequentialOperatorConfig,
   shared_seed:  [u64; 2],
 
   context:      Rc<DeviceContext>,
@@ -296,10 +296,10 @@ pub struct PipelineOperatorWorker<Comm> where Comm: 'static + CommWorker {
   loss_op:      Box<LossOperator>,
 }
 
-impl<Comm> PipelineOperatorWorker<Comm> where Comm: 'static + CommWorker {
+impl<Comm> SequentialOperatorWorker<Comm> where Comm: 'static + CommWorker {
 }
 
-impl<Comm> OperatorWorker for PipelineOperatorWorker<Comm> where Comm: 'static + CommWorker {
+impl<Comm> OperatorWorker for SequentialOperatorWorker<Comm> where Comm: 'static + CommWorker {
   fn num_workers(&self) -> usize {
     self.worker_data.num_workers()
   }
@@ -331,7 +331,7 @@ impl<Comm> OperatorWorker for PipelineOperatorWorker<Comm> where Comm: 'static +
   }
 }
 
-impl<Comm> Operator for PipelineOperatorWorker<Comm> where Comm: 'static + CommWorker {
+impl<Comm> Operator for SequentialOperatorWorker<Comm> where Comm: 'static + CommWorker {
   fn batch_size(&self) -> usize {
     self.batch_size
   }

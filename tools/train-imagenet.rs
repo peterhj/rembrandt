@@ -39,8 +39,8 @@ use rembrandt::operator::conv::{
 };
 use rembrandt::operator::worker::{
   OperatorWorkerBuilder,
-  PipelineOperatorConfig,
-  PipelineOperatorWorkerBuilder,
+  SequentialOperatorConfig,
+  SequentialOperatorWorkerBuilder,
 };
 use rembrandt::opt::sgd::{
   SgdOptConfig, StepSizeSchedule, MomentumStyle, OptSharedData, SyncSgdOpt,
@@ -55,7 +55,7 @@ use std::sync::{Arc, Barrier};
 
 const BNORM_EMA_FACTOR: f64 = 0.01;
 
-fn build_vgg_a_arch() -> PipelineOperatorConfig {
+fn build_vgg_a_arch() -> SequentialOperatorConfig {
   let data_op_cfg = Data3dOperatorConfig{
     in_dims:        (256, 256, 3),
     normalize:      true,
@@ -242,7 +242,7 @@ fn build_vgg_a_arch() -> PipelineOperatorConfig {
     num_categories: 1000,
   };
 
-  let mut worker_cfg = PipelineOperatorConfig::new();
+  let mut worker_cfg = SequentialOperatorConfig::new();
   worker_cfg
     .data3d(data_op_cfg)
     .conv2d(conv1_op_cfg)
@@ -267,7 +267,7 @@ fn build_vgg_a_arch() -> PipelineOperatorConfig {
   worker_cfg
 }
 
-fn build_vgg_a_avgpool_arch() -> PipelineOperatorConfig {
+fn build_vgg_a_avgpool_arch() -> SequentialOperatorConfig {
   let data_op_cfg = Data3dOperatorConfig{
     in_dims:        (256, 256, 3),
     //in_dims:        (224, 224, 3),
@@ -445,7 +445,7 @@ fn build_vgg_a_avgpool_arch() -> PipelineOperatorConfig {
     num_categories: 1000,
   };
 
-  let mut worker_cfg = PipelineOperatorConfig::new();
+  let mut worker_cfg = SequentialOperatorConfig::new();
   worker_cfg
     .data3d(data_op_cfg)
     .conv2d(conv1_op_cfg)
@@ -467,7 +467,7 @@ fn build_vgg_a_avgpool_arch() -> PipelineOperatorConfig {
   worker_cfg
 }
 
-fn build_resnet10_arch() -> PipelineOperatorConfig {
+fn build_resnet10_arch() -> SequentialOperatorConfig {
   let data_op_cfg = Data3dOperatorConfig{
     in_dims:        (256, 256, 3),
     normalize:      true,
@@ -567,7 +567,7 @@ fn build_resnet10_arch() -> PipelineOperatorConfig {
     num_categories: 1000,
   };
 
-  let mut worker_cfg = PipelineOperatorConfig::new();
+  let mut worker_cfg = SequentialOperatorConfig::new();
   worker_cfg
     .data3d(data_op_cfg)
     .conv2d(conv1_op_cfg)
@@ -582,7 +582,7 @@ fn build_resnet10_arch() -> PipelineOperatorConfig {
   worker_cfg
 }
 
-fn build_resnet18_arch() -> PipelineOperatorConfig {
+fn build_resnet18_arch() -> SequentialOperatorConfig {
   let data_op_cfg = Data3dOperatorConfig{
     in_dims:        (256, 256, 3),
     normalize:      true,
@@ -709,7 +709,7 @@ fn build_resnet18_arch() -> PipelineOperatorConfig {
     num_categories: 1000,
   };
 
-  let mut worker_cfg = PipelineOperatorConfig::new();
+  let mut worker_cfg = SequentialOperatorConfig::new();
   worker_cfg
     .data3d(data_op_cfg)
     .bnorm_conv2d(bnorm_conv1_op_cfg)
@@ -728,7 +728,7 @@ fn build_resnet18_arch() -> PipelineOperatorConfig {
   worker_cfg
 }
 
-fn build_resnet20_arch() -> PipelineOperatorConfig {
+fn build_resnet20_arch() -> SequentialOperatorConfig {
   let data_op_cfg = Data3dOperatorConfig{
     in_dims:        (256, 256, 3),
     normalize:      true,
@@ -855,7 +855,7 @@ fn build_resnet20_arch() -> PipelineOperatorConfig {
     num_categories: 1000,
   };
 
-  let mut worker_cfg = PipelineOperatorConfig::new();
+  let mut worker_cfg = SequentialOperatorConfig::new();
   worker_cfg
     .data3d(data_op_cfg)
     .bnorm_conv2d(bnorm_conv1_op_cfg)
@@ -875,7 +875,7 @@ fn build_resnet20_arch() -> PipelineOperatorConfig {
   worker_cfg
 }
 
-fn build_resnet34_arch() -> PipelineOperatorConfig {
+fn build_resnet34_arch() -> SequentialOperatorConfig {
   // FIXME(20160421)
   unimplemented!();
 }
@@ -920,7 +920,7 @@ fn main() {
 
   // FIXME(20160331)
   let comm_worker_builder = DeviceSyncGossipCommWorkerBuilder::new(num_workers, 1, worker_cfg.params_len());
-  let worker_builder = PipelineOperatorWorkerBuilder::new(num_workers, batch_size, worker_cfg, OpCapability::Backward);
+  let worker_builder = SequentialOperatorWorkerBuilder::new(num_workers, batch_size, worker_cfg, OpCapability::Backward);
   let pool = ThreadPool::new(num_workers);
   let join_barrier = Arc::new(Barrier::new(num_workers + 1));
   let opt_shared = Arc::new(OptSharedData::new(num_workers));

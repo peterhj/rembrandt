@@ -39,8 +39,8 @@ use rembrandt::operator::conv::{
 };
 use rembrandt::operator::worker::{
   OperatorWorkerBuilder,
-  PipelineOperatorConfig,
-  PipelineOperatorWorkerBuilder,
+  SequentialOperatorConfig,
+  SequentialOperatorWorkerBuilder,
 };
 use rembrandt::opt::sgd::{
   SgdOptConfig, StepSizeSchedule, MomentumStyle, OptSharedData, SyncSgdOpt,
@@ -53,7 +53,7 @@ use std::rc::{Rc};
 use std::path::{PathBuf};
 use std::sync::{Arc, Barrier};
 
-fn build_vgg_a_arch() -> PipelineOperatorConfig {
+fn build_vgg_a_arch() -> SequentialOperatorConfig {
   let data_op_cfg = Data3dOperatorConfig{
     in_dims:        (19, 19, 32),
     normalize:      true,
@@ -133,7 +133,7 @@ fn build_vgg_a_arch() -> PipelineOperatorConfig {
     num_categories: 361,
   };
 
-  let mut worker_cfg = PipelineOperatorConfig::new();
+  let mut worker_cfg = SequentialOperatorConfig::new();
   worker_cfg
     .data3d(data_op_cfg)
     //.conv2d(conv1_op_cfg)
@@ -193,7 +193,7 @@ fn main() {
 
   // FIXME(20160331)
   let comm_worker_builder = DeviceSyncGossipCommWorkerBuilder::new(num_workers, 1, worker_cfg.params_len());
-  let worker_builder = PipelineOperatorWorkerBuilder::new(num_workers, batch_size, worker_cfg, OpCapability::Backward);
+  let worker_builder = SequentialOperatorWorkerBuilder::new(num_workers, batch_size, worker_cfg, OpCapability::Backward);
   let pool = ThreadPool::new(num_workers);
   let join_barrier = Arc::new(Barrier::new(num_workers + 1));
   let opt_shared = Arc::new(OptSharedData::new(num_workers));

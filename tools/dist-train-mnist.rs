@@ -33,12 +33,12 @@ use rembrandt::operator::comm::{
 use rembrandt::operator::worker::{
   OperatorWorkerBuilder,
   OperatorWorker,
-  PipelineOperatorConfig,
-  PipelineOperatorWorkerBuilder,
+  SequentialOperatorConfig,
+  SequentialOperatorWorkerBuilder,
 };
-use rembrandt::worker::dist_pipeline::{
-  MpiDistPipelineOperatorWorkerBuilder,
-  MpiDistPipelineOperatorWorker,
+use rembrandt::worker::gossip_dist::{
+  MpiDistSequentialOperatorWorkerBuilder,
+  MpiDistSequentialOperatorWorker,
 };
 use rembrandt::opt::sgd::{
   SgdOptConfig, StepSizeSchedule, MomentumStyle, OptSharedData, SyncSgdOpt,
@@ -63,9 +63,10 @@ fn main() {
     init_t:         None,
     minibatch_size: batch_size,
     step_size:      StepSizeSchedule::Constant{step_size: 0.01},
+    //momentum:       MomentumStyle::Zero,
     momentum:       MomentumStyle::Nesterov{momentum: 0.9},
     l2_reg_coef:    1.0e-4,
-    display_iters:  5,
+    display_iters:  100,
     valid_iters:    5000,
     save_iters:     5000,
   };
@@ -140,7 +141,7 @@ fn main() {
     num_categories: 10,
   };
 
-  let mut worker_cfg = PipelineOperatorConfig::new();
+  let mut worker_cfg = SequentialOperatorConfig::new();
   worker_cfg
     .data3d(data_op_cfg)
     .conv2d(conv1_op_cfg)
@@ -153,8 +154,8 @@ fn main() {
 
   // FIXME(20160331)
   //let comm_worker_builder = DeviceSyncGossipCommWorkerBuilder::new(num_workers, 1, worker_cfg.params_len());
-  //let worker_builder = PipelineOperatorWorkerBuilder::new(num_workers, batch_size, worker_cfg, OpCapability::Backward);
-  let worker_builder = MpiDistPipelineOperatorWorkerBuilder::new(batch_size, worker_cfg, OpCapability::Backward);
+  //let worker_builder = SequentialOperatorWorkerBuilder::new(num_workers, batch_size, worker_cfg, OpCapability::Backward);
+  let worker_builder = MpiDistSequentialOperatorWorkerBuilder::new(batch_size, worker_cfg, OpCapability::Backward);
   let pool = ThreadPool::new(num_workers);
   let join_barrier = Arc::new(Barrier::new(num_workers + 1));
   let opt_shared = Arc::new(OptSharedData::new(num_workers));
