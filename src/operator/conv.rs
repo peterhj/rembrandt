@@ -318,8 +318,23 @@ impl<Comm> Operator for BNormConv2dOperator<Comm> where Comm: CommWorker {
     }
     self.weights.as_view_mut(ctx).sync_load(&init_weights.as_view());
 
+    //self.bn_scale1.as_view_mut(ctx).set_constant(1.0);
+    //self.bn_running_ivar1.as_view_mut(ctx).set_constant(1.0);
+
     self.bn_scale1.as_view_mut(ctx).set_constant(1.0);
+    self.bn_bias1.as_view_mut(ctx).set_constant(0.0);
+    self.bn_running_mean1.as_view_mut(ctx).set_constant(0.0);
     self.bn_running_ivar1.as_view_mut(ctx).set_constant(1.0);
+
+    /*self.bn_scale2.as_view_mut(ctx).set_constant(1.0);
+    self.bn_bias2.as_view_mut(ctx).set_constant(0.0);
+    self.bn_running_mean2.as_view_mut(ctx).set_constant(0.0);
+    self.bn_running_ivar2.as_view_mut(ctx).set_constant(1.0);
+
+    self.bn_scale3.as_view_mut(ctx).set_constant(1.0);
+    self.bn_bias3.as_view_mut(ctx).set_constant(0.0);
+    self.bn_running_mean3.as_view_mut(ctx).set_constant(0.0);
+    self.bn_running_ivar3.as_view_mut(ctx).set_constant(1.0);*/
   }
 
   fn decode_params(&mut self, blob: &[u8]) -> usize {
@@ -573,6 +588,32 @@ impl<Comm> Operator for BNormConv2dOperator<Comm> where Comm: CommWorker {
       .row_vector_sum(scale, &self.acc_bn_bias1_grad.as_view(ctx));
   }
 
+  fn update_params2(&mut self, grad_scale: f32, update_scale: f32) {
+    assert!(self.backward.is_some());
+    let ctx = &(*self.context).as_ref();
+    let mut backward = self.backward.as_mut().unwrap();
+
+    if grad_scale != 0.0 {
+      self.weights.as_view_mut(ctx)
+        .matrix_sum(grad_scale, &backward.grad_weights.as_view(ctx));
+
+      self.bn_scale1.as_view_mut(ctx)
+        .row_vector_sum(grad_scale, &self.bn_scale1_grad.as_view(ctx));
+      self.bn_bias1.as_view_mut(ctx)
+        .row_vector_sum(grad_scale, &self.bn_bias1_grad.as_view(ctx));
+    }
+
+    if update_scale != 0.0 {
+      self.weights.as_view_mut(ctx)
+        .matrix_sum(update_scale, &backward.acc_grad_weights.as_view(ctx));
+
+      self.bn_scale1.as_view_mut(ctx)
+        .row_vector_sum(update_scale, &self.acc_bn_scale1_grad.as_view(ctx));
+      self.bn_bias1.as_view_mut(ctx)
+        .row_vector_sum(update_scale, &self.acc_bn_bias1_grad.as_view(ctx));
+    }
+  }
+
   /*fn reset_params(&mut self, momentum: f32) {
     assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
@@ -643,23 +684,57 @@ impl<Comm> Operator for BNormConv2dOperator<Comm> where Comm: CommWorker {
   }
 
   fn stage_params(&mut self) {
-    assert!(self.backward.is_some());
+    /*assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
     let backward = self.backward.as_ref().unwrap();
     let mut comm_worker = backward.comm_worker.borrow_mut();
-    comm_worker.load(self.params_off, &mut self.weights); //, ctx);
-    // FIXME(20160422): batch norm params.
+    comm_worker.load(self.params_off, &mut self.weights); //, ctx);*/
     unimplemented!();
   }
 
   fn sync_params(&mut self) {
-    assert!(self.backward.is_some());
+    /*assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
     let backward = self.backward.as_ref().unwrap();
     let mut comm_worker = backward.comm_worker.borrow_mut();
-    comm_worker.store(self.params_off, &mut self.weights); //, ctx);
-    // FIXME(20160422): batch norm params.
+    comm_worker.store(self.params_off, &mut self.weights); //, ctx);*/
     unimplemented!();
+  }
+
+  fn stage_params_v2(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
+    let mut offset = offset;
+
+    comm_worker.load(offset, &mut self.weights);
+    offset += self.weights.len();
+
+    comm_worker.load(offset, &mut self.bn_scale1);
+    offset += self.bn_scale1.len();
+    comm_worker.load(offset, &mut self.bn_bias1);
+    offset += self.bn_bias1.len();
+    comm_worker.load(offset, &mut self.bn_running_mean1);
+    offset += self.bn_running_mean1.len();
+    comm_worker.load(offset, &mut self.bn_running_ivar1);
+    offset += self.bn_running_ivar1.len();
+
+    self.config.params_len()
+  }
+
+  fn merge_params_v2(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
+    let mut offset = offset;
+
+    comm_worker.store(offset, &mut self.weights);
+    offset += self.weights.len();
+
+    comm_worker.store(offset, &mut self.bn_scale1);
+    offset += self.bn_scale1.len();
+    comm_worker.store(offset, &mut self.bn_bias1);
+    offset += self.bn_bias1.len();
+    comm_worker.store(offset, &mut self.bn_running_mean1);
+    offset += self.bn_running_mean1.len();
+    comm_worker.store(offset, &mut self.bn_running_ivar1);
+    offset += self.bn_running_ivar1.len();
+
+    self.config.params_len()
   }
 
   fn reset_grads(&mut self, scale: f32) {
@@ -1023,10 +1098,25 @@ impl<Comm> Operator for StackResConv2dOperator<Comm> where Comm: CommWorker {
     self.weights1.as_view_mut(ctx).sync_load(&init_weights1.as_view());
     self.weights2.as_view_mut(ctx).sync_load(&init_weights2.as_view());
 
-    self.bn_scale1.as_view_mut(ctx).set_constant(1.0);
+    /*self.bn_scale1.as_view_mut(ctx).set_constant(1.0);
     self.bn_running_ivar1.as_view_mut(ctx).set_constant(1.0);
     self.bn_scale2.as_view_mut(ctx).set_constant(1.0);
+    self.bn_running_ivar2.as_view_mut(ctx).set_constant(1.0);*/
+
+    self.bn_scale1.as_view_mut(ctx).set_constant(1.0);
+    self.bn_bias1.as_view_mut(ctx).set_constant(0.0);
+    self.bn_running_mean1.as_view_mut(ctx).set_constant(0.0);
+    self.bn_running_ivar1.as_view_mut(ctx).set_constant(1.0);
+
+    self.bn_scale2.as_view_mut(ctx).set_constant(1.0);
+    self.bn_bias2.as_view_mut(ctx).set_constant(0.0);
+    self.bn_running_mean2.as_view_mut(ctx).set_constant(0.0);
     self.bn_running_ivar2.as_view_mut(ctx).set_constant(1.0);
+
+    /*self.bn_scale3.as_view_mut(ctx).set_constant(1.0);
+    self.bn_bias3.as_view_mut(ctx).set_constant(0.0);
+    self.bn_running_mean3.as_view_mut(ctx).set_constant(0.0);
+    self.bn_running_ivar3.as_view_mut(ctx).set_constant(1.0);*/
   }
 
   fn decode_params(&mut self, blob: &[u8]) -> usize {
@@ -1493,6 +1583,48 @@ impl<Comm> Operator for StackResConv2dOperator<Comm> where Comm: CommWorker {
       .row_vector_sum(scale, &self.acc_bn_bias2_grad.as_view(ctx));
   }
 
+  fn update_params2(&mut self, grad_scale: f32, update_scale: f32) {
+    assert!(self.backward.is_some());
+    let ctx = &(*self.context).as_ref();
+    let mut backward = self.backward.as_mut().unwrap();
+
+    if grad_scale != 0.0 {
+      self.weights1.as_view_mut(ctx)
+        .matrix_sum(grad_scale, &backward.grad_weights1.as_view(ctx));
+
+      self.bn_scale1.as_view_mut(ctx)
+        .row_vector_sum(grad_scale, &self.bn_scale1_grad.as_view(ctx));
+      self.bn_bias1.as_view_mut(ctx)
+        .row_vector_sum(grad_scale, &self.bn_bias1_grad.as_view(ctx));
+
+      self.weights2.as_view_mut(ctx)
+        .matrix_sum(grad_scale, &backward.grad_weights2.as_view(ctx));
+
+      self.bn_scale2.as_view_mut(ctx)
+        .row_vector_sum(grad_scale, &self.bn_scale2_grad.as_view(ctx));
+      self.bn_bias2.as_view_mut(ctx)
+        .row_vector_sum(grad_scale, &self.bn_bias2_grad.as_view(ctx));
+    }
+
+    if update_scale != 0.0 {
+      self.weights1.as_view_mut(ctx)
+        .matrix_sum(update_scale, &backward.acc_grad_weights1.as_view(ctx));
+
+      self.bn_scale1.as_view_mut(ctx)
+        .row_vector_sum(update_scale, &self.acc_bn_scale1_grad.as_view(ctx));
+      self.bn_bias1.as_view_mut(ctx)
+        .row_vector_sum(update_scale, &self.acc_bn_bias1_grad.as_view(ctx));
+
+      self.weights2.as_view_mut(ctx)
+        .matrix_sum(update_scale, &backward.acc_grad_weights2.as_view(ctx));
+
+      self.bn_scale2.as_view_mut(ctx)
+        .row_vector_sum(update_scale, &self.acc_bn_scale2_grad.as_view(ctx));
+      self.bn_bias2.as_view_mut(ctx)
+        .row_vector_sum(update_scale, &self.acc_bn_bias2_grad.as_view(ctx));
+    }
+  }
+
   fn save_params(&mut self) {
     unimplemented!();
   }
@@ -1510,23 +1642,83 @@ impl<Comm> Operator for StackResConv2dOperator<Comm> where Comm: CommWorker {
   }
 
   fn stage_params(&mut self) {
-    assert!(self.backward.is_some());
+    /*assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
     let backward = self.backward.as_ref().unwrap();
     let mut comm_worker = backward.comm_worker.borrow_mut();
     comm_worker.load(self.params_off, &mut self.weights1); //, ctx);
-    comm_worker.load(self.params_off, &mut self.weights2); //, ctx);
-    // FIXME(20160420): batch norm params.
+    comm_worker.load(self.params_off, &mut self.weights2); //, ctx);*/
+    unimplemented!();
   }
 
   fn sync_params(&mut self) {
-    assert!(self.backward.is_some());
+    /*assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
     let backward = self.backward.as_ref().unwrap();
     let mut comm_worker = backward.comm_worker.borrow_mut();
     comm_worker.store(self.params_off, &mut self.weights1); //, ctx);
-    comm_worker.store(self.params_off, &mut self.weights2); //, ctx);
-    // FIXME(20160420): batch norm params.
+    comm_worker.store(self.params_off, &mut self.weights2); //, ctx);*/
+    unimplemented!();
+  }
+
+  fn stage_params_v2(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
+    let mut offset = offset;
+
+    comm_worker.load(offset, &mut self.weights1);
+    offset += self.weights1.len();
+
+    comm_worker.load(offset, &mut self.bn_scale1);
+    offset += self.bn_scale1.len();
+    comm_worker.load(offset, &mut self.bn_bias1);
+    offset += self.bn_bias1.len();
+    comm_worker.load(offset, &mut self.bn_running_mean1);
+    offset += self.bn_running_mean1.len();
+    comm_worker.load(offset, &mut self.bn_running_ivar1);
+    offset += self.bn_running_ivar1.len();
+
+    comm_worker.load(offset, &mut self.weights2);
+    offset += self.weights2.len();
+
+    comm_worker.load(offset, &mut self.bn_scale2);
+    offset += self.bn_scale2.len();
+    comm_worker.load(offset, &mut self.bn_bias2);
+    offset += self.bn_bias2.len();
+    comm_worker.load(offset, &mut self.bn_running_mean2);
+    offset += self.bn_running_mean2.len();
+    comm_worker.load(offset, &mut self.bn_running_ivar2);
+    offset += self.bn_running_ivar2.len();
+
+    self.config.params_len()
+  }
+
+  fn merge_params_v2(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
+    let mut offset = offset;
+
+    comm_worker.store(offset, &mut self.weights1);
+    offset += self.weights1.len();
+
+    comm_worker.store(offset, &mut self.bn_scale1);
+    offset += self.bn_scale1.len();
+    comm_worker.store(offset, &mut self.bn_bias1);
+    offset += self.bn_bias1.len();
+    comm_worker.store(offset, &mut self.bn_running_mean1);
+    offset += self.bn_running_mean1.len();
+    comm_worker.store(offset, &mut self.bn_running_ivar1);
+    offset += self.bn_running_ivar1.len();
+
+    comm_worker.store(offset, &mut self.weights2);
+    offset += self.weights2.len();
+
+    comm_worker.store(offset, &mut self.bn_scale2);
+    offset += self.bn_scale2.len();
+    comm_worker.store(offset, &mut self.bn_bias2);
+    offset += self.bn_bias2.len();
+    comm_worker.store(offset, &mut self.bn_running_mean2);
+    offset += self.bn_running_mean2.len();
+    comm_worker.store(offset, &mut self.bn_running_ivar2);
+    offset += self.bn_running_ivar2.len();
+
+    self.config.params_len()
   }
 
   fn reset_grads(&mut self, scale: f32) {
@@ -2012,10 +2204,18 @@ impl<Comm> Operator for ProjStackResConv2dOperator<Comm> where Comm: CommWorker 
     self.weights3.as_view_mut(ctx).sync_load(&init_weights3.as_view());
 
     self.bn_scale1.as_view_mut(ctx).set_constant(1.0);
+    self.bn_bias1.as_view_mut(ctx).set_constant(0.0);
+    self.bn_running_mean1.as_view_mut(ctx).set_constant(0.0);
     self.bn_running_ivar1.as_view_mut(ctx).set_constant(1.0);
+
     self.bn_scale2.as_view_mut(ctx).set_constant(1.0);
+    self.bn_bias2.as_view_mut(ctx).set_constant(0.0);
+    self.bn_running_mean2.as_view_mut(ctx).set_constant(0.0);
     self.bn_running_ivar2.as_view_mut(ctx).set_constant(1.0);
+
     self.bn_scale3.as_view_mut(ctx).set_constant(1.0);
+    self.bn_bias3.as_view_mut(ctx).set_constant(0.0);
+    self.bn_running_mean3.as_view_mut(ctx).set_constant(0.0);
     self.bn_running_ivar3.as_view_mut(ctx).set_constant(1.0);
   }
 
@@ -2615,6 +2815,64 @@ impl<Comm> Operator for ProjStackResConv2dOperator<Comm> where Comm: CommWorker 
       .row_vector_sum(scale, &self.acc_bn_bias3_grad.as_view(ctx));
   }
 
+  fn update_params2(&mut self, grad_scale: f32, update_scale: f32) {
+    assert!(self.backward.is_some());
+    let ctx = &(*self.context).as_ref();
+    let mut backward = self.backward.as_mut().unwrap();
+
+    if grad_scale != 0.0 {
+      self.weights1.as_view_mut(ctx)
+        .matrix_sum(grad_scale, &backward.grad_weights1.as_view(ctx));
+
+      self.bn_scale1.as_view_mut(ctx)
+        .row_vector_sum(grad_scale, &self.bn_scale1_grad.as_view(ctx));
+      self.bn_bias1.as_view_mut(ctx)
+        .row_vector_sum(grad_scale, &self.bn_bias1_grad.as_view(ctx));
+
+      self.weights2.as_view_mut(ctx)
+        .matrix_sum(grad_scale, &backward.grad_weights2.as_view(ctx));
+
+      self.bn_scale2.as_view_mut(ctx)
+        .row_vector_sum(grad_scale, &self.bn_scale2_grad.as_view(ctx));
+      self.bn_bias2.as_view_mut(ctx)
+        .row_vector_sum(grad_scale, &self.bn_bias2_grad.as_view(ctx));
+
+      self.weights3.as_view_mut(ctx)
+        .matrix_sum(grad_scale, &backward.grad_weights3.as_view(ctx));
+
+      self.bn_scale3.as_view_mut(ctx)
+        .row_vector_sum(grad_scale, &self.bn_scale3_grad.as_view(ctx));
+      self.bn_bias3.as_view_mut(ctx)
+        .row_vector_sum(grad_scale, &self.bn_bias3_grad.as_view(ctx));
+    }
+
+    if update_scale != 0.0 {
+      self.weights1.as_view_mut(ctx)
+        .matrix_sum(update_scale, &backward.acc_grad_weights1.as_view(ctx));
+
+      self.bn_scale1.as_view_mut(ctx)
+        .row_vector_sum(update_scale, &self.acc_bn_scale1_grad.as_view(ctx));
+      self.bn_bias1.as_view_mut(ctx)
+        .row_vector_sum(update_scale, &self.acc_bn_bias1_grad.as_view(ctx));
+
+      self.weights2.as_view_mut(ctx)
+        .matrix_sum(update_scale, &backward.acc_grad_weights2.as_view(ctx));
+
+      self.bn_scale2.as_view_mut(ctx)
+        .row_vector_sum(update_scale, &self.acc_bn_scale2_grad.as_view(ctx));
+      self.bn_bias2.as_view_mut(ctx)
+        .row_vector_sum(update_scale, &self.acc_bn_bias2_grad.as_view(ctx));
+
+      self.weights3.as_view_mut(ctx)
+        .matrix_sum(update_scale, &backward.acc_grad_weights3.as_view(ctx));
+
+      self.bn_scale3.as_view_mut(ctx)
+        .row_vector_sum(update_scale, &self.acc_bn_scale3_grad.as_view(ctx));
+      self.bn_bias3.as_view_mut(ctx)
+        .row_vector_sum(update_scale, &self.acc_bn_bias3_grad.as_view(ctx));
+    }
+  }
+
   fn save_params(&mut self) {
     unimplemented!();
   }
@@ -2632,27 +2890,109 @@ impl<Comm> Operator for ProjStackResConv2dOperator<Comm> where Comm: CommWorker 
   }
 
   fn stage_params(&mut self) {
-    assert!(self.backward.is_some());
+    /*assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
     let backward = self.backward.as_ref().unwrap();
     let mut comm_worker = backward.comm_worker.borrow_mut();
     comm_worker.load(self.params_off, &mut self.weights1); //, ctx);
     comm_worker.load(self.params_off, &mut self.weights2); //, ctx);
-    comm_worker.load(self.params_off, &mut self.weights3); //, ctx);
-    // FIXME(20160421): batch norm params.
+    comm_worker.load(self.params_off, &mut self.weights3); //, ctx);*/
     unimplemented!();
   }
 
   fn sync_params(&mut self) {
-    assert!(self.backward.is_some());
+    /*assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
     let backward = self.backward.as_ref().unwrap();
     let mut comm_worker = backward.comm_worker.borrow_mut();
     comm_worker.store(self.params_off, &mut self.weights1); //, ctx);
     comm_worker.store(self.params_off, &mut self.weights2); //, ctx);
-    comm_worker.store(self.params_off, &mut self.weights3); //, ctx);
-    // FIXME(20160421): batch norm params.
+    comm_worker.store(self.params_off, &mut self.weights3); //, ctx);*/
     unimplemented!();
+  }
+
+  fn stage_params_v2(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
+    let mut offset = offset;
+
+    comm_worker.load(offset, &mut self.weights1);
+    offset += self.weights1.len();
+
+    comm_worker.load(offset, &mut self.bn_scale1);
+    offset += self.bn_scale1.len();
+    comm_worker.load(offset, &mut self.bn_bias1);
+    offset += self.bn_bias1.len();
+    comm_worker.load(offset, &mut self.bn_running_mean1);
+    offset += self.bn_running_mean1.len();
+    comm_worker.load(offset, &mut self.bn_running_ivar1);
+    offset += self.bn_running_ivar1.len();
+
+    comm_worker.load(offset, &mut self.weights2);
+    offset += self.weights2.len();
+
+    comm_worker.load(offset, &mut self.bn_scale2);
+    offset += self.bn_scale2.len();
+    comm_worker.load(offset, &mut self.bn_bias2);
+    offset += self.bn_bias2.len();
+    comm_worker.load(offset, &mut self.bn_running_mean2);
+    offset += self.bn_running_mean2.len();
+    comm_worker.load(offset, &mut self.bn_running_ivar2);
+    offset += self.bn_running_ivar2.len();
+
+    comm_worker.load(offset, &mut self.weights3);
+    offset += self.weights3.len();
+
+    comm_worker.load(offset, &mut self.bn_scale3);
+    offset += self.bn_scale3.len();
+    comm_worker.load(offset, &mut self.bn_bias3);
+    offset += self.bn_bias3.len();
+    comm_worker.load(offset, &mut self.bn_running_mean3);
+    offset += self.bn_running_mean3.len();
+    comm_worker.load(offset, &mut self.bn_running_ivar3);
+    offset += self.bn_running_ivar3.len();
+
+    self.config.params_len()
+  }
+
+  fn merge_params_v2(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
+    let mut offset = offset;
+
+    comm_worker.store(offset, &mut self.weights1);
+    offset += self.weights1.len();
+
+    comm_worker.store(offset, &mut self.bn_scale1);
+    offset += self.bn_scale1.len();
+    comm_worker.store(offset, &mut self.bn_bias1);
+    offset += self.bn_bias1.len();
+    comm_worker.store(offset, &mut self.bn_running_mean1);
+    offset += self.bn_running_mean1.len();
+    comm_worker.store(offset, &mut self.bn_running_ivar1);
+    offset += self.bn_running_ivar1.len();
+
+    comm_worker.store(offset, &mut self.weights2);
+    offset += self.weights2.len();
+
+    comm_worker.store(offset, &mut self.bn_scale2);
+    offset += self.bn_scale2.len();
+    comm_worker.store(offset, &mut self.bn_bias2);
+    offset += self.bn_bias2.len();
+    comm_worker.store(offset, &mut self.bn_running_mean2);
+    offset += self.bn_running_mean2.len();
+    comm_worker.store(offset, &mut self.bn_running_ivar2);
+    offset += self.bn_running_ivar2.len();
+
+    comm_worker.store(offset, &mut self.weights3);
+    offset += self.weights3.len();
+
+    comm_worker.store(offset, &mut self.bn_scale3);
+    offset += self.bn_scale3.len();
+    comm_worker.store(offset, &mut self.bn_bias3);
+    offset += self.bn_bias3.len();
+    comm_worker.store(offset, &mut self.bn_running_mean3);
+    offset += self.bn_running_mean3.len();
+    comm_worker.store(offset, &mut self.bn_running_ivar3);
+    offset += self.bn_running_ivar3.len();
+
+    self.config.params_len()
   }
 
   fn reset_grads(&mut self, scale: f32) {

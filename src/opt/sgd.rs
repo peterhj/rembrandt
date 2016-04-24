@@ -109,16 +109,18 @@ impl OptSharedData {
 
 pub struct SyncSgdOpt {
   shared:   Arc<OptSharedData>,
+  local_accum_loss: f32,
 }
 
 impl SyncSgdOpt {
   pub fn new(shared: Arc<OptSharedData>) -> SyncSgdOpt {
     SyncSgdOpt{
       shared:   shared,
+      local_accum_loss: 0.0,
     }
   }
 
-  pub fn train(&self, sgd_opt_cfg: SgdOptConfig, datum_cfg: SampleDatumConfig, label_cfg: SampleLabelConfig, train_data: &mut DataIterator, valid_data: &mut DataIterator, operator: &mut OperatorWorker) {
+  pub fn train(&mut self, sgd_opt_cfg: SgdOptConfig, datum_cfg: SampleDatumConfig, label_cfg: SampleLabelConfig, train_data: &mut DataIterator, valid_data: &mut DataIterator, operator: &mut OperatorWorker) {
     let batch_size = operator.batch_size();
     let num_workers = operator.num_workers();
     let rank = operator.worker_rank();
@@ -131,6 +133,7 @@ impl SyncSgdOpt {
 
     let shared_seed = operator.shared_seed();
     operator.init_params(shared_seed);
+    operator.reset();
 
     let mut start_time = get_time();
     let mut epoch_counter = 0;
@@ -162,10 +165,14 @@ impl SyncSgdOpt {
         operator.loss_operator(0).stage_label(batch_counter, maybe_label.unwrap());
         operator.loss_operator(0).stage_weight(batch_counter, minibatch_weight);
         local_counter += 1;
-        epoch_counter = local_counter * num_workers / epoch_size;
-        let epoch_offset = local_counter * num_workers % epoch_size;
+        //epoch_counter = local_counter * num_workers / epoch_size;
+        //let epoch_offset = local_counter * num_workers % epoch_size;
+        epoch_counter = local_counter / epoch_size;
+        let epoch_offset = local_counter % epoch_size;
         batch_counter += 1;
 
+        // With a full batch of data, compute a full forward/backward pass.
+        assert!(batch_counter <= batch_size);
         if batch_counter == batch_size {
           operator.next();
           operator.input_operator().load_frames(batch_size);
@@ -173,10 +180,12 @@ impl SyncSgdOpt {
           operator.loss_operator(0).load_weights(batch_size);
           operator.forward(batch_size, OpPhase::Training{t: iter_counter});
           operator.loss_operator(0).store_output_categories(batch_size);
+          let local_loss = operator.loss_operator(0).store_loss(batch_size);
           operator.backward(batch_size);
           let local_correct_count = operator.loss_operator(0).accuracy_count(batch_size);
           self.shared.acc_correct_count.fetch_add(local_correct_count, Ordering::AcqRel);
           self.shared.acc_total_count.fetch_add(batch_size, Ordering::AcqRel);
+          self.local_accum_loss += local_loss;
           batch_counter = 0;
         }
 
@@ -186,8 +195,11 @@ impl SyncSgdOpt {
           //let momentum = sgd_opt_cfg.momentum.at_iter(iter_counter);
           //let nesterov = sgd_opt_cfg.momentum.is_nesterov();
 
+          // Apply regularization to the current gradient.
           operator.regularize(Regularization::L2{l2_reg_coef: l2_reg_coef});
 
+          // If we are using the standard Nesterov update, unapply the extra
+          // momentum.
           match sgd_opt_cfg.momentum {
             Momentum::UpdateNesterov{mu} => {
               if iter_counter > 0 {
@@ -197,6 +209,7 @@ impl SyncSgdOpt {
             _ => {}
           }
 
+          // Compute the update, possibly with momentum.
           match sgd_opt_cfg.momentum {
             Momentum::Zero => {
               operator.accumulate_grads(1.0, 0.0);
@@ -207,20 +220,23 @@ impl SyncSgdOpt {
               operator.accumulate_grads(-step_size, mu);
               operator.update_params(1.0);
             }
+            // XXX(20160422): These are the Torch `optim.sgd`-style update;
+            // see: <https://github.com/torch/optim/blob/master/sgd.lua>.
             Momentum::Gradient{mu} => {
               operator.accumulate_grads(1.0, mu);
               operator.update_params(-step_size);
             }
             Momentum::GradientNesterov{mu} => {
-              // XXX(20160422): This is the Torch `optim.sgd`-style update;
-              // see: <https://github.com/torch/optim/blob/master/sgd.lua>.
               operator.accumulate_grads(1.0, mu);
               operator.update_params2(-step_size, -step_size * mu);
             }
           }
 
+          // Communicate the parameters.
           operator.sync_params_v2();
 
+          // If we are using the standard Nesterov update, apply some extra
+          // momentum.
           // XXX(20160406): Interestingly, we should use the local update rather
           // than the communicated update with momentum.
           //operator.set_grads_with_params_diff();
@@ -236,25 +252,27 @@ impl SyncSgdOpt {
 
           if iter_counter % sgd_opt_cfg.display_iters == 0 {
             self.shared.sync();
+            let lap_time = get_time();
             if rank == 0 {
-              let lap_time = get_time();
               let elapsed_ms = (lap_time - start_time).num_milliseconds();
-              start_time = lap_time;
               let acc_correct_count = self.shared.acc_correct_count.load(Ordering::Acquire);
               let acc_total_count = self.shared.acc_total_count.load(Ordering::Acquire);
               let accuracy = acc_correct_count as f32 / acc_total_count as f32;
+              let avg_loss = self.local_accum_loss / sgd_opt_cfg.display_iters as f32;
               info!("SyncSgdOpt: train: iter: {} epoch: {} sample: {}/{} step: {} loss: {:.06} accuracy: {:.03} elapsed: {:.03} s",
                   iter_counter, epoch_counter,
                   epoch_offset, epoch_size,
                   step_size,
-                  0.0, //avg_loss,
+                  avg_loss,
                   accuracy,
                   elapsed_ms as f32 * 0.001,
               );
               self.shared.acc_correct_count.store(0, Ordering::Release);
               self.shared.acc_total_count.store(0, Ordering::Release);
+              self.local_accum_loss = 0.0;
             }
             self.shared.sync();
+            start_time = lap_time;
           }
 
           if iter_counter % sgd_opt_cfg.save_iters == 0 {
@@ -271,10 +289,12 @@ impl SyncSgdOpt {
     }
   }
 
-  pub fn validate(&self, sgd_opt_cfg: SgdOptConfig, datum_cfg: SampleDatumConfig, label_cfg: SampleLabelConfig, valid_data: &mut DataIterator, operator: &mut OperatorWorker) {
+  pub fn validate(&mut self, sgd_opt_cfg: SgdOptConfig, datum_cfg: SampleDatumConfig, label_cfg: SampleLabelConfig, valid_data: &mut DataIterator, operator: &mut OperatorWorker) {
     let batch_size = operator.batch_size();
     let num_workers = operator.num_workers();
     let rank = operator.worker_rank();
+
+    let num_samples = valid_data.max_num_samples();
 
     let mut start_time = get_time();
     let mut batch_counter = 0;
@@ -296,16 +316,20 @@ impl SyncSgdOpt {
         }
       }
       operator.loss_operator(0).stage_label(batch_counter, maybe_label.unwrap());
+      operator.loss_operator(0).stage_weight(batch_counter, 1.0 / num_samples as f32);
       batch_counter += 1;
 
       if batch_counter == batch_size {
         operator.input_operator().load_frames(batch_size);
         operator.loss_operator(0).load_labels(batch_size);
+        operator.loss_operator(0).load_weights(batch_size);
         operator.forward(batch_size, OpPhase::Inference);
         operator.loss_operator(0).store_output_categories(batch_size);
         let local_correct_count = operator.loss_operator(0).accuracy_count(batch_size);
+        let local_loss = operator.loss_operator(0).store_loss(batch_size);
         self.shared.acc_correct_count.fetch_add(local_correct_count, Ordering::AcqRel);
         self.shared.acc_total_count.fetch_add(batch_size, Ordering::AcqRel);
+        self.local_accum_loss += local_loss;
         batch_counter = 0;
       }
     });
@@ -313,11 +337,14 @@ impl SyncSgdOpt {
       let batch_size = batch_counter;
       operator.input_operator().load_frames(batch_size);
       operator.loss_operator(0).load_labels(batch_size);
+      operator.loss_operator(0).load_weights(batch_size);
       operator.forward(batch_size, OpPhase::Inference);
       operator.loss_operator(0).store_output_categories(batch_size);
       let local_correct_count = operator.loss_operator(0).accuracy_count(batch_size);
+      let local_loss = operator.loss_operator(0).store_loss(batch_size);
       self.shared.acc_correct_count.fetch_add(local_correct_count, Ordering::AcqRel);
       self.shared.acc_total_count.fetch_add(batch_size, Ordering::AcqRel);
+      self.local_accum_loss += local_loss;
       batch_counter = 0;
     }
 
@@ -329,13 +356,16 @@ impl SyncSgdOpt {
       let acc_correct_count = self.shared.acc_correct_count.load(Ordering::Acquire);
       let acc_total_count = self.shared.acc_total_count.load(Ordering::Acquire);
       let accuracy = acc_correct_count as f32 / acc_total_count as f32;
-      info!("SyncSgdOpt: valid: sample count: {} accuracy: {:.03} elapsed: {:.03} s",
+      let avg_loss = self.local_accum_loss;
+      info!("SyncSgdOpt: valid: sample count: {} avg loss: {:.06} accuracy: {:.03} elapsed: {:.03} s",
           acc_total_count,
+          avg_loss,
           accuracy,
           elapsed_ms as f32 * 0.001,
       );
       self.shared.acc_correct_count.store(0, Ordering::Release);
       self.shared.acc_total_count.store(0, Ordering::Release);
+      self.local_accum_loss = 0.0;
     }
     self.shared.sync();
   }

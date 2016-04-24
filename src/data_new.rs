@@ -392,6 +392,7 @@ impl DatasetConfig {
             let num_part_samples = num_samples / num_parts;
             let mut start_key: Vec<u8> = Vec::with_capacity(8);
             write!(&mut start_key, "{:08}", part_rank * num_part_samples);
+            iter.set_len(num_part_samples);
             iter.set_start_key(start_key);
             Box::new(iter)
           }
@@ -926,6 +927,10 @@ impl LmdbCaffeDataIterator {
     }
   }
 
+  pub fn set_len(&mut self, new_len: usize) {
+    self.length = new_len;
+  }
+
   pub fn set_start_key(&mut self, start_key: Vec<u8>) {
     self.start_key = Some(start_key);
   }
@@ -949,7 +954,7 @@ impl DataIterator for LmdbCaffeDataIterator {
       None => cursor.iter(),
       Some(ref start_key) => cursor.seek_iter(start_key.clone()),
     };
-    for (i, kv) in iter.enumerate() {
+    for (i, kv) in iter.enumerate().take(self.length) {
       let value_bytes: &[u8] = kv.value;
       let mut datum: Datum = match parse_from_bytes(value_bytes) {
         Ok(m) => m,

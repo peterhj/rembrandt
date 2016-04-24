@@ -188,7 +188,7 @@ fn main() {
               dataset_cfg.build_with_cfg(datum_cfg, label_cfg, "valid")
           );
 
-      let sgd_opt = SyncSgdOpt::new(opt_shared);
+      let mut sgd_opt = SyncSgdOpt::new(opt_shared);
       sgd_opt.train(sgd_opt_cfg, datum_cfg, label_cfg, &mut train_data, &mut valid_data, &mut worker);
       join_barrier.wait();
     });

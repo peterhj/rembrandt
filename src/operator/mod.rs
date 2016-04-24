@@ -19,7 +19,7 @@ use array_cuda::device::context::{DeviceContext, DeviceCtxRef};
 use array_cuda::device::ext::{DeviceCastBytesExt, DeviceNumExt};
 use array_cuda::device::linalg::{BlasMatrixExt, BlasVectorExt, Transpose};
 use array_cuda::device::memory::{DeviceZeroExt, DeviceBuffer};
-use array_cuda::device::random::{RandomSampleExt, UniformDist};
+use array_cuda::device::random::{RandomSampleExt, UniformDist, GaussianDist};
 use array_new::{
   Array, AsyncArray, ArrayView, ArrayViewMut, ArrayZeroExt, NdArraySerialize,
   Shape, Array2d, Array3d,
@@ -372,22 +372,41 @@ pub struct JoinOperator;
 
 #[derive(Clone, Debug)]
 pub enum Data3dPreproc {
-  AddPixelwiseGaussianNoise{
-    std_dev:    f32,
+  AddPixelwiseColorNoise{
+    brightness_hrange:  f32,
+    contrast_hrange:    f32,
+    saturation_hrange:  f32,
   },
-  AddPixelwisePCAGaussianNoise{
-    sing_vectors_path:  PathBuf,
-    sing_values_path:   PathBuf,
+  AddPixelwisePCALightingNoise{
+    //sing_vectors_path:  PathBuf,
+    //sing_values_path:   PathBuf,
+    singular_vecs:  Vec<Vec<f32>>,
+    singular_vals:  Vec<f32>,
+    /*singular_vecs:  vec![
+      vec![-0.5675,  0.7192,  0.4009],
+      vec![-0.5808, -0.0045, -0.8140],
+      vec![-0.5836, -0.6948,  0.4203],
+    ],
+    singular_vals:  vec![
+      0.2175, 0.0188, 0.0045,
+    ],*/
     std_dev:    f32,
   },
   Crop{
     crop_width:     usize,
     crop_height:    usize,
   },
+  FlipX,
+  NormalizePixelwise{
+    mean:       Vec<f32>,
+    std_dev:    Vec<f32>,
+    /*mean:       vec![0.485, 0.456, 0.406],
+    std_dev:    vec![0.229, 0.224, 0.225],*/
+  },
   SubtractElemwiseMean{
     mean_path:  PathBuf,
+    //normalize:  bool,
   },
-  FlipX,
 }
 
 #[derive(Clone, Debug)]
@@ -402,10 +421,10 @@ impl Data3dOperatorConfig {
     let mut out_dims = self.in_dims;
     for preproc in self.preprocs.iter() {
       match preproc {
-        &Data3dPreproc::AddPixelwiseGaussianNoise{..} => {
+        &Data3dPreproc::AddPixelwiseColorNoise{..} => {
           // Do nothing.
         }
-        &Data3dPreproc::AddPixelwisePCAGaussianNoise{..} => {
+        &Data3dPreproc::AddPixelwisePCALightingNoise{..} => {
           // Do nothing.
         }
         &Data3dPreproc::Crop{crop_width, crop_height} => {
@@ -414,10 +433,13 @@ impl Data3dOperatorConfig {
           out_dims = (crop_width, crop_height, out_dims.2);
           assert!(self.in_dims.len() >= out_dims.len());
         }
-        &Data3dPreproc::SubtractElemwiseMean{..} => {
+        &Data3dPreproc::FlipX => {
           // Do nothing.
         }
-        &Data3dPreproc::FlipX => {
+        &Data3dPreproc::NormalizePixelwise{..} => {
+          // Do nothing.
+        }
+        &Data3dPreproc::SubtractElemwiseMean{..} => {
           // Do nothing.
         }
       }
@@ -427,20 +449,29 @@ impl Data3dOperatorConfig {
 }
 
 pub enum Data3dPreprocOperator {
-  AddPixelwiseGaussianNoise,
-  AddPixelwisePCAGaussianNoise,
+  AddPixelwiseColorNoise,
+  AddPixelwisePCALightingNoise{
+    dist:       GaussianDist<f32>,
+    svecs_buf:  DeviceBuffer<f32>,
+    svals_buf:  DeviceBuffer<f32>,
+    alphas_buf: DeviceBuffer<f32>,
+  },
   Crop{
     transform:  CudnnTransformOp,
     woff_range: Range<usize>,
     hoff_range: Range<usize>,
   },
+  FlipX{
+    coin_flip:  Range<usize>,
+  },
+  NormalizePixelwise{
+    mean_buf:       DeviceBuffer<f32>,
+    std_dev_buf:    DeviceBuffer<f32>,
+  },
   SubtractElemwiseMean{
     add:        CudnnAddOp,
     mean_arr_h: Array3d<f32>,
     mean_array: DeviceBuffer<f32>,
-  },
-  FlipX{
-    coin_flip:  Range<usize>,
   },
 }
 
@@ -470,13 +501,34 @@ impl Data3dOperator {
     let mut preprocs = Vec::with_capacity(config.preprocs.len());
     for preproc_cfg in config.preprocs.iter() {
       match preproc_cfg {
-        &Data3dPreproc::AddPixelwiseGaussianNoise{..} => {
+        &Data3dPreproc::AddPixelwiseColorNoise{..} => {
           // FIXME(20160422)
           unimplemented!();
         }
-        &Data3dPreproc::AddPixelwisePCAGaussianNoise{..} => {
+        &Data3dPreproc::AddPixelwisePCALightingNoise{ref singular_vecs, ref singular_vals, std_dev} => {
           // FIXME(20160422)
-          unimplemented!();
+          let mut svecs_buf = DeviceBuffer::zeros(9, ctx);
+          let svecs_buf_h = vec![
+            singular_vecs[0][0],
+            singular_vecs[0][1],
+            singular_vecs[0][2],
+            singular_vecs[1][0],
+            singular_vecs[1][1],
+            singular_vecs[1][2],
+            singular_vecs[2][0],
+            singular_vecs[2][1],
+            singular_vecs[2][2],
+          ];
+          svecs_buf.as_ref_mut(ctx).sync_load(&svecs_buf_h);
+          let mut svals_buf = DeviceBuffer::zeros(3, ctx);
+          svals_buf.as_ref_mut(ctx).sync_load(&singular_vals);
+          let alphas_buf = DeviceBuffer::zeros(3 * batch_size, ctx);
+          preprocs.push(Data3dPreprocOperator::AddPixelwisePCALightingNoise{
+            dist:       GaussianDist{mean: 0.0, std: std_dev},
+            svecs_buf:  svecs_buf,
+            svals_buf:  svals_buf,
+            alphas_buf: alphas_buf,
+          });
         }
         &Data3dPreproc::Crop{crop_width, crop_height} => {
           // FIXME(20160407): this formulation is only valid for a single
@@ -496,6 +548,15 @@ impl Data3dOperator {
             woff_range: Range::new(0, max_offset_w),
             hoff_range: Range::new(0, max_offset_h),
           });
+        }
+        &Data3dPreproc::FlipX => {
+          preprocs.push(Data3dPreprocOperator::FlipX{
+            coin_flip:  Range::new(0, 2),
+          });
+        }
+        &Data3dPreproc::NormalizePixelwise{..} => {
+          // FIXME(20160423)
+          unimplemented!();
         }
         &Data3dPreproc::SubtractElemwiseMean{ref mean_path} => {
           let mut mean_file = match File::open(mean_path) {
@@ -519,11 +580,6 @@ impl Data3dOperator {
             ),
             mean_arr_h: mean_arr_h,
             mean_array: mean_array,
-          });
-        }
-        &Data3dPreproc::FlipX => {
-          preprocs.push(Data3dPreprocOperator::FlipX{
-            coin_flip:  Range::new(0, 2),
           });
         }
       }
@@ -570,6 +626,8 @@ impl Operator for Data3dOperator {
     //let length = self.config.in_dims.len();
     let in_dims = self.config.in_dims;
     let (in_width, in_height, in_channels) = in_dims;
+    let out_dims = self.config.get_out_dims();
+    let (out_width, out_height, out_channels) = out_dims;
     let mut out_buf = self.out_buf.borrow_mut();
     let num_preprocs = self.config.preprocs.len();
     {
@@ -617,6 +675,45 @@ impl Operator for Data3dOperator {
               0.0, target_buf.as_mut_ptr(),
               &*ctx.get_dnn(),
           ) }.unwrap();
+        }
+
+        ( &Data3dPreproc::AddPixelwiseColorNoise{..},
+          &mut Data3dPreprocOperator::AddPixelwiseColorNoise,
+        ) => {
+          match phase {
+            OpPhase::Inference => {
+              src_buf.send(&mut target_buf);
+            }
+            OpPhase::Training{..} => {
+              // FIXME(20160423)
+              unimplemented!();
+            }
+          }
+        }
+
+        ( &Data3dPreproc::AddPixelwisePCALightingNoise{..},
+          &mut Data3dPreprocOperator::AddPixelwisePCALightingNoise{ref dist, ref mut alphas_buf, ref mut svals_buf, ref mut svecs_buf},
+        ) => {
+          match phase {
+            OpPhase::Inference => {
+              src_buf.send(&mut target_buf);
+            }
+            OpPhase::Training{..} => {
+              // FIXME(20160423)
+              assert_eq!(3, self.config.in_dims.2);
+              alphas_buf.as_ref_mut(ctx).sample(dist);
+              unsafe { rembrandt_kernel_batch_map_preproc_pca3_noise(
+                  src_buf.as_ptr(),
+                  (out_width * out_height) as i32,
+                  batch_size as i32,
+                  alphas_buf.as_ref(ctx).as_ptr(),
+                  svals_buf.as_ref(ctx).as_ptr(),
+                  svecs_buf.as_ref(ctx).as_ptr(),
+                  target_buf.as_mut_ptr(),
+                  ctx.stream.ptr,
+              ) };
+            }
+          }
         }
 
         ( &Data3dPreproc::SubtractElemwiseMean{..},

@@ -286,9 +286,17 @@ fn build_resnet18_arch() -> SequentialOperatorConfig {
         crop_width:     224,
         crop_height:    224,
       },
-      /*Data3dPreproc::AddGaussianNoise{
-        std_dev:    0.01,
-      },*/
+      Data3dPreproc::AddPixelwisePCALightingNoise{
+        std_dev:    0.1,
+        singular_vecs:  vec![
+          vec![-0.5675, -0.5808, -0.5836],
+          vec![ 0.7192, -0.0045, -0.6948],
+          vec![ 0.4009, -0.8140,  0.4203],
+        ],
+        singular_vals:  vec![
+          0.2175, 0.0188, 0.0045,
+        ],
+      },
     ],
   };
   let bnorm_conv1_op_cfg = BNormConv2dOperatorConfig{
@@ -419,7 +427,7 @@ fn build_resnet18_arch() -> SequentialOperatorConfig {
   worker_cfg
 }
 
-fn build_resnet20_arch() -> SequentialOperatorConfig {
+/*fn build_resnet20_arch() -> SequentialOperatorConfig {
   let data_op_cfg = Data3dOperatorConfig{
     in_dims:        (256, 256, 3),
     normalize:      true,
@@ -564,7 +572,7 @@ fn build_resnet20_arch() -> SequentialOperatorConfig {
     .affine(aff1_op_cfg)
     .softmax_kl_loss(loss_cfg);
   worker_cfg
-}
+}*/
 
 fn build_resnet34_arch() -> SequentialOperatorConfig {
   // FIXME(20160421)
@@ -575,8 +583,8 @@ fn main() {
   env_logger::init().unwrap();
 
   let num_workers = 1;
-  let batch_size = 64;
-  let minibatch_size = 64;
+  let batch_size = 32;
+  let minibatch_size = 32;
   info!("num workers: {} batch size: {}",
       num_workers, batch_size);
 
@@ -586,12 +594,11 @@ fn main() {
     //step_size:      StepSizeSchedule::Constant{step_size: 0.1},
     step_size:      StepSizeSchedule::Anneal2{
       step0: 0.1,
-      step1: 0.01,  step1_iters: 150000,
-      step2: 0.001, step2_iters: 300000,
+      step1: 0.01,  step1_iters: 20000,
+      step2: 0.001, step2_iters: 40000,
     },
     //momentum:       MomentumStyle::Zero,
-    //momentum:       MomentumStyle::Sgd{momentum: 0.9},
-    //momentum:       MomentumStyle::Nesterov{momentum: 0.9},
+    //momentum:       Momentum::UpdateNesterov{mu: 0.9},
     momentum:       Momentum::GradientNesterov{mu: 0.9},
     l2_reg_coef:    1.0e-4,
     display_iters:  20,
@@ -649,7 +656,7 @@ fn main() {
           );*/
           dataset_cfg.build_iterator("valid");
 
-      let sgd_opt = SyncSgdOpt::new(opt_shared);
+      let mut sgd_opt = SyncSgdOpt::new(opt_shared);
       sgd_opt.train(sgd_opt_cfg, datum_cfg, label_cfg, &mut *train_data, &mut *valid_data, &mut worker);
       join_barrier.wait();
     });

@@ -25,6 +25,7 @@ pub trait LossOperator: Operator {
   fn load_weights(&mut self, batch_size: usize);
   fn stage_category_weight(&mut self, _batch_idx: usize, _category: i32, _cat_weight: f32) {}
   fn load_category_weights(&mut self, _batch_size: usize) {}
+  fn store_loss(&mut self, batch_size: usize) -> f32;
   fn store_output_values(&mut self, batch_size: usize);
   fn get_output_values(&self, batch_size: usize) -> &Array2d<f32>;
   fn store_output_categories(&mut self, batch_size: usize);
@@ -182,6 +183,35 @@ impl LossOperator for SoftmaxKLLossOperator {
     let ctx = &(*self.context).as_ref();
     self.weights.as_view_mut(ctx)
       .sync_load(&self.weights_h.as_view());
+  }
+
+  fn store_loss(&mut self, batch_size: usize) -> f32 {
+    // FIXME(20160423)
+    assert!(batch_size <= self.batch_cap);
+    assert!(self.loss_config.num_categories <= 1024);
+    let ctx = &(*self.context).as_ref();
+    unsafe { rembrandt_kernel_batch_map_softmax_kl_loss1(
+        self.out_values.as_view(ctx).as_ptr(),
+        self.loss_config.num_categories as i32,
+        batch_size as i32,
+        self.label_cats.as_view(ctx).as_ptr(),
+        self.weights.as_view(ctx).as_ptr(),
+        0.0,
+        self.out_loss1.as_view_mut(ctx).as_mut_ptr(),
+        ctx.stream.ptr,
+    ) };
+    assert!(batch_size <= 1024);
+    unsafe { rembrandt_kernel_batch_blockreduce_sum(
+        self.out_loss1.as_view(ctx).as_ptr(),
+        batch_size as i32,
+        1,
+        self.out_loss.as_ref_mut(ctx).as_mut_ptr(),
+        0.0,
+        ctx.stream.ptr,
+    ) };
+    self.out_loss.as_ref(ctx)
+      .sync_store(&mut self.out_loss_h);
+    self.out_loss_h[0]
   }
 
   fn store_output_values(&mut self, batch_size: usize) {
@@ -349,6 +379,10 @@ impl LossOperator for MarginalizedSoftmaxIndLossOperator {
     let ctx = &(*self.context).as_ref();
     self.c_weights.as_view_mut(ctx)
       .sync_load(&self.c_weights_h.as_view());
+  }
+
+  fn store_loss(&mut self, batch_size: usize) -> f32 {
+    unimplemented!();
   }
 
   fn store_output_values(&mut self, batch_size: usize) {

@@ -1,1 +1,3 @@
+pub struct MpiDistElasticServerCentralWorker;
+
 pub struct MpiDistElasticServerCommWorker;

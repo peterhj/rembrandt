@@ -617,8 +617,10 @@ impl MpiDistAsyncPushGossipCommWorker {
     write!(&mut service_name_buf, "rembrandt_server_{}", worker_rank);
     let service_name = CString::new(service_name_buf).unwrap();
     //println!("DEBUG: rank: {} service name: {:?}", worker_rank, service_name);
-    Mpi::publish_service_(&service_name, false, true, &service_port).unwrap();
-    Mpi::barrier_().unwrap();
+    if num_workers > 1 {
+      Mpi::publish_service_(&service_name, false, true, &service_port).unwrap();
+      Mpi::barrier_().unwrap();
+    }
 
     let mut client_conns = VecMap::with_capacity(num_workers);
     let mut server_conns = VecMap::with_capacity(num_workers);
@@ -697,7 +699,9 @@ impl MpiDistAsyncPushGossipCommWorker {
     if worker_rank == 0 {
       shared_seed = [thread_rng().next_u64(), thread_rng().next_u64()];
     }
-    mpi.broadcast(&mut shared_seed, 0);
+    if num_workers > 1 {
+      mpi.broadcast(&mut shared_seed, 0);
+    }
 
     MpiDistAsyncPushGossipCommWorker{
       worker_data:  WorkerData::new(worker_rank, num_workers),
@@ -812,15 +816,16 @@ impl CommWorker for MpiDistAsyncPushGossipCommWorker {
     {
       //let target_buf = self.target_buf.lock().unwrap();
       let reduce_buf = self.reduce_buf.lock().unwrap();
+      let recv_count = self.recv_count.load(Ordering::Acquire);
+
       let self_weight = if self_rank == send_rank {
         2.0
       } else {
         1.0
       };
-      let recv_count = self.recv_count.load(Ordering::Acquire);
-      if self_rank == 0 {
+      /*if self_rank == 0 {
         println!("DEBUG: async push gossip: round: {} recv count: {}", self.iter_counter, recv_count);
-      }
+      }*/
       if recv_count == 0 {
         self.origin_buf.raw_send(&self.final_buf, ctx);
       } else {
@@ -828,6 +833,23 @@ impl CommWorker for MpiDistAsyncPushGossipCommWorker {
         reduce_buf.as_ref().async_vector_scale(1.0 / (recv_count as f32 + self_weight), ctx);
         reduce_buf.raw_send(&self.final_buf, ctx);
       }
+
+      /*let self_weight = if self_rank == send_rank {
+        recv_count as f32 + 2.0
+      } else {
+        recv_count as f32
+      };
+      /*if self_rank == 0 {
+        println!("DEBUG: async push gossip: round: {} recv count: {}", self.iter_counter, recv_count);
+      }*/
+      if recv_count == 0 {
+        self.origin_buf.raw_send(&self.final_buf, ctx);
+      } else {
+        reduce_buf.as_ref().async_vector_add(self_weight, &self.origin_buf.as_ref(), ctx);
+        reduce_buf.as_ref().async_vector_scale(1.0 / (recv_count as f32 + self_weight), ctx);
+        reduce_buf.raw_send(&self.final_buf, ctx);
+      }*/
+
       ctx.sync();
 
       // Reset the common atomic counter.
@@ -916,7 +938,9 @@ impl MpiDistSequentialOperatorWorkerBuilder {
     if worker_data.worker_rank() == 0 {
       shared_seed = self.shared_seed;
     }
-    comm_worker.borrow().mpi.broadcast(&mut shared_seed, 0);
+    if worker_data.num_workers() > 1 {
+      comm_worker.borrow().mpi.broadcast(&mut shared_seed, 0);
+    }
 
     //let input_op = config.input_op.unwrap().build_input_operator::<MpiDistSyncAllreduceCommWorker>(self.batch_size, context.clone());
     //let input_op = config.input_op.unwrap().build_input_operator::<MpiDistSyncGossipCommWorker>(self.batch_size, context.clone());
