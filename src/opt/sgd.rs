@@ -19,6 +19,7 @@ pub struct SgdOptConfig {
   pub step_size:      StepSizeSchedule,
   pub momentum:       Momentum,
   pub l2_reg_coef:    f32,
+  pub sync_order:     SyncOrder,
 
   pub display_iters:  usize,
   pub valid_iters:    usize,
@@ -86,6 +87,12 @@ pub enum Momentum {
   GradientNesterov{mu: f32},
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum SyncOrder {
+  StepThenSyncParams,
+  SyncUpdatesThenStep,
+}
+
 pub struct OptSharedData {
   pub acc_correct_count:    AtomicUsize,
   pub acc_total_count:      AtomicUsize,
@@ -107,14 +114,14 @@ impl OptSharedData {
   }
 }
 
-pub struct SyncSgdOpt {
+pub struct SgdOpt {
   shared:   Arc<OptSharedData>,
   local_accum_loss: f32,
 }
 
-impl SyncSgdOpt {
-  pub fn new(shared: Arc<OptSharedData>) -> SyncSgdOpt {
-    SyncSgdOpt{
+impl SgdOpt {
+  pub fn new(shared: Arc<OptSharedData>) -> SgdOpt {
+    SgdOpt{
       shared:   shared,
       local_accum_loss: 0.0,
     }
@@ -151,7 +158,7 @@ impl SyncSgdOpt {
             assert!(category >= 0);
             assert!(category < num_categories);
           }
-          _ => panic!("SyncSgdOpt: unsupported label"),
+          _ => panic!("SgdOpt: unsupported label"),
         }
         match datum {
           &SampleDatum::WHCBytes(ref frame_bytes) => {
@@ -192,8 +199,6 @@ impl SyncSgdOpt {
         if local_counter % minibatch_size == 0 {
           let l2_reg_coef = sgd_opt_cfg.l2_reg_coef;
           let step_size = sgd_opt_cfg.step_size.at_iter(iter_counter);
-          //let momentum = sgd_opt_cfg.momentum.at_iter(iter_counter);
-          //let nesterov = sgd_opt_cfg.momentum.is_nesterov();
 
           // Apply regularization to the current gradient.
           operator.regularize(Regularization::L2{l2_reg_coef: l2_reg_coef});
@@ -209,31 +214,42 @@ impl SyncSgdOpt {
             _ => {}
           }
 
-          // Compute the update, possibly with momentum.
-          match sgd_opt_cfg.momentum {
-            Momentum::Zero => {
-              operator.accumulate_grads(1.0, 0.0);
-              operator.update_params(-step_size);
+          // Depending on the order of the gradient step, apply different
+          // update rules.
+          match sgd_opt_cfg.sync_order {
+            SyncOrder::StepThenSyncParams => {
+              // Compute the update, possibly with momentum.
+              match sgd_opt_cfg.momentum {
+                Momentum::Zero => {
+                  operator.accumulate_grads(1.0, 0.0);
+                  operator.update_params(-step_size);
+                }
+                Momentum::Update{mu} |
+                Momentum::UpdateNesterov{mu} => {
+                  operator.accumulate_grads(-step_size, mu);
+                  operator.update_params(1.0);
+                }
+                // XXX(20160422): These are the Torch `optim.sgd`-style update;
+                // see: <https://github.com/torch/optim/blob/master/sgd.lua>.
+                Momentum::Gradient{mu} => {
+                  operator.accumulate_grads(1.0, mu);
+                  operator.update_params(-step_size);
+                }
+                Momentum::GradientNesterov{mu} => {
+                  operator.accumulate_grads(1.0, mu);
+                  operator.update_params2(-step_size, -step_size * mu);
+                }
+              }
+
+              // Communicate the parameters.
+              operator.sync_params_v2();
             }
-            Momentum::Update{mu} |
-            Momentum::UpdateNesterov{mu} => {
-              operator.accumulate_grads(-step_size, mu);
-              operator.update_params(1.0);
-            }
-            // XXX(20160422): These are the Torch `optim.sgd`-style update;
-            // see: <https://github.com/torch/optim/blob/master/sgd.lua>.
-            Momentum::Gradient{mu} => {
-              operator.accumulate_grads(1.0, mu);
-              operator.update_params(-step_size);
-            }
-            Momentum::GradientNesterov{mu} => {
-              operator.accumulate_grads(1.0, mu);
-              operator.update_params2(-step_size, -step_size * mu);
+
+            SyncOrder::SyncUpdatesThenStep => {
+              // FIXME(20160424): necessary for sync all-reduce.
+              unimplemented!();
             }
           }
-
-          // Communicate the parameters.
-          operator.sync_params_v2();
 
           // If we are using the standard Nesterov update, apply some extra
           // momentum.
@@ -259,7 +275,7 @@ impl SyncSgdOpt {
               let acc_total_count = self.shared.acc_total_count.load(Ordering::Acquire);
               let accuracy = acc_correct_count as f32 / acc_total_count as f32;
               let avg_loss = self.local_accum_loss / sgd_opt_cfg.display_iters as f32;
-              info!("SyncSgdOpt: train: iter: {} epoch: {} sample: {}/{} step: {} loss: {:.06} accuracy: {:.03} elapsed: {:.03} s",
+              info!("SgdOpt: train: iter: {} epoch: {} sample: {}/{} step: {} loss: {:.06} accuracy: {:.03} elapsed: {:.03} s",
                   iter_counter, epoch_counter,
                   epoch_offset, epoch_size,
                   step_size,
@@ -304,7 +320,7 @@ impl SyncSgdOpt {
           assert!(category >= 0);
           assert!(category < num_categories);
         }
-        _ => panic!("SyncSgdOpt: unsupported label"),
+        _ => panic!("SgdOpt: unsupported label"),
       }
       match datum {
         &SampleDatum::WHCBytes(ref frame_bytes) => {
@@ -357,7 +373,7 @@ impl SyncSgdOpt {
       let acc_total_count = self.shared.acc_total_count.load(Ordering::Acquire);
       let accuracy = acc_correct_count as f32 / acc_total_count as f32;
       let avg_loss = self.local_accum_loss;
-      info!("SyncSgdOpt: valid: sample count: {} avg loss: {:.06} accuracy: {:.03} elapsed: {:.03} s",
+      info!("SgdOpt: valid: sample count: {} avg loss: {:.06} accuracy: {:.03} elapsed: {:.03} s",
           acc_total_count,
           avg_loss,
           accuracy,

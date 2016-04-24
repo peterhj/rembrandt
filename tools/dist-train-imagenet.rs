@@ -43,7 +43,7 @@ use rembrandt::operator::worker::{
   SequentialOperatorWorkerBuilder,
 };
 use rembrandt::opt::sgd::{
-  SgdOptConfig, StepSizeSchedule, Momentum, OptSharedData, SyncSgdOpt,
+  SgdOptConfig, StepSizeSchedule, Momentum, SyncOrder, OptSharedData, SgdOpt,
 };
 use rembrandt::worker::gossip_dist::{
   MpiDistSequentialOperatorWorkerBuilder,
@@ -583,8 +583,8 @@ fn main() {
   env_logger::init().unwrap();
 
   let num_workers = 1;
-  let batch_size = 32;
-  let minibatch_size = 32;
+  let batch_size = 64;
+  let minibatch_size = 64;
   info!("num workers: {} batch size: {}",
       num_workers, batch_size);
 
@@ -593,17 +593,18 @@ fn main() {
     minibatch_size: minibatch_size,
     //step_size:      StepSizeSchedule::Constant{step_size: 0.1},
     step_size:      StepSizeSchedule::Anneal2{
-      step0: 0.1,
-      step1: 0.01,  step1_iters: 20000,
-      step2: 0.001, step2_iters: 40000,
+      step0: 0.05,
+      step1: 0.005,  step1_iters: 80000,
+      step2: 0.0005, step2_iters: 160000,
     },
     //momentum:       MomentumStyle::Zero,
     //momentum:       Momentum::UpdateNesterov{mu: 0.9},
     momentum:       Momentum::GradientNesterov{mu: 0.9},
     l2_reg_coef:    1.0e-4,
+    sync_order:     SyncOrder::StepThenSyncParams,
     display_iters:  20,
-    valid_iters:    2000,
-    save_iters:     2000,
+    valid_iters:    1000,
+    save_iters:     1000,
   };
   info!("sgd: {:?}", sgd_opt_cfg);
 
@@ -656,7 +657,7 @@ fn main() {
           );*/
           dataset_cfg.build_iterator("valid");
 
-      let mut sgd_opt = SyncSgdOpt::new(opt_shared);
+      let mut sgd_opt = SgdOpt::new(opt_shared);
       sgd_opt.train(sgd_opt_cfg, datum_cfg, label_cfg, &mut *train_data, &mut *valid_data, &mut worker);
       join_barrier.wait();
     });

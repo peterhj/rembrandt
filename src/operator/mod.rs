@@ -77,11 +77,10 @@ pub trait Operator {
   fn sync_grads(&mut self) { unimplemented!(); }
   fn stage_params(&mut self) {}
   fn sync_params(&mut self) {}
+  fn stage_grads_v2(&mut self, _offset: usize, _comm_worker: &mut CommWorker) -> usize { 0 }
+  fn merge_grads_v2(&mut self, _offset: usize, _comm_worker: &mut CommWorker) -> usize { 0 }
   fn stage_params_v2(&mut self, _offset: usize, _comm_worker: &mut CommWorker) -> usize { 0 }
   fn merge_params_v2(&mut self, _offset: usize, _comm_worker: &mut CommWorker) -> usize { 0 }
-  /*fn _stage_params_v2(&mut self, _comm_worker: &mut CommWorker) {}
-  fn _sync_params_v2(&mut self, _comm_worker: &mut CommWorker) {}
-  fn _unstage_params_v2(&mut self, _comm_worker: &mut CommWorker) {}*/
   fn reset_grads(&mut self, _scale: f32) {}
   fn reset(&mut self) {}
 
@@ -1237,6 +1236,24 @@ impl<Comm> Operator for AffineOperator<Comm> where Comm: CommWorker {
     comm_worker.store(self.params_off, &mut self.bias); //, ctx);
   }
 
+  /*fn stage_grads_v2(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
+    let mut offset = offset;
+    comm_worker.load(offset, &mut self.grad_weights);
+    offset += self.grad_weights.len();
+    comm_worker.load(offset, &mut self.grad_bias);
+    offset += self.grad_bias.len();
+    self.config.params_len()
+  }
+
+  fn merge_grads_v2(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
+    let mut offset = offset;
+    comm_worker.store(offset, &mut self.grad_weights);
+    offset += self.grad_weights.len();
+    comm_worker.store(offset, &mut self.grad_bias);
+    offset += self.grad_bias.len();
+    self.config.params_len()
+  }*/
+
   fn stage_params_v2(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
     let mut offset = offset;
     comm_worker.load(offset, &mut self.weights);
@@ -1813,6 +1830,24 @@ impl<Comm> Operator for Conv2dOperator<Comm> where Comm: CommWorker {
     // FIXME(20160423): This code is broken!
     unimplemented!();
   }
+
+  /*fn stage_grads_v2(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
+    let mut offset = offset;
+    comm_worker.load(offset, &mut self.grad_weights);
+    offset += self.grad_weights.len();
+    comm_worker.load(offset, &mut self.grad_bias);
+    offset += self.grad_bias.len();
+    self.config.params_len()
+  }
+
+  fn merge_grads_v2(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
+    let mut offset = offset;
+    comm_worker.store(offset, &mut self.grad_weights);
+    offset += self.grad_weights.len();
+    comm_worker.store(offset, &mut self.grad_bias);
+    offset += self.grad_bias.len();
+    self.config.params_len()
+  }*/
 
   fn stage_params_v2(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
     let mut offset = offset;

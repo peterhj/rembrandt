@@ -55,7 +55,8 @@ pub trait OperatorWorker: Operator {
 
   //fn wait_barrier(&self) { unimplemented!(); }
   fn next(&mut self) {}
-  fn sync_params_v2(&mut self) {}
+  fn sync_grads_v2(&mut self) { unimplemented!(); }
+  fn sync_params_v2(&mut self) { unimplemented!(); }
 }
 
 /*pub struct DeviceParallelOperatorServer<Comm, CBuilder, WBuilder>

@@ -41,7 +41,7 @@ use rembrandt::worker::gossip_dist::{
   MpiDistSequentialOperatorWorker,
 };
 use rembrandt::opt::sgd::{
-  SgdOptConfig, StepSizeSchedule, Momentum, OptSharedData, SyncSgdOpt,
+  SgdOptConfig, StepSizeSchedule, Momentum, SyncOrder, OptSharedData, SgdOpt,
 };
 use threadpool::{ThreadPool};
 
@@ -69,6 +69,7 @@ fn main() {
     //momentum:       Momentum::Update{mu: 0.9},
     //momentum:       Momentum::UpdateNesterov{mu: 0.9},
     l2_reg_coef:    1.0e-4,
+    sync_order:     SyncOrder::StepThenSyncParams,
     display_iters:  100,
     valid_iters:    1000,
     save_iters:     5000,
@@ -188,7 +189,7 @@ fn main() {
               dataset_cfg.build_with_cfg(datum_cfg, label_cfg, "valid")
           );
 
-      let mut sgd_opt = SyncSgdOpt::new(opt_shared);
+      let mut sgd_opt = SgdOpt::new(opt_shared);
       sgd_opt.train(sgd_opt_cfg, datum_cfg, label_cfg, &mut train_data, &mut valid_data, &mut worker);
       join_barrier.wait();
     });

@@ -701,6 +701,42 @@ impl<Comm> Operator for BNormConv2dOperator<Comm> where Comm: CommWorker {
     unimplemented!();
   }
 
+  /*fn stage_grads_v2(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
+    let mut offset = offset;
+
+    comm_worker.load(offset, &mut self.grad_weights);
+    offset += self.grad_weights.len();
+
+    comm_worker.load(offset, &mut self.bn_scale1_grad);
+    offset += self.bn_scale1_grad.len();
+    comm_worker.load(offset, &mut self.bn_bias1_grad);
+    offset += self.bn_bias1_grad.len();
+    comm_worker.load(offset, &mut self.bn_running_mean1_grad);
+    offset += self.bn_running_mean1_grad.len();
+    comm_worker.load(offset, &mut self.bn_running_ivar1_grad);
+    offset += self.bn_running_ivar1_grad.len();
+
+    self.config.params_len()
+  }
+
+  fn merge_grads_v2(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
+    let mut offset = offset;
+
+    comm_worker.store(offset, &mut self.grad_weights);
+    offset += self.grad_weights.len();
+
+    comm_worker.store(offset, &mut self.bn_scale1_grad);
+    offset += self.bn_scale1_grad.len();
+    comm_worker.store(offset, &mut self.bn_bias1_grad);
+    offset += self.bn_bias1_grad.len();
+    comm_worker.store(offset, &mut self.bn_running_mean1_grad);
+    offset += self.bn_running_mean1_grad.len();
+    comm_worker.store(offset, &mut self.bn_running_ivar1_grad);
+    offset += self.bn_running_ivar1_grad.len();
+
+    self.config.params_len()
+  }*/
+
   fn stage_params_v2(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
     let mut offset = offset;
 
