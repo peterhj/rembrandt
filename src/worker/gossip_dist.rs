@@ -1224,30 +1224,49 @@ impl OperatorWorker for MpiDistSequentialOperatorWorker {
       Err(e) => panic!("rollback_params: failed to open checkpoint file: {:?}", e),
     };
 
-    let mut latest_t: Option<usize> = None;
-    for line in BufReader::new(checkpoint_file).lines() {
-      let line = line.unwrap();
-      latest_t = line.parse().ok();
-      break;
-    }
-    let load_t = match (t, latest_t) {
-      (Some(t), Some(latest_t)) => {
-        assert!(t <= latest_t);
-        t
+    let blob_path = match t {
+      Some(t) => {
+        let mut latest_t: Option<usize> = None;
+        for line in BufReader::new(checkpoint_file).lines() {
+          let line = line.unwrap();
+          latest_t = line.parse().ok();
+          break;
+        }
+        match latest_t {
+          Some(latest_t) => {
+            assert!(t <= latest_t);
+          }
+          None => {
+            panic!("rollback_params: checkpoint file is empty, but requested iter {}", t);
+          }
+        }
+        let mut blob_path = prefix.clone();
+        blob_path.push(&format!("params.t_{}.blob", t));
+        blob_path
       }
-      (None, Some(latest_t)) => {
-        latest_t
-      }
-      (Some(t), None) => {
-        panic!("rollback_params: checkpoint file is empty, but requested iter {}", t);
-      }
-      (None, None) => {
-        panic!("rollback_params: checkpoint file is empty");
+      None => {
+        let mut blob_path = prefix.clone();
+        blob_path.push(&format!("params.latest.blob"));
+        blob_path
       }
     };
+    let mut blob_file = match OpenOptions::new()
+      .read(true)
+      .open(&blob_path) 
+    {
+        Ok(file) => file,
+        Err(e) => panic!("rollback_params: failed to open blob file"),
+    };
+    let mut blob = Vec::new();
+    match blob_file.read_to_end(&mut blob) {
+      Ok(_) => {}
+      Err(_) => panic!("rollback_params: failed to read blob file"),
+    }
 
-    // FIXME(20160424)
-    unimplemented!();
+    let mut offset = 0;
+    for op in self.hidden_ops.iter_mut() {
+      offset += op.decode_params(&blob[offset .. ]);
+    }
   }
 
   fn sync_params_v2(&mut self) {
@@ -1376,6 +1395,9 @@ impl Operator for MpiDistSequentialOperatorWorker {
   }
 
   fn set_grads_with_params_diff(&mut self) {
+    // XXX(20160425): deprecated.
+    unimplemented!();
+
     for op in self.hidden_ops.iter_mut() {
       op.set_grads_with_params_diff();
     }
@@ -1386,6 +1408,9 @@ impl Operator for MpiDistSequentialOperatorWorker {
   }
 
   fn stage_params(&mut self) {
+    // XXX(20160425): deprecated.
+    unimplemented!();
+
     if self.num_workers() <= 1 {
       return;
     }
@@ -1397,6 +1422,9 @@ impl Operator for MpiDistSequentialOperatorWorker {
   }
 
   fn sync_params(&mut self) {
+    // XXX(20160425): deprecated.
+    unimplemented!();
+
     if self.num_workers() <= 1 {
       return;
     }
@@ -1412,6 +1440,9 @@ impl Operator for MpiDistSequentialOperatorWorker {
   }
 
   fn reset_grads(&mut self, scale: f32) {
+    // XXX(20160425): deprecated.
+    unimplemented!();
+
     for op in self.hidden_ops.iter_mut() {
       op.reset_grads(scale);
     }

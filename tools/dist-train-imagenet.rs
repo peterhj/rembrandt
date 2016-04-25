@@ -594,20 +594,18 @@ fn main() {
     //step_size:      StepSizeSchedule::Constant{step_size: 0.1},
     step_size:      StepSizeSchedule::Anneal2{
       step0: 0.05,
-      step1: 0.005,  step1_iters: 80000,
-      //step1: 0.01,  step1_iters: 80000,
-      step2: 0.0005, step2_iters: 160000,
-      //step2: 0.001, step2_iters: 160000,
+      step1: 0.01,  step1_iters: 80000,
+      step2: 0.002, step2_iters: 160000,
     },
     //momentum:       MomentumStyle::Zero,
-    //momentum:       Momentum::UpdateNesterov{mu: 0.9},
-    momentum:       Momentum::GradientNesterov{mu: 0.9},
+    momentum:       Momentum::UpdateNesterov{mu: 0.9},
+    //momentum:       Momentum::GradientNesterov{mu: 0.9},
     l2_reg_coef:    1.0e-4,
     sync_order:     SyncOrder::StepThenSyncParams,
     display_iters:  25,
     save_iters:     625,
     valid_iters:    625,
-    checkpoint_dir: PathBuf::from("models/imagenet_warp256x256-async_push_gossip_x8-run0"),
+    checkpoint_dir: PathBuf::from("models/imagenet_warp256x256-async_push_gossip_x8-run2"),
   };
   info!("sgd: {:?}", sgd_opt_cfg);
 
@@ -660,8 +658,8 @@ fn main() {
           //dataset_cfg.build_iterator("valid");
           dataset_cfg.build_partition_iterator("valid", worker.worker_rank(), worker.num_workers());
 
-      let mut sgd_opt = SgdOpt::new(opt_shared);
-      sgd_opt.train(&sgd_opt_cfg, datum_cfg, label_cfg, &mut *train_data, &mut *valid_data, &mut worker);
+      let mut sgd_opt = SgdOpt::new(sgd_opt_cfg, Some(worker.worker_rank()), opt_shared);
+      sgd_opt.train(datum_cfg, label_cfg, &mut *train_data, &mut *valid_data, &mut worker);
       join_barrier.wait();
     });
   }
