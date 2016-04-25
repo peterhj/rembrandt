@@ -35,7 +35,7 @@ use array_new::{AsyncArray};
 use rng::xorshift::{Xorshiftplus128Rng};
 use worker_::{WorkerData};
 
-use mpi::{Mpi, MpiComm, MpiGroup, MpiWindow, MpiWindowLockMode, MpiRequest, MpiRequestList};
+use mpi::{Mpi, MpiComm, MpiRequestList, MpiSumOp};
 //use procgroup::{ProcGroup};
 use threadpool::{ThreadPool};
 
@@ -45,12 +45,15 @@ use rand::distributions::range::{Range};
 use std::cell::{RefCell};
 use std::collections::{HashSet};
 use std::ffi::{CString};
-use std::io::{Write};
+use std::fs::{OpenOptions, copy, create_dir_all, read_link, remove_file};
+use std::io::{Read, BufRead, Write, BufReader};
 use std::iter::{FromIterator, repeat};
 use std::marker::{PhantomData};
+use std::os::unix::fs::{symlink};
+use std::path::{Path, PathBuf};
 use std::rc::{Rc};
 use std::sync::{Arc, Barrier, Mutex};
-use std::sync::atomic::{AtomicUsize, Ordering, fence};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering, fence};
 use std::sync::mpsc::{Sender, Receiver, TryRecvError, channel};
 use std::thread::{JoinHandle, sleep, spawn};
 use std::time::{Duration};
@@ -411,6 +414,11 @@ impl CommWorker for MpiDistSyncGossipCommWorker {
     );
   }
 
+  fn communicate_exact(&mut self) {
+    // FIXME(20160424)
+    unimplemented!();
+  }
+
   fn complete_store(&mut self) {
     let ctx = &(*self.context).as_ref();
     ctx.sync();
@@ -421,10 +429,13 @@ enum AsyncPushGossipAct2PassMsg {
   Quit,
   Pause,
   Resume,
+  //AckPauseSending,
 }
 
 enum AsyncPushGossipPass2ActMsg {
   AckPause,
+  //PauseSending,
+  //ResumeSending,
 }
 
 enum AsyncPushGossipPassiveState {
@@ -447,6 +458,7 @@ struct MpiDistAsyncPushGossipPassiveWorker {
   client_conns: VecMap<MpiComm>,
   recv_reqs:    MpiRequestList,
   recv_count:   Arc<AtomicUsize>,
+  bar_signal:   Arc<AtomicBool>,
 }
 
 impl MpiDistAsyncPushGossipPassiveWorker {
@@ -479,6 +491,32 @@ impl MpiDistAsyncPushGossipPassiveWorker {
           sleep(sleep_duration);
           continue 'poll_loop;
         }
+      }
+
+      let mut chk_recv_rank = None;
+      // FIXME(20160422): could also randomize the order of checked ranks,
+      // may make things more unbiased?
+      'chk_probe_loop: for r in 0 .. self.num_workers {
+        if r == self.worker_rank {
+          continue 'chk_probe_loop;
+        }
+        match self.client_conns[r].nonblocking_probe(Some(0), Some(2)) {
+          Err(e) => panic!("async gossip: passive thread: failed to do first recv: {:?}", e),
+          Ok(None) => {}
+          Ok(Some(_)) => {
+            chk_recv_rank = Some(r);
+            break 'chk_probe_loop;
+          }
+        };
+      }
+      if let Some(chk_recv_rank) = chk_recv_rank {
+        let mut dummy_buf: Vec<u8> = Vec::with_capacity(64);
+        let mut recv_req = match self.client_conns[chk_recv_rank].nonblocking_recv(&mut dummy_buf, Some(0), Some(2)) {
+          Ok(req) => req,
+          Err(e) => panic!("async gossip: passive thread: failed to do nonblocking recv: {:?}", e),
+        };
+        recv_req.wait().unwrap();
+        self.bar_signal.store(true, Ordering::Release);
       }
 
       let mut recv_rank = None;
@@ -541,6 +579,11 @@ impl MpiDistAsyncPushGossipPassiveWorker {
   }
 }
 
+enum AsyncGossipActiveState {
+  Sending,
+  PausedCheckpoint,
+}
+
 pub struct MpiDistAsyncPushGossipCommWorker {
   worker_data:  WorkerData,
   context:      Rc<DeviceContext>,
@@ -557,6 +600,7 @@ pub struct MpiDistAsyncPushGossipCommWorker {
   final_buf:    RawDeviceBuffer<f32>,
   origin_buf_h: Vec<f32>,
   target_buf_h: Arc<Mutex<Vec<f32>>>,
+  final_buf_h:  Vec<f32>,
 
   //client_conns: VecMap<MpiComm>,
   server_conns: VecMap<MpiComm>,
@@ -567,6 +611,7 @@ pub struct MpiDistAsyncPushGossipCommWorker {
   passive_thr:  JoinHandle<()>,
   send_reqs:    MpiRequestList,
   recv_count:   Arc<AtomicUsize>,
+  bar_signal:   Arc<AtomicBool>,
 
   avg_reduce:   AverageReduceOperation<f32>,
 
@@ -610,6 +655,8 @@ impl MpiDistAsyncPushGossipCommWorker {
     unsafe { origin_buf_h.set_len(buf_len) };
     let mut target_buf_h = Vec::with_capacity(buf_len);
     unsafe { target_buf_h.set_len(buf_len) };
+    let mut final_buf_h = Vec::with_capacity(buf_len);
+    unsafe { final_buf_h.set_len(buf_len) };
     let target_buf_h = Arc::new(Mutex::new(target_buf_h));
 
     let service_port = Mpi::open_port_().unwrap();
@@ -669,11 +716,14 @@ impl MpiDistAsyncPushGossipCommWorker {
     let (act2pass_tx, act2pass_rx) = channel();
     let (pass2act_tx, pass2act_rx) = channel();
     let recv_count = Arc::new(AtomicUsize::new(0));
+    let bar_signal = Arc::new(AtomicBool::new(false));
+
     let passive_thr = {
       let reduce_buf = reduce_buf.clone();
       let target_buf = target_buf.clone();
       let target_buf_h = target_buf_h.clone();
       let recv_count = recv_count.clone();
+      let bar_signal = bar_signal.clone();
       spawn(move || {
         let passive_worker = MpiDistAsyncPushGossipPassiveWorker{
           worker_rank:  worker_rank,
@@ -690,6 +740,7 @@ impl MpiDistAsyncPushGossipCommWorker {
           client_conns: client_conns,
           recv_reqs:    MpiRequestList::new(),
           recv_count:   recv_count,
+          bar_signal:   bar_signal,
         };
         passive_worker.run();
       })
@@ -720,6 +771,7 @@ impl MpiDistAsyncPushGossipCommWorker {
       final_buf:    final_buf,
       origin_buf_h: origin_buf_h,
       target_buf_h: target_buf_h,
+      final_buf_h:  final_buf_h,
       //target_win_h: target_win_h,
       //client_conns: client_conns,
       server_conns: server_conns,
@@ -729,6 +781,7 @@ impl MpiDistAsyncPushGossipCommWorker {
       passive_thr:  passive_thr,
       send_reqs:    MpiRequestList::new(),
       recv_count:   recv_count,
+      bar_signal:   bar_signal,
       avg_reduce:   AverageReduceOperation::new(0),
       shared_seed:  shared_seed,
       shared_rng:   Xorshiftplus128Rng::from_seed(shared_seed),
@@ -749,6 +802,40 @@ impl CommWorker for MpiDistAsyncPushGossipCommWorker {
       println!("DEBUG: next: {}", self.iter_counter);
     }*/
     true
+  }
+
+  fn signal_barrier(&mut self) {
+    let prev_signal = self.bar_signal.compare_and_swap(false, true, Ordering::AcqRel);
+    assert!(!prev_signal, "signal_barrier: tried to signal during an ongoing barrier");
+
+    let worker_rank = self.worker_data.worker_rank();
+    let num_workers = self.worker_data.num_workers();
+
+    let dummy_buf: Vec<u8> = Vec::with_capacity(64);
+
+    self.send_reqs.clear();
+    for r in 0 .. num_workers {
+      if r == worker_rank {
+        continue;
+      }
+      let send_req = match self.server_conns[r].nonblocking_sync_send(&dummy_buf, 0, 2) {
+        Ok(req) => req,
+        Err(e) => panic!("async gossip: active thread: failed to do initial send: {:?}", e),
+      };
+      self.send_reqs.append(send_req);
+    }
+    self.send_reqs.wait_all();
+  }
+
+  fn wait_barrier(&mut self) -> bool {
+    let bar_signal = self.bar_signal.load(Ordering::Acquire);
+    if !bar_signal {
+      false
+    } else {
+      Mpi::barrier_().unwrap();
+      self.bar_signal.store(false, Ordering::Release);
+      true
+    }
   }
 
   fn load(&mut self, offset: usize, data: &mut DeviceArray2d<f32>/*, ctx: &DeviceCtxRef*/) {
@@ -861,6 +948,46 @@ impl CommWorker for MpiDistAsyncPushGossipCommWorker {
       Ok(_) => {}
       Err(e) => panic!("async gossip: active thread: failed to send Resume to passive thread: {:?}", e),
     }
+  }
+
+  fn communicate_exact(&mut self) {
+    /*if self.iter_counter % self.com_interval != 0 {
+      return;
+    }*/
+
+    /*match self.act2pass_tx.send(AsyncPushGossipAct2PassMsg::Pause) {
+      Err(e) => panic!("async gossip: active thread: failed to send Pause to passive thread: {:?}", e),
+      Ok(_) => {}
+    }
+    match self.pass2act_rx.recv() {
+      Err(e) => {
+        panic!("async gossip: active thread: failed to recv AckPause from passive thread: {:?}", e);
+      }
+      Ok(AsyncPushGossipPass2ActMsg::AckPause) => {
+        // Do nothing.
+      }
+    }*/
+
+    let ctx = &(*self.context).as_ref();
+    self.origin_buf.sync_store(&mut self.origin_buf_h, ctx);
+    ctx.sync();
+    Mpi::barrier_().unwrap();
+    for msg in 0 .. self.num_buf_msgs {
+      Mpi::allreduce_(
+          &self.origin_buf_h[msg * self.msg_len .. (msg+1) * self.msg_len],
+          &mut self.final_buf_h[msg * self.msg_len .. (msg+1) * self.msg_len],
+          MpiSumOp,
+      ).unwrap();
+    }
+    Mpi::barrier_().unwrap();
+    self.final_buf.sync_load(&self.final_buf_h, ctx);
+    self.final_buf.as_ref().async_vector_scale(1.0 / self.worker_data.num_workers() as f32, ctx);
+    ctx.sync();
+
+    /*match self.act2pass_tx.send(AsyncPushGossipAct2PassMsg::Resume) {
+      Ok(_) => {}
+      Err(e) => panic!("async gossip: active thread: failed to send Resume to passive thread: {:?}", e),
+    }*/
   }
 
   fn store(&mut self, offset: usize, data: &mut DeviceArray2d<f32>/*, ctx: &DeviceCtxRef*/) {
@@ -1037,6 +1164,108 @@ impl OperatorWorker for MpiDistSequentialOperatorWorker {
     self.comm_worker.borrow_mut().next();
   }
 
+  fn signal_checkpoint(&mut self) {
+    self.comm_worker.borrow_mut().signal_barrier();
+  }
+
+  fn wait_checkpoint(&mut self) -> bool {
+    self.comm_worker.borrow_mut().wait_barrier()
+  }
+
+  /*fn wait_checkpoint(&mut self) {
+    // FIXME(20160424)
+    unimplemented!();
+  }*/
+
+  fn checkpoint_params(&mut self, t: usize, prefix: &Path) {
+    let prefix = PathBuf::from(prefix);
+    match create_dir_all(&prefix) {
+      Ok(_) => {}
+      Err(_) => {}
+    }
+
+    let mut blob = Vec::new();
+    for op in self.hidden_ops.iter_mut() {
+      op.encode_params(&mut blob);
+    }
+
+    let mut blob_path = prefix.clone();
+    blob_path.push(&format!("params.t_{}.blob", t));
+    let mut blob_file = match OpenOptions::new()
+      .create(true).truncate(true).write(true)
+      .open(&blob_path)
+    {
+      Ok(file) => file,
+      Err(e) => panic!("checkpoint_params: failed to open blob file: {:?}", e),
+    };
+    match blob_file.write_all(&blob) {
+      Ok(_) => {}
+      Err(e) => panic!("checkpoint_params: failed to write to blob file: {:?}", e),
+    }
+
+    let mut latest_blob_path = prefix.clone();
+    latest_blob_path.push("params.latest.blob");
+    match remove_file(&latest_blob_path) {
+      Ok(_) => {}
+      Err(_) => {}
+    }
+    let blob_filename = PathBuf::from(&blob_path.file_name().unwrap());
+    match symlink(&blob_filename, &latest_blob_path) {
+      Ok(_) => {}
+      Err(e) => panic!("checkpoint_params: failed to symlink latest blob: {:?}", e),
+    }
+
+    let mut checkpoint_path = prefix.clone();
+    checkpoint_path.push("checkpoint");
+    let mut bak_checkpoint_path = prefix.clone();
+    bak_checkpoint_path.push("checkpoint.0");
+    copy(&checkpoint_path, &bak_checkpoint_path).ok();
+    let mut checkpoint_file = match OpenOptions::new()
+      .create(true).truncate(true).write(true)
+      .open(&checkpoint_path)
+    {
+      Ok(file) => file,
+      Err(e) => panic!("checkpoint_params: failed to open checkpoint file for reading: {:?}", e),
+    };
+    writeln!(checkpoint_file, "{}", t);
+  }
+
+  fn rollback_params(&mut self, t: Option<usize>, prefix: &Path) {
+    let prefix = PathBuf::from(prefix);
+
+    let mut checkpoint_path = prefix.clone();
+    checkpoint_path.push("checkpoint");
+    let checkpoint_file = match OpenOptions::new().read(true).open(&checkpoint_path) {
+      Ok(file) => file,
+      Err(e) => panic!("rollback_params: failed to open checkpoint file: {:?}", e),
+    };
+
+    let mut latest_t: Option<usize> = None;
+    for line in BufReader::new(checkpoint_file).lines() {
+      let line = line.unwrap();
+      latest_t = line.parse().ok();
+      break;
+    }
+    let load_t = match (t, latest_t) {
+      (Some(t), Some(latest_t)) => {
+        assert!(t <= latest_t);
+        t
+      }
+      (None, Some(latest_t)) => {
+        latest_t
+      }
+      (Some(t), None) => {
+        panic!("rollback_params: checkpoint file is empty, but requested iter {}", t);
+      }
+      (None, None) => {
+        panic!("rollback_params: checkpoint file is empty");
+      }
+    };
+
+    // FIXME(20160424)
+    unimplemented!();
+  }
+
   fn sync_params_v2(&mut self) {
     if self.num_workers() <= 1 {
       return;
@@ -1044,8 +1273,7 @@ impl OperatorWorker for MpiDistSequentialOperatorWorker {
     {
       let mut offset = 0;
       for op in self.hidden_ops.iter_mut() {
-        let progress = op.stage_params_v2(offset, &mut *self.comm_worker.borrow_mut());
-        offset += progress;
+        offset += op.stage_params_v2(offset, &mut *self.comm_worker.borrow_mut());
       }
     }
     self.comm_worker.borrow_mut().complete_load();
@@ -1053,8 +1281,28 @@ impl OperatorWorker for MpiDistSequentialOperatorWorker {
     {
       let mut offset = 0;
       for op in self.hidden_ops.iter_mut() {
-        let progress = op.merge_params_v2(offset, &mut *self.comm_worker.borrow_mut());
-        offset += progress;
+        offset += op.merge_params_v2(offset, &mut *self.comm_worker.borrow_mut());
+      }
+    }
+    self.comm_worker.borrow_mut().complete_store();
+  }
+
+  fn exact_sync_params(&mut self) {
+    if self.num_workers() <= 1 {
+      return;
+    }
+    {
+      let mut offset = 0;
+      for op in self.hidden_ops.iter_mut() {
+        offset += op.stage_params_v2(offset, &mut *self.comm_worker.borrow_mut());
+      }
+    }
+    self.comm_worker.borrow_mut().complete_load();
+    self.comm_worker.borrow_mut().communicate_exact();
+    {
+      let mut offset = 0;
+      for op in self.hidden_ops.iter_mut() {
+        offset += op.merge_params_v2(offset, &mut *self.comm_worker.borrow_mut());
       }
     }
     self.comm_worker.borrow_mut().complete_store();

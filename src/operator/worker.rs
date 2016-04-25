@@ -36,6 +36,7 @@ use std::cell::{RefCell};
 use std::collections::{HashSet};
 use std::iter::{FromIterator, repeat};
 use std::marker::{PhantomData};
+use std::path::{Path};
 use std::rc::{Rc};
 use std::sync::{Arc, Barrier};
 
@@ -55,8 +56,13 @@ pub trait OperatorWorker: Operator {
 
   //fn wait_barrier(&self) { unimplemented!(); }
   fn next(&mut self) {}
+  fn signal_checkpoint(&mut self) { unimplemented!(); }
+  fn wait_checkpoint(&mut self) -> bool { unimplemented!(); }
+  fn checkpoint_params(&mut self, _t: usize, _prefix: &Path) { unimplemented!(); }
+  fn rollback_params(&mut self, _t: Option<usize>, _prefix: &Path) { unimplemented!(); }
   fn sync_grads_v2(&mut self) { unimplemented!(); }
   fn sync_params_v2(&mut self) { unimplemented!(); }
+  fn exact_sync_params(&mut self) { unimplemented!(); }
 }
 
 /*pub struct DeviceParallelOperatorServer<Comm, CBuilder, WBuilder>

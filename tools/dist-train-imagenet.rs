@@ -603,8 +603,9 @@ fn main() {
     l2_reg_coef:    1.0e-4,
     sync_order:     SyncOrder::StepThenSyncParams,
     display_iters:  20,
-    valid_iters:    1000,
-    save_iters:     1000,
+    save_iters:     20,
+    valid_iters:    20,
+    checkpoint_dir: PathBuf::from("models/imagenet_warp256x256-async_push_gossip_x8-test"),
   };
   info!("sgd: {:?}", sgd_opt_cfg);
 
@@ -633,15 +634,14 @@ fn main() {
     //let comm_worker_builder = comm_worker_builder.clone();
     let worker_builder = worker_builder.clone();
     let join_barrier = join_barrier.clone();
+    let sgd_opt_cfg = sgd_opt_cfg.clone();
     let opt_shared = opt_shared.clone();
     pool.execute(move || {
       /*let context = Rc::new(DeviceContext::new(tid));
       let comm_worker = Rc::new(RefCell::new(comm_worker_builder.into_worker(tid, context.clone())));
       let mut worker = worker_builder.into_worker(tid, context, comm_worker);*/
 
-      // XXX(20160415): when running on K80s, use the 2nd one.
       let context = Rc::new(DeviceContext::new(0));
-      //let context = Rc::new(DeviceContext::new(1));
       let mut worker = worker_builder.into_worker(context);
 
       let dataset_cfg = DatasetConfig::open(&PathBuf::from("examples/imagenet.data"));
@@ -655,10 +655,11 @@ fn main() {
           /*SampleIterator::new(
               Box::new(PartitionDataSource::new(tid, num_workers, dataset_cfg.build_with_cfg(datum_cfg, label_cfg, "valid")))
           );*/
-          dataset_cfg.build_iterator("valid");
+          //dataset_cfg.build_iterator("valid");
+          dataset_cfg.build_partition_iterator("valid", worker.worker_rank(), worker.num_workers());
 
       let mut sgd_opt = SgdOpt::new(opt_shared);
-      sgd_opt.train(sgd_opt_cfg, datum_cfg, label_cfg, &mut *train_data, &mut *valid_data, &mut worker);
+      sgd_opt.train(&sgd_opt_cfg, datum_cfg, label_cfg, &mut *train_data, &mut *valid_data, &mut worker);
       join_barrier.wait();
     });
   }

@@ -7,12 +7,13 @@ use operator::worker::{OperatorWorker};
 
 //use array_cuda::device::context::{DeviceCtxRef};
 
+use std::path::{PathBuf};
 use std::slice::bytes::{copy_memory};
 use std::sync::{Arc, Barrier};
 use std::sync::atomic::{AtomicUsize, Ordering, fence};
 use time::{get_time};
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, RustcDecodable, RustcEncodable, Debug)]
 pub struct SgdOptConfig {
   pub init_t:         Option<usize>,
   pub minibatch_size: usize,
@@ -22,11 +23,12 @@ pub struct SgdOptConfig {
   pub sync_order:     SyncOrder,
 
   pub display_iters:  usize,
-  pub valid_iters:    usize,
   pub save_iters:     usize,
+  pub valid_iters:    usize,
+  pub checkpoint_dir: PathBuf,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, RustcDecodable, RustcEncodable, Debug)]
 pub enum StepSizeSchedule {
   Constant{step_size: f32},
   Anneal1{
@@ -78,7 +80,7 @@ impl StepSizeSchedule {
   }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, RustcDecodable, RustcEncodable, Debug)]
 pub enum Momentum {
   Zero,
   Update{mu: f32},
@@ -87,7 +89,7 @@ pub enum Momentum {
   GradientNesterov{mu: f32},
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, RustcDecodable, RustcEncodable, Debug)]
 pub enum SyncOrder {
   StepThenSyncParams,
   SyncUpdatesThenStep,
@@ -127,7 +129,10 @@ impl SgdOpt {
     }
   }
 
-  pub fn train(&mut self, sgd_opt_cfg: SgdOptConfig, datum_cfg: SampleDatumConfig, label_cfg: SampleLabelConfig, train_data: &mut DataIterator, valid_data: &mut DataIterator, operator: &mut OperatorWorker) {
+  pub fn train(&mut self, sgd_opt_cfg: &SgdOptConfig, datum_cfg: SampleDatumConfig, label_cfg: SampleLabelConfig, train_data: &mut DataIterator, valid_data: &mut DataIterator, operator: &mut OperatorWorker) {
+    assert_eq!(0, sgd_opt_cfg.save_iters % sgd_opt_cfg.display_iters);
+    assert_eq!(0, sgd_opt_cfg.valid_iters % sgd_opt_cfg.save_iters);
+
     let batch_size = operator.batch_size();
     let num_workers = operator.num_workers();
     let rank = operator.worker_rank();
@@ -265,6 +270,7 @@ impl SgdOpt {
 
           operator.reset();
           iter_counter += 1;
+          //info!("DEBUG: rank: {} post iter: {}", rank, iter_counter);
 
           if iter_counter % sgd_opt_cfg.display_iters == 0 {
             self.shared.sync();
@@ -288,15 +294,41 @@ impl SgdOpt {
               self.local_accum_loss = 0.0;
             }
             self.shared.sync();
-            start_time = lap_time;
+            start_time = get_time();
           }
 
           if iter_counter % sgd_opt_cfg.save_iters == 0 {
+            if rank == 0 {
+              //info!("DEBUG: signal checkpoint...");
+              operator.signal_checkpoint();
+            }
           }
 
-          if iter_counter % sgd_opt_cfg.valid_iters == 0 {
-            self.validate(sgd_opt_cfg, datum_cfg, label_cfg, valid_data, operator);
+          /*if iter_counter % sgd_opt_cfg.valid_iters == 0 {
+            info!("DEBUG: rank: {} validate, iter: {}", rank, iter_counter);
+            self.validate(&sgd_opt_cfg, datum_cfg, label_cfg, valid_data, operator);
             start_time = get_time();
+          }*/
+
+          if operator.wait_checkpoint() {
+            //info!("DEBUG: rank: {} signaled checkpoint! iter: {}", rank, iter_counter);
+            operator.save_params();
+
+            //info!("DEBUG: rank: {} exact sync params, iter: {}", rank, iter_counter);
+            operator.exact_sync_params();
+
+            if rank == 0 {
+              //info!("DEBUG: rank: {} checkpoint params, iter: {}", rank, iter_counter);
+              operator.checkpoint_params(iter_counter, &sgd_opt_cfg.checkpoint_dir);
+            }
+
+            //info!("DEBUG: rank: {} validate, iter: {}", rank, iter_counter);
+            self.validate(&sgd_opt_cfg, datum_cfg, label_cfg, valid_data, operator);
+
+            //info!("DEBUG: rank: {} restore params, iter: {}", rank, iter_counter);
+            operator.restore_params();
+            start_time = get_time();
+            //info!("DEBUG: rank: {} done checkpoint, iter: {}", rank, iter_counter);
           }
         }
       });
@@ -305,7 +337,7 @@ impl SgdOpt {
     }
   }
 
-  pub fn validate(&mut self, sgd_opt_cfg: SgdOptConfig, datum_cfg: SampleDatumConfig, label_cfg: SampleLabelConfig, valid_data: &mut DataIterator, operator: &mut OperatorWorker) {
+  pub fn validate(&mut self, sgd_opt_cfg: &SgdOptConfig, datum_cfg: SampleDatumConfig, label_cfg: SampleLabelConfig, valid_data: &mut DataIterator, operator: &mut OperatorWorker) {
     let batch_size = operator.batch_size();
     let num_workers = operator.num_workers();
     let rank = operator.worker_rank();
@@ -373,7 +405,7 @@ impl SgdOpt {
       let acc_total_count = self.shared.acc_total_count.load(Ordering::Acquire);
       let accuracy = acc_correct_count as f32 / acc_total_count as f32;
       let avg_loss = self.local_accum_loss;
-      info!("SgdOpt: valid: sample count: {} avg loss: {:.06} accuracy: {:.03} elapsed: {:.03} s",
+      info!("SgdOpt: valid: sample count: {} loss: {:.06} accuracy: {:.03} elapsed: {:.03} s",
           acc_total_count,
           avg_loss,
           accuracy,

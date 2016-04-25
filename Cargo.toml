@@ -52,9 +52,9 @@ path = "tools/test-lmdb.rs"
 #name = "train-gogod"
 #path = "tools/train-gogod.rs"
 
-[[bin]]
-name = "dist-train-mnist"
-path = "tools/dist-train-mnist.rs"
+#[[bin]]
+#name = "dist-train-mnist"
+#path = "tools/dist-train-mnist.rs"
 
 [[bin]]
 name = "dist-train-imagenet"
@@ -84,6 +84,7 @@ log = "*"
 memmap = "*"
 protobuf = { path = "../rust-protobuf" }
 rand = "*"
+rustc-serialize = "*"
 threadpool = "*"
 time = "*"
 #toggle = "*"

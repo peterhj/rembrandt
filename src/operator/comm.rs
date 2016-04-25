@@ -19,9 +19,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub trait CommWorker {
   fn next(&mut self) -> bool;
+  fn signal_barrier(&mut self) { unimplemented!(); }
+  fn wait_barrier(&mut self) -> bool { unimplemented!(); }
   fn load(&mut self, offset: usize, data: &mut DeviceArray2d<f32>/*, ctx: &DeviceCtxRef*/);
   fn complete_load(&mut self);
-  fn communicate(&mut self/*, ctx: &DeviceCtxRef*/);
+  fn communicate(&mut self);
+  fn communicate_exact(&mut self) { unimplemented!(); }
   fn store(&mut self, offset: usize, data: &mut DeviceArray2d<f32>/*, ctx: &DeviceCtxRef*/);
   fn complete_store(&mut self);
 }

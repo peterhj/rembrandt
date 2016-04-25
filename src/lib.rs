@@ -28,6 +28,7 @@ extern crate byteorder;
 extern crate env_logger;
 extern crate memmap;
 extern crate rand;
+extern crate rustc_serialize;
 extern crate threadpool;
 extern crate time;
 extern crate toml;
