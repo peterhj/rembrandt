@@ -63,6 +63,7 @@ pub trait OperatorWorker: Operator {
   fn sync_grads_v2(&mut self) { unimplemented!(); }
   fn sync_params_v2(&mut self) { unimplemented!(); }
   fn exact_sync_params(&mut self) { unimplemented!(); }
+  fn allreduce(&mut self, _src_data: &[f32], _dst_data: &mut [f32]) { unimplemented!(); }
 }
 
 /*pub struct DeviceParallelOperatorServer<Comm, CBuilder, WBuilder>

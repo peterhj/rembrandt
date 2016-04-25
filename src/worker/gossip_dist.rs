@@ -43,6 +43,7 @@ use rand::{Rng, SeedableRng, thread_rng};
 use rand::distributions::{IndependentSample};
 use rand::distributions::range::{Range};
 use std::cell::{RefCell};
+use std::cmp::{min};
 use std::collections::{HashSet};
 use std::ffi::{CString};
 use std::fs::{OpenOptions, copy, create_dir_all, read_link, remove_file};
@@ -429,13 +430,10 @@ enum AsyncPushGossipAct2PassMsg {
   Quit,
   Pause,
   Resume,
-  //AckPauseSending,
 }
 
 enum AsyncPushGossipPass2ActMsg {
   AckPause,
-  //PauseSending,
-  //ResumeSending,
 }
 
 enum AsyncPushGossipPassiveState {
@@ -577,11 +575,6 @@ impl MpiDistAsyncPushGossipPassiveWorker {
       sleep(sleep_duration);
     }
   }
-}
-
-enum AsyncGossipActiveState {
-  Sending,
-  PausedCheckpoint,
 }
 
 pub struct MpiDistAsyncPushGossipCommWorker {
@@ -951,27 +944,9 @@ impl CommWorker for MpiDistAsyncPushGossipCommWorker {
   }
 
   fn communicate_exact(&mut self) {
-    /*if self.iter_counter % self.com_interval != 0 {
-      return;
-    }*/
-
-    /*match self.act2pass_tx.send(AsyncPushGossipAct2PassMsg::Pause) {
-      Err(e) => panic!("async gossip: active thread: failed to send Pause to passive thread: {:?}", e),
-      Ok(_) => {}
-    }
-    match self.pass2act_rx.recv() {
-      Err(e) => {
-        panic!("async gossip: active thread: failed to recv AckPause from passive thread: {:?}", e);
-      }
-      Ok(AsyncPushGossipPass2ActMsg::AckPause) => {
-        // Do nothing.
-      }
-    }*/
-
     let ctx = &(*self.context).as_ref();
     self.origin_buf.sync_store(&mut self.origin_buf_h, ctx);
     ctx.sync();
-    Mpi::barrier_().unwrap();
     for msg in 0 .. self.num_buf_msgs {
       Mpi::allreduce_(
           &self.origin_buf_h[msg * self.msg_len .. (msg+1) * self.msg_len],
@@ -983,11 +958,20 @@ impl CommWorker for MpiDistAsyncPushGossipCommWorker {
     self.final_buf.sync_load(&self.final_buf_h, ctx);
     self.final_buf.as_ref().async_vector_scale(1.0 / self.worker_data.num_workers() as f32, ctx);
     ctx.sync();
+  }
 
-    /*match self.act2pass_tx.send(AsyncPushGossipAct2PassMsg::Resume) {
-      Ok(_) => {}
-      Err(e) => panic!("async gossip: active thread: failed to send Resume to passive thread: {:?}", e),
-    }*/
+  fn allreduce(&mut self, src_data: &[f32], dst_data: &mut [f32]) {
+    assert_eq!(src_data.len(), dst_data.len());
+    let n = src_data.len();
+    let num_msgs = (n + self.msg_len - 1) / self.msg_len;
+    for msg in 0 .. num_msgs {
+      Mpi::allreduce_(
+          &src_data[msg * self.msg_len .. min(n, (msg+1) * self.msg_len)],
+          &mut dst_data[msg * self.msg_len .. min(n, (msg+1) * self.msg_len)],
+          MpiSumOp,
+      ).unwrap();
+    }
+    Mpi::barrier_().unwrap();
   }
 
   fn store(&mut self, offset: usize, data: &mut DeviceArray2d<f32>/*, ctx: &DeviceCtxRef*/) {
@@ -1306,6 +1290,10 @@ impl OperatorWorker for MpiDistSequentialOperatorWorker {
       }
     }
     self.comm_worker.borrow_mut().complete_store();
+  }
+
+  fn allreduce(&mut self, src_data: &[f32], dst_data: &mut [f32]) {
+    self.comm_worker.borrow_mut().allreduce(src_data, dst_data);
   }
 }
 

@@ -595,17 +595,19 @@ fn main() {
     step_size:      StepSizeSchedule::Anneal2{
       step0: 0.05,
       step1: 0.005,  step1_iters: 80000,
+      //step1: 0.01,  step1_iters: 80000,
       step2: 0.0005, step2_iters: 160000,
+      //step2: 0.001, step2_iters: 160000,
     },
     //momentum:       MomentumStyle::Zero,
     //momentum:       Momentum::UpdateNesterov{mu: 0.9},
     momentum:       Momentum::GradientNesterov{mu: 0.9},
     l2_reg_coef:    1.0e-4,
     sync_order:     SyncOrder::StepThenSyncParams,
-    display_iters:  20,
-    save_iters:     20,
-    valid_iters:    20,
-    checkpoint_dir: PathBuf::from("models/imagenet_warp256x256-async_push_gossip_x8-test"),
+    display_iters:  25,
+    save_iters:     625,
+    valid_iters:    625,
+    checkpoint_dir: PathBuf::from("models/imagenet_warp256x256-async_push_gossip_x8-run0"),
   };
   info!("sgd: {:?}", sgd_opt_cfg);
 

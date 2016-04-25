@@ -151,8 +151,8 @@ impl SgdOpt {
     let mut epoch_counter = 0;
     let mut iter_counter = 0;
     let mut local_counter = 0;
+    let mut batch_counter = 0;
     loop {
-      let mut batch_counter = 0;
       train_data.each_sample(datum_cfg, label_cfg, &mut |epoch_idx, datum, maybe_label| {
         if epoch_idx >= epoch_size {
           return;
@@ -344,7 +344,13 @@ impl SgdOpt {
 
     let num_samples = valid_data.max_num_samples();
 
+    //info!("DEBUG: validate: num samples: {}", num_samples);
+    self.shared.acc_correct_count.store(0, Ordering::Release);
+    self.shared.acc_total_count.store(0, Ordering::Release);
+    self.local_accum_loss = 0.0;
+
     let mut start_time = get_time();
+    let mut local_counter = 0;
     let mut batch_counter = 0;
     valid_data.each_sample(datum_cfg, label_cfg, &mut |epoch_idx, datum, maybe_label| {
       match (label_cfg, maybe_label) {
@@ -365,6 +371,7 @@ impl SgdOpt {
       }
       operator.loss_operator(0).stage_label(batch_counter, maybe_label.unwrap());
       operator.loss_operator(0).stage_weight(batch_counter, 1.0 / num_samples as f32);
+      local_counter += 1;
       batch_counter += 1;
 
       if batch_counter == batch_size {
@@ -396,25 +403,32 @@ impl SgdOpt {
       batch_counter = 0;
     }
 
+    assert_eq!(local_counter, num_samples);
+
     self.shared.sync();
+    let lap_time = get_time();
+    let elapsed_ms = (lap_time - start_time).num_milliseconds();
+    start_time = lap_time;
+    let acc_correct_count = self.shared.acc_correct_count.load(Ordering::Acquire);
+    let acc_total_count = self.shared.acc_total_count.load(Ordering::Acquire);
+    //let accuracy = acc_correct_count as f32 / acc_total_count as f32;
+    let local_loss = self.local_accum_loss;
+    let local_stats = vec![1.0, acc_correct_count as f32, acc_total_count as f32, local_loss];
+    let mut total_stats = vec![0.0, 0.0, 0.0, 0.0];
+    operator.allreduce(&local_stats, &mut total_stats);
     if rank == 0 {
-      let lap_time = get_time();
-      let elapsed_ms = (lap_time - start_time).num_milliseconds();
-      start_time = lap_time;
-      let acc_correct_count = self.shared.acc_correct_count.load(Ordering::Acquire);
-      let acc_total_count = self.shared.acc_total_count.load(Ordering::Acquire);
-      let accuracy = acc_correct_count as f32 / acc_total_count as f32;
-      let avg_loss = self.local_accum_loss;
+      let accuracy = total_stats[1] / total_stats[2];
+      let loss = total_stats[3] / total_stats[0];
       info!("SgdOpt: valid: sample count: {} loss: {:.06} accuracy: {:.03} elapsed: {:.03} s",
           acc_total_count,
-          avg_loss,
+          loss,
           accuracy,
           elapsed_ms as f32 * 0.001,
       );
-      self.shared.acc_correct_count.store(0, Ordering::Release);
-      self.shared.acc_total_count.store(0, Ordering::Release);
-      self.local_accum_loss = 0.0;
     }
+    self.shared.acc_correct_count.store(0, Ordering::Release);
+    self.shared.acc_total_count.store(0, Ordering::Release);
+    self.local_accum_loss = 0.0;
     self.shared.sync();
   }
 }

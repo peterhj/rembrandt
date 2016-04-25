@@ -25,6 +25,7 @@ pub trait CommWorker {
   fn complete_load(&mut self);
   fn communicate(&mut self);
   fn communicate_exact(&mut self) { unimplemented!(); }
+  fn allreduce(&mut self, _src_data: &[f32], _dst_data: &mut [f32]) { unimplemented!(); }
   fn store(&mut self, offset: usize, data: &mut DeviceArray2d<f32>/*, ctx: &DeviceCtxRef*/);
   fn complete_store(&mut self);
 }
