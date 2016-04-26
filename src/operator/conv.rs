@@ -346,7 +346,7 @@ impl<Comm> Operator for BNormConv2dOperator<Comm> where Comm: CommWorker {
   }
 
   fn decode_params(&mut self, blob: &[u8]) -> usize {
-    let BNormConv2dOperatorConfig{in_dims, conv_size, out_channels, ..} = self.config;
+    /*let BNormConv2dOperatorConfig{in_dims, conv_size, out_channels, ..} = self.config;
     let ctx = &(*self.context).as_ref();
     let (_, _, in_channels) = in_dims;
     let mut reader = Cursor::new(blob);
@@ -355,7 +355,23 @@ impl<Comm> Operator for BNormConv2dOperator<Comm> where Comm: CommWorker {
     assert_eq!((conv_size * conv_size * in_channels, out_channels), load_weights.as_view().bound());
     self.weights.as_view_mut(ctx).sync_load(&load_weights.as_view());
     // FIXME(20160422): batch norm params.
-    unimplemented!();
+    unimplemented!();*/
+
+    let ctx = &(*self.context).as_ref();
+    let mut reader = Cursor::new(blob);
+
+    let load_weights = Array2d::deserialize(&mut reader).unwrap();
+    self.weights.as_view_mut(ctx).sync_load(&load_weights.as_view());
+
+    let load_bn_scale1 = Array2d::deserialize(&mut reader).unwrap();
+    self.bn_scale1.as_view_mut(ctx).sync_load(&load_bn_scale1.as_view());
+    let load_bn_bias1 = Array2d::deserialize(&mut reader).unwrap();
+    self.bn_bias1.as_view_mut(ctx).sync_load(&load_bn_bias1.as_view());
+    let load_bn_running_mean1 = Array2d::deserialize(&mut reader).unwrap();
+    self.bn_running_mean1.as_view_mut(ctx).sync_load(&load_bn_running_mean1.as_view());
+    let load_bn_running_ivar1 = Array2d::deserialize(&mut reader).unwrap();
+    self.bn_running_ivar1.as_view_mut(ctx).sync_load(&load_bn_running_ivar1.as_view());
+
     let progress = reader.position() as usize;
     progress
   }
@@ -1217,7 +1233,7 @@ impl<Comm> Operator for StackResConv2dOperator<Comm> where Comm: CommWorker {
   }
 
   fn decode_params(&mut self, blob: &[u8]) -> usize {
-    let StackResConv2dOperatorConfig{in_dims, ..} = self.config;
+    /*let StackResConv2dOperatorConfig{in_dims, ..} = self.config;
     let ctx = &(*self.context).as_ref();
     let (_, _, in_channels) = in_dims;
     let mut reader = Cursor::new(blob);
@@ -1230,7 +1246,35 @@ impl<Comm> Operator for StackResConv2dOperator<Comm> where Comm: CommWorker {
     self.weights1.as_view_mut(ctx).sync_load(&load_weights1.as_view());
     self.weights2.as_view_mut(ctx).sync_load(&load_weights2.as_view());
     // FIXME(20160422): batch norm params.
-    unimplemented!();
+    unimplemented!();*/
+
+    let ctx = &(*self.context).as_ref();
+    let mut reader = Cursor::new(blob);
+
+    let load_weights1 = Array2d::deserialize(&mut reader).unwrap();
+    self.weights1.as_view_mut(ctx).sync_load(&load_weights1.as_view());
+
+    let load_bn_scale1 = Array2d::deserialize(&mut reader).unwrap();
+    self.bn_scale1.as_view_mut(ctx).sync_load(&load_bn_scale1.as_view());
+    let load_bn_bias1 = Array2d::deserialize(&mut reader).unwrap();
+    self.bn_bias1.as_view_mut(ctx).sync_load(&load_bn_bias1.as_view());
+    let load_bn_running_mean1 = Array2d::deserialize(&mut reader).unwrap();
+    self.bn_running_mean1.as_view_mut(ctx).sync_load(&load_bn_running_mean1.as_view());
+    let load_bn_running_ivar1 = Array2d::deserialize(&mut reader).unwrap();
+    self.bn_running_ivar1.as_view_mut(ctx).sync_load(&load_bn_running_ivar1.as_view());
+
+    let load_weights2 = Array2d::deserialize(&mut reader).unwrap();
+    self.weights2.as_view_mut(ctx).sync_load(&load_weights2.as_view());
+
+    let load_bn_scale2 = Array2d::deserialize(&mut reader).unwrap();
+    self.bn_scale2.as_view_mut(ctx).sync_load(&load_bn_scale2.as_view());
+    let load_bn_bias2 = Array2d::deserialize(&mut reader).unwrap();
+    self.bn_bias2.as_view_mut(ctx).sync_load(&load_bn_bias2.as_view());
+    let load_bn_running_mean2 = Array2d::deserialize(&mut reader).unwrap();
+    self.bn_running_mean2.as_view_mut(ctx).sync_load(&load_bn_running_mean2.as_view());
+    let load_bn_running_ivar2 = Array2d::deserialize(&mut reader).unwrap();
+    self.bn_running_ivar2.as_view_mut(ctx).sync_load(&load_bn_running_ivar2.as_view());
+
     let progress = reader.position() as usize;
     progress
   }
@@ -2436,7 +2480,7 @@ impl<Comm> Operator for ProjStackResConv2dOperator<Comm> where Comm: CommWorker 
   }
 
   fn decode_params(&mut self, blob: &[u8]) -> usize {
-    let ProjStackResConv2dOperatorConfig{in_dims, out_dims, ..} = self.config;
+    /*let ProjStackResConv2dOperatorConfig{in_dims, out_dims, ..} = self.config;
     let ctx = &(*self.context).as_ref();
     let (_, _, in_channels) = in_dims;
     let (_, _, out_channels) = out_dims;
@@ -2452,9 +2496,47 @@ impl<Comm> Operator for ProjStackResConv2dOperator<Comm> where Comm: CommWorker 
     assert_eq!((1 * 1 * in_channels, out_channels), load_weights3.as_view().bound());
     self.weights1.as_view_mut(ctx).sync_load(&load_weights1.as_view());
     self.weights2.as_view_mut(ctx).sync_load(&load_weights2.as_view());
+    self.weights3.as_view_mut(ctx).sync_load(&load_weights3.as_view());*/
+
+    let ctx = &(*self.context).as_ref();
+    let mut reader = Cursor::new(blob);
+
+    let load_weights1 = Array2d::deserialize(&mut reader).unwrap();
+    self.weights1.as_view_mut(ctx).sync_load(&load_weights1.as_view());
+
+    let load_bn_scale1 = Array2d::deserialize(&mut reader).unwrap();
+    self.bn_scale1.as_view_mut(ctx).sync_load(&load_bn_scale1.as_view());
+    let load_bn_bias1 = Array2d::deserialize(&mut reader).unwrap();
+    self.bn_bias1.as_view_mut(ctx).sync_load(&load_bn_bias1.as_view());
+    let load_bn_running_mean1 = Array2d::deserialize(&mut reader).unwrap();
+    self.bn_running_mean1.as_view_mut(ctx).sync_load(&load_bn_running_mean1.as_view());
+    let load_bn_running_ivar1 = Array2d::deserialize(&mut reader).unwrap();
+    self.bn_running_ivar1.as_view_mut(ctx).sync_load(&load_bn_running_ivar1.as_view());
+
+    let load_weights2 = Array2d::deserialize(&mut reader).unwrap();
+    self.weights2.as_view_mut(ctx).sync_load(&load_weights2.as_view());
+
+    let load_bn_scale2 = Array2d::deserialize(&mut reader).unwrap();
+    self.bn_scale2.as_view_mut(ctx).sync_load(&load_bn_scale2.as_view());
+    let load_bn_bias2 = Array2d::deserialize(&mut reader).unwrap();
+    self.bn_bias2.as_view_mut(ctx).sync_load(&load_bn_bias2.as_view());
+    let load_bn_running_mean2 = Array2d::deserialize(&mut reader).unwrap();
+    self.bn_running_mean2.as_view_mut(ctx).sync_load(&load_bn_running_mean2.as_view());
+    let load_bn_running_ivar2 = Array2d::deserialize(&mut reader).unwrap();
+    self.bn_running_ivar2.as_view_mut(ctx).sync_load(&load_bn_running_ivar2.as_view());
+
+    let load_weights3 = Array2d::deserialize(&mut reader).unwrap();
     self.weights3.as_view_mut(ctx).sync_load(&load_weights3.as_view());
-    // FIXME(20160422): batch norm params.
-    unimplemented!();
+
+    let load_bn_scale3 = Array2d::deserialize(&mut reader).unwrap();
+    self.bn_scale3.as_view_mut(ctx).sync_load(&load_bn_scale3.as_view());
+    let load_bn_bias3 = Array2d::deserialize(&mut reader).unwrap();
+    self.bn_bias3.as_view_mut(ctx).sync_load(&load_bn_bias3.as_view());
+    let load_bn_running_mean3 = Array2d::deserialize(&mut reader).unwrap();
+    self.bn_running_mean3.as_view_mut(ctx).sync_load(&load_bn_running_mean3.as_view());
+    let load_bn_running_ivar3 = Array2d::deserialize(&mut reader).unwrap();
+    self.bn_running_ivar3.as_view_mut(ctx).sync_load(&load_bn_running_ivar3.as_view());
+
     let progress = reader.position() as usize;
     progress
   }

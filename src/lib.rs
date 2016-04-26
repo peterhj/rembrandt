@@ -20,12 +20,14 @@ extern crate protobuf;
 extern crate rembrandt_kernels;
 extern crate rng;
 extern crate toggle;
+extern crate varraydb;
 extern crate worker as worker_;
 
 #[macro_use]
 extern crate log;
 extern crate byteorder;
 extern crate env_logger;
+extern crate image;
 extern crate memmap;
 extern crate rand;
 extern crate rustc_serialize;
@@ -51,6 +53,8 @@ pub mod opt_new;
 
 //pub mod arch;
 //pub mod comm;
+pub mod data;
 pub mod operator;
 pub mod opt;
+pub mod templates;
 pub mod worker;

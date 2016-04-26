@@ -457,11 +457,13 @@ struct MpiDistAsyncPushGossipPassiveWorker {
   recv_reqs:    MpiRequestList,
   recv_count:   Arc<AtomicUsize>,
   bar_signal:   Arc<AtomicBool>,
+  rng:          Xorshiftplus128Rng,
 }
 
 impl MpiDistAsyncPushGossipPassiveWorker {
   pub fn run(mut self) {
     let sleep_duration = Duration::new(0, 50_000);
+    let mut poll_ranks: Vec<_> = (0 .. self.num_workers).collect();
 
     'poll_loop: loop {
       match self.act2pass_rx.try_recv() {
@@ -494,7 +496,8 @@ impl MpiDistAsyncPushGossipPassiveWorker {
       let mut chk_recv_rank = None;
       // FIXME(20160422): could also randomize the order of checked ranks,
       // may make things more unbiased?
-      'chk_probe_loop: for r in 0 .. self.num_workers {
+      self.rng.shuffle(&mut poll_ranks);
+      'chk_probe_loop: for &r in poll_ranks.iter() {
         if r == self.worker_rank {
           continue 'chk_probe_loop;
         }
@@ -520,7 +523,8 @@ impl MpiDistAsyncPushGossipPassiveWorker {
       let mut recv_rank = None;
       // FIXME(20160422): could also randomize the order of checked ranks,
       // may make things more unbiased?
-      'probe_loop: for r in 0 .. self.num_workers {
+      self.rng.shuffle(&mut poll_ranks);
+      'probe_loop: for &r in poll_ranks.iter() {
         if r == self.worker_rank {
           continue 'probe_loop;
         }
@@ -734,6 +738,7 @@ impl MpiDistAsyncPushGossipCommWorker {
           recv_reqs:    MpiRequestList::new(),
           recv_count:   recv_count,
           bar_signal:   bar_signal,
+          rng:          Xorshiftplus128Rng::new(&mut thread_rng()),
         };
         passive_worker.run();
       })

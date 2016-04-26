@@ -146,7 +146,7 @@ impl SgdOpt {
       Ok(file) => file,
     };
     let mut writer = BufWriter::new(local_log_file);
-    writeln!(&mut writer, "t,event,loss,acc,elapsed").unwrap();
+    writeln!(&mut writer, "t,event,loss,error,elapsed").unwrap();
     writer.flush().unwrap();
     SgdOpt{
       config:   config,
@@ -183,14 +183,14 @@ impl SgdOpt {
     operator.reset();
 
     let mut start_time = get_time();
-    let mut log_start_time = start_time;
+    let mut minibatch_start_time = start_time;
 
     let mut minibatch_acc_correct_count = 0;
     let mut minibatch_acc_total_count = 0;
     let mut minibatch_acc_loss = 0.0;
 
     let mut epoch_counter = 0;
-    let mut iter_counter = 0;
+    let mut iter_counter = self.config.init_t.unwrap_or(0);
     let mut local_counter = 0;
     let mut batch_counter = 0;
 
@@ -319,19 +319,19 @@ impl SgdOpt {
           //info!("DEBUG: rank: {} post iter: {}", rank, iter_counter);
 
           // FIXME(20160425): write iteration stats to log file.
-          let log_lap_time = get_time();
-          let log_elapsed_ms = (log_lap_time - log_start_time).num_milliseconds();
+          let minibatch_lap_time = get_time();
+          let minibatch_elapsed_ms = (minibatch_lap_time - minibatch_start_time).num_milliseconds();
           let minibatch_accuracy = minibatch_acc_correct_count as f32 / minibatch_acc_total_count as f32;
           writeln!(&mut self.local_log_file, "{},step,{:.6},{:.4},{:.3}",
-              iter_counter, minibatch_acc_loss, minibatch_accuracy, log_elapsed_ms as f32 * 0.001).unwrap();
-          log_start_time = get_time();
+              iter_counter, minibatch_acc_loss, 1.0 - minibatch_accuracy, minibatch_elapsed_ms as f32 * 0.001).unwrap();
+          minibatch_start_time = get_time();
           minibatch_acc_correct_count = 0;
           minibatch_acc_total_count = 0;
           minibatch_acc_loss = 0.0;
 
           if iter_counter % self.config.display_iters == 0 {
             self.shared.sync();
-            let lap_time = log_lap_time;
+            let lap_time = minibatch_lap_time;
             if rank == 0 {
               let elapsed_ms = (lap_time - start_time).num_milliseconds();
               let acc_correct_count = self.shared.acc_correct_count.load(Ordering::Acquire);
@@ -353,7 +353,7 @@ impl SgdOpt {
             self.local_log_file.flush().unwrap();
             self.shared.sync();
             start_time = get_time();
-            log_start_time = start_time;
+            minibatch_start_time = start_time;
           }
 
           if iter_counter % self.config.save_iters == 0 {
@@ -375,7 +375,7 @@ impl SgdOpt {
             self.validate(iter_counter, datum_cfg, label_cfg, valid_data, operator);
             operator.restore_params();
             start_time = get_time();
-            log_start_time = start_time;
+            minibatch_start_time = start_time;
           }
         }
       });
@@ -478,7 +478,7 @@ impl SgdOpt {
     start_time = lap_time;
 
     writeln!(&mut self.local_log_file, "{},valid,{:.6},{:.4},{:.3}",
-        iter_counter, loss, accuracy, elapsed_ms as f32 * 0.001).unwrap();
+        iter_counter, loss, 1.0 - accuracy, elapsed_ms as f32 * 0.001).unwrap();
 
     if rank == 0 {
       info!("SgdOpt: valid: sample count: {} loss: {:.06} accuracy: {:.03} elapsed: {:.03} s",

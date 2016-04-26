@@ -79,6 +79,7 @@ path = "tools/dist-train-imagenet.rs"
 [dependencies]
 byteorder = "*"
 env_logger = "*"
+image = { path = "../image" }
 libc = "*"
 log = "*"
 memmap = "*"
@@ -107,6 +108,7 @@ procgroup_mpi = { path = "../../libprocgroup_mpi" }
 rembrandt_kernels = { path = "../rembrandt_kernels" }
 #rembrandt_reportserv = { path = "../rembrandt_reportserv" }
 rng = { path = "../../librng" }
+varraydb = { path = "../varraydb" }
 worker = { path = "../../libworker" }
 
 #[dependencies.array]

@@ -182,15 +182,26 @@ impl CommWorker for MpiDistSyncAllreduceCommWorker {
     let ctx = &(*self.context).as_ref();
     self.origin_buf.sync_store(&mut self.origin_buf_h, ctx);
     ctx.sync();
+    self.send_reqs.clear();
     //Mpi::barrier_().unwrap();
     for msg in 0 .. self.num_buf_msgs {
-      Mpi::allreduce_(
+      /*Mpi::allreduce_(
           &self.origin_buf_h[msg * self.msg_len .. (msg+1) * self.msg_len],
           &mut self.target_buf_h[msg * self.msg_len .. (msg+1) * self.msg_len],
           MpiSumOp,
-      ).unwrap();
+      ).unwrap();*/
+      let send_req = match Mpi::nonblocking_allreduce_(
+          &self.origin_buf_h[msg * self.msg_len .. (msg+1) * self.msg_len],
+          &mut self.target_buf_h[msg * self.msg_len .. (msg+1) * self.msg_len],
+          MpiSumOp)
+      {
+        Err(e) => panic!("nonblocking allreduce failed: {:?}", e),
+        Ok(req) => req,
+      };
+      self.send_reqs.append(send_req);
     }
-    Mpi::barrier_().unwrap();
+    self.send_reqs.wait_all().unwrap();
+    //Mpi::barrier_().unwrap();
     self.target_buf.sync_load(&self.target_buf_h, ctx);
     self.target_buf.as_ref().async_vector_scale(1.0 / self.worker_data.num_workers() as f32, ctx);
     ctx.sync();
