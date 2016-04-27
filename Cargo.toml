@@ -36,6 +36,10 @@ path = "tools/calculate-cifar10-mean.rs"
 name = "test-lmdb"
 path = "tools/test-lmdb.rs"
 
+[[bin]]
+name = "test-varraydb"
+path = "tools/test-varraydb.rs"
+
 #[[bin]]
 #name = "train-mnist"
 #path = "tools/train-mnist.rs"
