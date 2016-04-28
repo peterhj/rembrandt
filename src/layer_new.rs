@@ -331,7 +331,7 @@ impl InputLayer for Data3dLayer {
         self.expose_host_frame_buf(batch_idx)
           .copy_from_slice(frame_bytes.as_slice());
       }
-      //_ => unimplemented!(),
+      _ => unimplemented!(),
     }
   }
 

@@ -28,6 +28,8 @@ use rembrandt::operator::loss::{
   CategoricalLossConfig,
 };
 use rembrandt::operator::comm::{
+  ParameterServerConfig,
+  GossipConfig,
   DeviceSyncGossipCommWorkerBuilder,
 };
 use rembrandt::operator::conv::{
@@ -52,7 +54,11 @@ use rembrandt::templates::resnet::{
 use rembrandt::templates::vgg::{
   build_vgg_a,
 };
+use rembrandt::worker::elasticserver_dist::{
+  MpiDistElasticServerCommWorker,
+};
 use rembrandt::worker::gossip_dist::{
+  MpiDistAsyncPushGossipCommWorker,
   MpiDistSequentialOperatorWorkerBuilder,
   MpiDistSequentialOperatorWorker,
 };
@@ -91,7 +97,8 @@ fn main() {
     momentum:       Momentum::UpdateNesterov{mu: 0.9},
     //momentum:       Momentum::GradientNesterov{mu: 0.9},
     l2_reg_coef:    1.0e-4,
-    sync_order:     SyncOrder::StepThenSyncParams,
+    //sync_order:     SyncOrder::StepThenSyncParams,
+    sync_order:     SyncOrder::SyncParamsThenStep,
     /*display_iters:  25,
     save_iters:     625,
     valid_iters:    625,*/
@@ -100,8 +107,9 @@ fn main() {
     valid_iters:    1250,
     //checkpoint_dir: PathBuf::from("models/imagenet_warp256x256-async_push_gossip_x8-run1-step2_120k"),
     //checkpoint_dir: PathBuf::from("models/imagenet_warp256x256-async_push_gossip_x8-run2"),
-    checkpoint_dir: PathBuf::from("models/imagenet_warp256x256-async_push_gossip_x8-run3"),
+    //checkpoint_dir: PathBuf::from("models/imagenet_warp256x256-async_push_gossip_x8-run4"),
     //checkpoint_dir: PathBuf::from("models/imagenet_warp256x256-sync_x8-run0"),
+    checkpoint_dir: PathBuf::from("models/imagenet_warp256x256-test"),
   };
   info!("sgd: {:?}", sgd_opt_cfg);
 
@@ -122,7 +130,7 @@ fn main() {
   // FIXME(20160331)
   //let comm_worker_builder = DeviceSyncGossipCommWorkerBuilder::new(num_workers, 1, worker_cfg.params_len());
   //let worker_builder = SequentialOperatorWorkerBuilder::new(num_workers, batch_size, worker_cfg, OpCapability::Backward);
-  let worker_builder = MpiDistSequentialOperatorWorkerBuilder::new(batch_size, worker_cfg, OpCapability::Backward);
+  let worker_builder = MpiDistSequentialOperatorWorkerBuilder::new(batch_size, worker_cfg.clone(), OpCapability::Backward);
   let pool = ThreadPool::new(num_workers);
   let join_barrier = Arc::new(Barrier::new(num_workers + 1));
   let opt_shared = Arc::new(OptSharedData::new(num_workers));
@@ -130,6 +138,7 @@ fn main() {
     //let comm_worker_builder = comm_worker_builder.clone();
     let worker_builder = worker_builder.clone();
     let join_barrier = join_barrier.clone();
+    let worker_cfg = worker_cfg.clone();
     let sgd_opt_cfg = sgd_opt_cfg.clone();
     let opt_shared = opt_shared.clone();
     pool.execute(move || {
@@ -138,7 +147,17 @@ fn main() {
       let mut worker = worker_builder.into_worker(tid, context, comm_worker);*/
 
       let context = Rc::new(DeviceContext::new(0));
-      let mut worker = worker_builder.into_worker(context);
+      /*let gossip_cfg = GossipConfig{
+        num_rounds: 1,
+        buf_size:   worker_cfg.params_len(),
+      };
+      let comm_worker = Rc::new(RefCell::new(MpiDistAsyncPushGossipCommWorker::new(gossip_cfg, context.clone())));*/
+      let paramserver_cfg = ParameterServerConfig{
+        com_interval: 1,
+        buf_size:     worker_cfg.params_len(),
+      };
+      let comm_worker = Rc::new(RefCell::new(MpiDistElasticServerCommWorker::new(paramserver_cfg, context.clone())));
+      let mut worker = worker_builder.into_worker(context, comm_worker);
 
       let dataset_cfg = DatasetConfig::open(&PathBuf::from("examples/imagenet.data"));
       let mut train_data =

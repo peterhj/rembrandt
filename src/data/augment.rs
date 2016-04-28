@@ -7,17 +7,48 @@ use rng::xorshift::{Xorshiftplus128Rng};
 
 use rand::{Rng, thread_rng};
 
-pub trait AugmentPreproc {
+pub trait TransformPreproc {
   //fn transform(&self, datum: SampleDatum, label: Option<SampleLabel>, rng: &mut Rng) -> (SampleDatum, Option<SampleLabel>);
   fn transform(&self, datum: SampleDatum, label: Option<SampleLabel>, rng: &mut Xorshiftplus128Rng) -> (SampleDatum, Option<SampleLabel>);
 }
 
-pub struct RandomScalePreproc {
+pub struct TransposeCWH2WHCPreproc;
+
+impl TransformPreproc for TransposeCWH2WHCPreproc {
+  fn transform(&self, datum: SampleDatum, label: Option<SampleLabel>, _rng: &mut Xorshiftplus128Rng) -> (SampleDatum, Option<SampleLabel>) {
+    match datum {
+      SampleDatum::CWHBytes(old_bytes) => {
+        let dims = old_bytes.bound();
+        let (channels, width, height) = dims;
+
+        let mut new_bytes = Array3d::zeros((width, height, channels));
+        {
+          let old_bytes = old_bytes.as_slice();
+          let mut new_bytes = new_bytes.as_mut_slice();
+          for k in 0 .. channels {
+            for j in 0 .. height {
+              for i in 0 .. width {
+                new_bytes[i + j * width + k * width * height] =
+                    old_bytes[k + i * channels + j * channels * width];
+              }
+            }
+          }
+        }
+
+        (SampleDatum::WHCBytes(new_bytes), label)
+      }
+
+      _ => unimplemented!(),
+    }
+  }
+}
+
+pub struct RandomImageScalePreproc {
   pub min_side_lo:  usize,
   pub min_side_hi:  usize,
 }
 
-impl AugmentPreproc for RandomScalePreproc {
+impl TransformPreproc for RandomImageScalePreproc {
   fn transform(&self, datum: SampleDatum, label: Option<SampleLabel>, rng: &mut Xorshiftplus128Rng) -> (SampleDatum, Option<SampleLabel>) {
     let min_side = rng.gen_range(self.min_side_lo, self.min_side_hi + 1);
     match datum {
@@ -46,6 +77,7 @@ impl AugmentPreproc for RandomScalePreproc {
                 None => panic!("failed to create image buffer from bytes"),
                 Some(buf) => buf,
               };
+          // FIXME(20160428): image is way too fucking slow, use VIPS instead.
           //let new_image_buf = resize(&old_image_buf, new_width as u32, new_height as u32, FilterType::Lanczos3);
           //let new_image_buf = resize(&old_image_buf, new_width as u32, new_height as u32, FilterType::CatmullRom);
           let new_image_buf = resize(&old_image_buf, new_width as u32, new_height as u32, FilterType::Triangle);
@@ -56,17 +88,20 @@ impl AugmentPreproc for RandomScalePreproc {
         let new_arr = Array3d::with_data(new_bytes, (new_width, new_height, channels));
         (SampleDatum::WHCBytes(new_arr), label)
       }
+
+      _ => unimplemented!(),
     }
   }
 }
 
 pub struct RandomFlipXPreproc;
 
-impl AugmentPreproc for RandomFlipXPreproc {
+impl TransformPreproc for RandomFlipXPreproc {
   fn transform(&self, datum: SampleDatum, label: Option<SampleLabel>, rng: &mut Xorshiftplus128Rng) -> (SampleDatum, Option<SampleLabel>) {
     match datum {
       SampleDatum::WHCBytes(old_bytes) => {
       }
+      _ => unimplemented!(),
     }
     // FIXME(20160425)
     unimplemented!();
@@ -78,7 +113,7 @@ pub struct RandomCropPreproc {
   pub crop_height:  usize,
 }
 
-impl AugmentPreproc for RandomCropPreproc {
+impl TransformPreproc for RandomCropPreproc {
   fn transform(&self, old_datum: SampleDatum, label: Option<SampleLabel>, rng: &mut Xorshiftplus128Rng) -> (SampleDatum, Option<SampleLabel>) {
     let new_datum = match old_datum {
       SampleDatum::WHCBytes(old_bytes) => {
@@ -118,6 +153,8 @@ impl AugmentPreproc for RandomCropPreproc {
 
         SampleDatum::WHCBytes(new_bytes)
       }
+
+      _ => unimplemented!(),
     };
     (new_datum, label)
   }
@@ -128,7 +165,7 @@ pub struct CenterCropPreproc {
   pub crop_height:  usize,
 }
 
-impl AugmentPreproc for CenterCropPreproc {
+impl TransformPreproc for CenterCropPreproc {
   fn transform(&self, old_datum: SampleDatum, label: Option<SampleLabel>, _rng: &mut Xorshiftplus128Rng) -> (SampleDatum, Option<SampleLabel>) {
     let new_datum = match old_datum {
       SampleDatum::WHCBytes(old_bytes) => {
@@ -155,6 +192,8 @@ impl AugmentPreproc for CenterCropPreproc {
 
         SampleDatum::WHCBytes(new_bytes)
       }
+
+      _ => unimplemented!(),
     };
     (new_datum, label)
   }

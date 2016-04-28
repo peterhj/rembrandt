@@ -12,14 +12,14 @@ use rembrandt::data::{
   DataIter,
   RandomSampleDataIter,
   CyclicSampleDataIter,
-  AugmentDataIter,
+  TransformDataIter,
   AsyncQueueDataIter,
   SourceDataIter,
   AsyncPoolDataIter,
 };
 use rembrandt::data::augment::{
-  AugmentPreproc,
-  RandomScalePreproc,
+  TransformPreproc,
+  RandomImageScalePreproc,
   RandomCropPreproc,
   CenterCropPreproc,
 };
@@ -49,6 +49,7 @@ use rembrandt::operator::loss::{
   CategoricalLossConfig,
 };
 use rembrandt::operator::comm::{
+  GossipConfig,
   DeviceSyncGossipCommWorkerBuilder,
 };
 use rembrandt::operator::conv::{
@@ -78,6 +79,7 @@ use rembrandt::templates::vgg::{
   build_vgg_a,
 };
 use rembrandt::worker::gossip_dist::{
+  MpiDistAsyncPushGossipCommWorker,
   MpiDistSequentialOperatorWorkerBuilder,
   MpiDistSequentialOperatorWorker,
 };
@@ -150,7 +152,7 @@ fn main() {
   // FIXME(20160331)
   //let comm_worker_builder = DeviceSyncGossipCommWorkerBuilder::new(num_workers, 1, worker_cfg.params_len());
   //let worker_builder = SequentialOperatorWorkerBuilder::new(num_workers, batch_size, worker_cfg, OpCapability::Backward);
-  let worker_builder = MpiDistSequentialOperatorWorkerBuilder::new(batch_size, worker_cfg, OpCapability::Backward);
+  let worker_builder = MpiDistSequentialOperatorWorkerBuilder::new(batch_size, worker_cfg.clone(), OpCapability::Backward);
   let pool = ThreadPool::new(num_workers);
   let join_barrier = Arc::new(Barrier::new(num_workers + 1));
   //let opt_shared = Arc::new(OptSharedData::new(num_workers));
@@ -158,6 +160,7 @@ fn main() {
     //let comm_worker_builder = comm_worker_builder.clone();
     let worker_builder = worker_builder.clone();
     let join_barrier = join_barrier.clone();
+    let worker_cfg = worker_cfg.clone();
     let sgd_opt_cfg = sgd_opt_cfg.clone();
     //let opt_shared = opt_shared.clone();
     pool.execute(move || {
@@ -166,14 +169,19 @@ fn main() {
       let mut worker = worker_builder.into_worker(tid, context, comm_worker);*/
 
       let context = Rc::new(DeviceContext::new(0));
-      let mut worker = worker_builder.into_worker(context);
+      let gossip_cfg = GossipConfig{
+        num_rounds: 1,
+        buf_size:   worker_cfg.params_len(),
+      };
+      let comm_worker = Rc::new(RefCell::new(MpiDistAsyncPushGossipCommWorker::new(gossip_cfg, context.clone())));
+      let mut worker = worker_builder.into_worker(context, comm_worker);
 
-      fn wrap_source(source: SourceDataIter) -> AugmentDataIter<RandomCropPreproc, AugmentDataIter<RandomScalePreproc, SourceDataIter>> {
-        AugmentDataIter::new(RandomCropPreproc{
+      fn wrap_source(source: SourceDataIter) -> TransformDataIter<RandomCropPreproc, TransformDataIter<RandomImageScalePreproc, SourceDataIter>> {
+        TransformDataIter::new(RandomCropPreproc{
           crop_width:   224,
           crop_height:  224,
         },
-        AugmentDataIter::new(RandomScalePreproc{
+        TransformDataIter::new(RandomImageScalePreproc{
           min_side_lo:  256,
           min_side_hi:  480,
         },
@@ -183,11 +191,11 @@ fn main() {
 
       let mut train_data =
           /*AsyncQueueDataIter::new(
-          AugmentDataIter::new(RandomCropPreproc{
+          TransformDataIter::new(RandomCropPreproc{
             crop_width:   224,
             crop_height:  224,
           },
-          AugmentDataIter::new(RandomScalePreproc{
+          TransformDataIter::new(RandomImageScalePreproc{
             min_side_lo:  256,
             min_side_hi:  480,
           },
@@ -210,11 +218,11 @@ fn main() {
           )));
 
       /*let mut valid_data =
-          AugmentDataIter::new(CenterCropPreproc{
+          TransformDataIter::new(CenterCropPreproc{
             crop_width:   224,
             crop_height:  224,
           },
-          AugmentDataIter::new(RandomScalePreproc{
+          TransformDataIter::new(RandomImageScalePreproc{
             min_side_lo:  368,
             min_side_hi:  368,
           },

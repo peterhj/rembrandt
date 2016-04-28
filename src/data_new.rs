@@ -74,6 +74,7 @@ impl SampleDatumConfig {
 #[derive(Clone)]
 pub enum SampleDatum {
   WHCBytes(Array3d<u8>),
+  CWHBytes(Array3d<u8>),
 }
 
 #[derive(Clone, Copy, Debug)]

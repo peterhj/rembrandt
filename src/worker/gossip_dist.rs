@@ -23,6 +23,7 @@ use operator::worker::{
   OperatorWorker,
   SequentialOperatorConfig,
 };
+use worker::{MpiDistCommWorker};
 use worker::allreduce_dist::{MpiDistSyncAllreduceCommWorker};
 
 use array_cuda::device::array::{DeviceArray2d};
@@ -294,7 +295,17 @@ impl MpiDistSyncGossipCommWorker {
   }
 }
 
+impl MpiDistCommWorker for MpiDistSyncGossipCommWorker {
+  fn mpi(&self) -> &Mpi {
+    &self.mpi
+  }
+}
+
 impl CommWorker for MpiDistSyncGossipCommWorker {
+  fn worker_data(&self) -> &WorkerData {
+    &self.worker_data
+  }
+
   fn next(&mut self) -> bool {
     // FIXME(20160412)
     self.iter_counter += 1;
@@ -792,7 +803,17 @@ impl MpiDistAsyncPushGossipCommWorker {
   }
 }
 
+impl MpiDistCommWorker for MpiDistAsyncPushGossipCommWorker {
+  fn mpi(&self) -> &Mpi {
+    &self.mpi
+  }
+}
+
 impl CommWorker for MpiDistAsyncPushGossipCommWorker {
+  fn worker_data(&self) -> &WorkerData {
+    &self.worker_data
+  }
+
   fn next(&mut self) -> bool {
     // FIXME(20160412)
     self.iter_counter += 1;
@@ -1038,7 +1059,8 @@ impl MpiDistSequentialOperatorWorkerBuilder {
 impl MpiDistSequentialOperatorWorkerBuilder {
   //type Worker = MpiDistSequentialOperatorWorker;
 
-  pub fn into_worker(self, /*tid: usize,*/ context: Rc<DeviceContext>, /*comm_worker: Rc<RefCell<Comm>>*/) -> MpiDistSequentialOperatorWorker/*<Comm>*/ {
+  pub fn into_worker<Comm>(self, /*tid: usize,*/ context: Rc<DeviceContext>, comm_worker: Rc<RefCell<Comm>>) -> MpiDistSequentialOperatorWorker<Comm>
+  where Comm: 'static + MpiDistCommWorker {
     let config = self.config.clone();
     let total_params_len = config.params_len();
 
@@ -1048,19 +1070,20 @@ impl MpiDistSequentialOperatorWorkerBuilder {
     };
     //let comm_worker = Rc::new(RefCell::new(MpiDistSyncAllreduceCommWorker::new(gossip_cfg, context.clone())));
     //let comm_worker = Rc::new(RefCell::new(MpiDistSyncGossipCommWorker::new(gossip_cfg, context.clone())));
-    let comm_worker = Rc::new(RefCell::new(MpiDistAsyncPushGossipCommWorker::new(gossip_cfg, context.clone())));
-    let worker_data = comm_worker.borrow().worker_data.clone();
+    //let comm_worker = Rc::new(RefCell::new(MpiDistAsyncPushGossipCommWorker::new(gossip_cfg, context.clone())));
+    let worker_data = comm_worker.borrow().worker_data().clone();
     let mut shared_seed = [0u64, 0u64];
     if worker_data.worker_rank() == 0 {
       shared_seed = self.shared_seed;
     }
     if worker_data.num_workers() > 1 {
-      comm_worker.borrow().mpi.broadcast(&mut shared_seed, 0);
+      comm_worker.borrow().mpi().broadcast(&mut shared_seed, 0);
     }
 
     //let input_op = config.input_op.unwrap().build_input_operator::<MpiDistSyncAllreduceCommWorker>(self.batch_size, context.clone());
     //let input_op = config.input_op.unwrap().build_input_operator::<MpiDistSyncGossipCommWorker>(self.batch_size, context.clone());
-    let input_op = config.input_op.unwrap().build_input_operator::<MpiDistAsyncPushGossipCommWorker>(self.batch_size, context.clone());
+    //let input_op = config.input_op.unwrap().build_input_operator::<MpiDistAsyncPushGossipCommWorker>(self.batch_size, context.clone());
+    let input_op = config.input_op.unwrap().build_input_operator::<Comm>(self.batch_size, context.clone());
     let mut hidden_ops: Vec<Box<Operator>> = vec![];
     let mut params_off = 0;
     for r in 0 .. config.hidden_ops.len() {
@@ -1072,7 +1095,8 @@ impl MpiDistSequentialOperatorWorkerBuilder {
         // FIXME(20160412): used fixed MPI comm worker.
         //config.hidden_ops[r].build_operator::<MpiDistSyncAllreduceCommWorker>(self.batch_size, self.capability, params_off, Some(prev_op), Some(comm_worker.clone()), context.clone())
         //config.hidden_ops[r].build_operator::<MpiDistSyncGossipCommWorker>(self.batch_size, self.capability, params_off, Some(prev_op), Some(comm_worker.clone()), context.clone())
-        config.hidden_ops[r].build_operator::<MpiDistAsyncPushGossipCommWorker>(self.batch_size, self.capability, params_off, Some(prev_op), Some(comm_worker.clone()), context.clone())
+        //config.hidden_ops[r].build_operator::<MpiDistAsyncPushGossipCommWorker>(self.batch_size, self.capability, params_off, Some(prev_op), Some(comm_worker.clone()), context.clone())
+        config.hidden_ops[r].build_operator::<Comm>(self.batch_size, self.capability, params_off, Some(prev_op), Some(comm_worker.clone()), context.clone())
       };
       hidden_ops.push(hidden_op);
       params_off += config.hidden_ops[r].params_len();
@@ -1086,7 +1110,8 @@ impl MpiDistSequentialOperatorWorkerBuilder {
       };
       //config.loss_op.unwrap().build_loss_operator::<MpiDistSyncAllreduceCommWorker>(self.batch_size, Some(prev_op), context.clone())
       //config.loss_op.unwrap().build_loss_operator::<MpiDistSyncGossipCommWorker>(self.batch_size, Some(prev_op), context.clone())
-      config.loss_op.unwrap().build_loss_operator::<MpiDistAsyncPushGossipCommWorker>(self.batch_size, Some(prev_op), context.clone())
+      //config.loss_op.unwrap().build_loss_operator::<MpiDistAsyncPushGossipCommWorker>(self.batch_size, Some(prev_op), context.clone())
+      config.loss_op.unwrap().build_loss_operator::<Comm>(self.batch_size, Some(prev_op), context.clone())
     };
 
     MpiDistSequentialOperatorWorker{
@@ -1104,26 +1129,26 @@ impl MpiDistSequentialOperatorWorkerBuilder {
   }
 }
 
-pub struct MpiDistSequentialOperatorWorker {
+pub struct MpiDistSequentialOperatorWorker<Comm> {
   worker_data:  WorkerData,
   batch_size:   usize,
   config:       SequentialOperatorConfig,
   shared_seed:  [u64; 2],
 
   context:      Rc<DeviceContext>,
-  //comm_worker:  Rc<RefCell<Comm>>,
+  comm_worker:  Rc<RefCell<Comm>>,
   //comm_worker:  Rc<RefCell<MpiDistSyncAllreduceCommWorker>>,
   //comm_worker:  Rc<RefCell<MpiDistSyncGossipCommWorker>>,
-  comm_worker:  Rc<RefCell<MpiDistAsyncPushGossipCommWorker>>,
+  //comm_worker:  Rc<RefCell<MpiDistAsyncPushGossipCommWorker>>,
   input_op:     Box<InputOperator>,
   hidden_ops:   Vec<Box<Operator>>,
   loss_op:      Box<LossOperator>,
 }
 
-impl MpiDistSequentialOperatorWorker {
-}
+/*impl MpiDistSequentialOperatorWorker {
+}*/
 
-impl OperatorWorker for MpiDistSequentialOperatorWorker {
+impl<Comm> OperatorWorker for MpiDistSequentialOperatorWorker<Comm> where Comm: CommWorker {
   fn num_workers(&self) -> usize {
     self.worker_data.num_workers()
   }
@@ -1321,7 +1346,7 @@ impl OperatorWorker for MpiDistSequentialOperatorWorker {
   }
 }
 
-impl Operator for MpiDistSequentialOperatorWorker {
+impl<Comm> Operator for MpiDistSequentialOperatorWorker<Comm> where Comm: CommWorker {
   fn batch_size(&self) -> usize {
     self.batch_size
   }

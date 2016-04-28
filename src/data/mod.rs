@@ -1,4 +1,4 @@
-use data::augment::{AugmentPreproc};
+use data::augment::{TransformPreproc};
 use data_new::{SampleDatum, SampleLabel};
 
 use rng::xorshift::{Xorshiftplus128Rng};
@@ -132,15 +132,15 @@ impl<Shard> Iterator for CyclicSampleDataIter<Shard> where Shard: IndexedDataSha
   }
 }
 
-pub struct AugmentDataIter<Preproc, Iter> {
+pub struct TransformDataIter<Preproc, Iter> {
   preproc:  Preproc,
   rng:      Xorshiftplus128Rng,
   inner:    Iter,
 }
 
-impl<Preproc, Iter> AugmentDataIter<Preproc, Iter> where Preproc: AugmentPreproc, Iter: DataIter {
-  pub fn new(preproc: Preproc, inner: Iter) -> AugmentDataIter<Preproc, Iter> {
-    AugmentDataIter{
+impl<Preproc, Iter> TransformDataIter<Preproc, Iter> where Preproc: TransformPreproc, Iter: DataIter {
+  pub fn new(preproc: Preproc, inner: Iter) -> TransformDataIter<Preproc, Iter> {
+    TransformDataIter{
       preproc:  preproc,
       rng:      Xorshiftplus128Rng::new(&mut thread_rng()),
       inner:    inner,
@@ -148,13 +148,13 @@ impl<Preproc, Iter> AugmentDataIter<Preproc, Iter> where Preproc: AugmentPreproc
   }
 }
 
-impl<Preproc, Iter> DataIter for AugmentDataIter<Preproc, Iter> where Preproc: AugmentPreproc, Iter: DataIter {
+impl<Preproc, Iter> DataIter for TransformDataIter<Preproc, Iter> where Preproc: TransformPreproc, Iter: DataIter {
   fn reset(&mut self) {
     self.inner.reset();
   }
 }
 
-impl<Preproc, Iter> DataShard for AugmentDataIter<Preproc, Iter> where Preproc: AugmentPreproc, Iter: DataIter {
+impl<Preproc, Iter> DataShard for TransformDataIter<Preproc, Iter> where Preproc: TransformPreproc, Iter: DataIter {
   fn num_shard_samples(&self) -> usize {
     self.inner.num_shard_samples()
   }
@@ -164,7 +164,7 @@ impl<Preproc, Iter> DataShard for AugmentDataIter<Preproc, Iter> where Preproc: 
   }
 }
 
-impl<Preproc, Iter> Iterator for AugmentDataIter<Preproc, Iter> where Preproc: AugmentPreproc, Iter: DataIter {
+impl<Preproc, Iter> Iterator for TransformDataIter<Preproc, Iter> where Preproc: TransformPreproc, Iter: DataIter {
   type Item = (SampleDatum, Option<SampleLabel>);
 
   fn next(&mut self) -> Option<(SampleDatum, Option<SampleLabel>)> {

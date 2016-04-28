@@ -40,6 +40,7 @@ fn main() {
           running_sum[i] += x as i32;
         }
       }
+      _ => unreachable!(),
     }
   });
   let mean_buf: Vec<_> = running_sum.iter().map(|&x| x as f32 / count as f32).collect();

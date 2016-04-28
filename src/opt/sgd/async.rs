@@ -119,6 +119,7 @@ impl AsyncSgdOpt {
             operator.input_operator().expose_host_frame_buf(batch_counter)
               .copy_from_slice(frame_bytes.as_slice());
           }
+          _ => unimplemented!(),
         }
         operator.loss_operator(0).stage_label(batch_counter, &maybe_label.unwrap());
         operator.loss_operator(0).stage_weight(batch_counter, minibatch_weight);
@@ -197,6 +198,11 @@ impl AsyncSgdOpt {
 
               // Communicate the parameters.
               operator.sync_params_v2();
+            }
+
+            SyncOrder::SyncParamsThenStep => {
+              // FIXME(20160428): necessary for elastic averagin and pull gossip.
+              unimplemented!();
             }
 
             SyncOrder::SyncUpdatesThenStep => {
@@ -325,6 +331,7 @@ impl AsyncSgdOpt {
           operator.input_operator().expose_host_frame_buf(batch_counter)
             .copy_from_slice(frame_bytes.as_slice());
         }
+        _ => unimplemented!(),
       }
       operator.loss_operator(0).stage_label(batch_counter, &maybe_label.unwrap());
       operator.loss_operator(0).stage_weight(batch_counter, 1.0 / num_shard_samples as f32);

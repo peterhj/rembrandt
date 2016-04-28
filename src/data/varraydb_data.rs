@@ -19,7 +19,7 @@ pub struct VarrayDbShard<Codec> {
   labels:   VarrayDb,
 }
 
-impl<Codec> VarrayDbShard<Codec> where Codec: DataCodec<Output=Array3d<u8>> {
+impl<Codec> VarrayDbShard<Codec> where Codec: DataCodec {
   pub fn open_partition(data_path: &Path, labels_path: &Path, codec: Codec, part: usize, num_parts: usize) -> Self {
     let mut data = VarrayDb::open(data_path).unwrap();
     let mut labels = VarrayDb::open(labels_path).unwrap();
@@ -40,7 +40,7 @@ impl<Codec> VarrayDbShard<Codec> where Codec: DataCodec<Output=Array3d<u8>> {
   }
 }
 
-impl<Codec> DataShard for VarrayDbShard<Codec> where Codec: DataCodec<Output=Array3d<u8>> {
+impl<Codec> DataShard for VarrayDbShard<Codec> where Codec: DataCodec {
   fn num_shard_samples(&self) -> usize {
     self.end_idx - self.start_idx
   }
@@ -50,15 +50,15 @@ impl<Codec> DataShard for VarrayDbShard<Codec> where Codec: DataCodec<Output=Arr
   }
 }
 
-impl<Codec> IndexedDataShard for VarrayDbShard<Codec> where Codec: DataCodec<Output=Array3d<u8>> {
+impl<Codec> IndexedDataShard for VarrayDbShard<Codec> where Codec: DataCodec {
   fn get_sample(&mut self, offset_idx: usize) -> (SampleDatum, Option<SampleLabel>) {
     let idx = self.start_idx + offset_idx;
     assert!(idx >= self.start_idx);
     assert!(idx < self.end_idx);
 
     let datum_value = self.data.get(idx);
-    let datum_arr = self.codec.decode(datum_value);
-    let datum = SampleDatum::WHCBytes(datum_arr);
+    let datum = self.codec.decode(datum_value);
+    //let datum = SampleDatum::WHCBytes(datum_arr);
 
     let label_value = self.labels.get(idx);
     let label_cat = Cursor::new(label_value).read_i32::<LittleEndian>().unwrap();

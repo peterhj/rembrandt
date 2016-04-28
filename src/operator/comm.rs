@@ -18,6 +18,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 }*/
 
 pub trait CommWorker {
+  fn worker_data(&self) -> &WorkerData;
   fn next(&mut self) -> bool;
   fn signal_barrier(&mut self) { unimplemented!(); }
   fn wait_barrier(&mut self) -> bool { unimplemented!(); }
@@ -28,6 +29,34 @@ pub trait CommWorker {
   fn allreduce(&mut self, _src_data: &[f32], _dst_data: &mut [f32]) { unimplemented!(); }
   fn store(&mut self, offset: usize, data: &mut DeviceArray2d<f32>/*, ctx: &DeviceCtxRef*/);
   fn complete_store(&mut self);
+}
+
+#[derive(Clone, Copy)]
+pub struct GossipConfig {
+  //pub com_interval: usize,
+  pub num_rounds:   usize,
+  pub buf_size:     usize,
+}
+
+impl GossipConfig {
+  pub fn check(&self) {
+    //assert!(self.com_interval >= 1);
+    assert!(self.num_rounds >= 1);
+    assert!(self.buf_size < 2 * 1024 * 1024 * 1024);
+  }
+}
+
+#[derive(Clone, Copy)]
+pub struct ParameterServerConfig {
+  pub com_interval:  usize,
+  pub buf_size:     usize,
+}
+
+impl ParameterServerConfig {
+  pub fn check(&self) {
+    assert!(self.com_interval >= 1);
+    assert!(self.buf_size < 2 * 1024 * 1024 * 1024);
+  }
 }
 
 /*#[derive(Clone)]
@@ -44,6 +73,10 @@ impl CommWorkerBuilder for NullCommWorkerBuilder {
 pub struct NullCommWorker;
 
 impl CommWorker for NullCommWorker {
+  fn worker_data(&self) -> &WorkerData {
+    unimplemented!();
+  }
+
   fn next(&mut self) -> bool { false }
   fn load(&mut self, offset: usize, data: &mut DeviceArray2d<f32>/*, ctx: &DeviceCtxRef*/) {}
   fn complete_load(&mut self) {}
@@ -58,6 +91,10 @@ pub struct DeviceAllReduceCommWorkerBuilder;
 pub struct DeviceAllReduceCommWorker;
 
 impl CommWorker for DeviceAllReduceCommWorker {
+  fn worker_data(&self) -> &WorkerData {
+    unimplemented!();
+  }
+
   fn next(&mut self) -> bool {
     unimplemented!();
   }
@@ -80,21 +117,6 @@ impl CommWorker for DeviceAllReduceCommWorker {
 
   fn complete_store(&mut self) {
     unimplemented!();
-  }
-}
-
-#[derive(Clone, Copy)]
-pub struct GossipConfig {
-  //pub num_workers:  usize,
-  pub num_rounds:   usize,
-  pub buf_size:     usize,
-}
-
-impl GossipConfig {
-  pub fn check(&self) {
-    //assert!(self.num_workers >= 1);
-    assert!(self.num_rounds >= 1);
-    assert!(self.buf_size < 2 * 1024 * 1024 * 1024);
   }
 }
 
@@ -174,6 +196,10 @@ pub struct DeviceSyncGossipCommWorker {
 }
 
 impl CommWorker for DeviceSyncGossipCommWorker {
+  fn worker_data(&self) -> &WorkerData {
+    &self.worker_data
+  }
+
   fn next(&mut self) -> bool {
     self.iter_counter += 1;
     let should_comm = if self.iter_counter == self.period {

@@ -95,6 +95,7 @@ pub enum Momentum {
 #[derive(Clone, Copy, RustcDecodable, RustcEncodable, Debug)]
 pub enum SyncOrder {
   StepThenSyncParams,
+  SyncParamsThenStep,
   SyncUpdatesThenStep,
 }
 
@@ -214,12 +215,11 @@ impl SgdOpt {
             operator.input_operator().expose_host_frame_buf(batch_counter)
               .copy_from_slice(frame_bytes.as_slice());
           }
+          _ => unimplemented!(),
         }
         operator.loss_operator(0).stage_label(batch_counter, maybe_label.unwrap());
         operator.loss_operator(0).stage_weight(batch_counter, minibatch_weight);
         local_counter += 1;
-        //epoch_counter = local_counter * num_workers / epoch_size;
-        //let epoch_offset = local_counter * num_workers % epoch_size;
         epoch_counter = local_counter / epoch_size;
         let epoch_offset = local_counter % epoch_size;
         batch_counter += 1;
@@ -267,11 +267,11 @@ impl SgdOpt {
           // update rules.
           match self.config.sync_order {
             SyncOrder::StepThenSyncParams => {
-              // Compute the update, possibly with momentum.
+              // Compute and apply the update, possibly with momentum.
               match self.config.momentum {
                 Momentum::Zero => {
-                  operator.accumulate_grads(1.0, 0.0);
-                  operator.update_params(-step_size);
+                  operator.accumulate_grads(-step_size, 0.0);
+                  operator.update_params(1.0);
                 }
                 Momentum::Update{mu} |
                 Momentum::UpdateNesterov{mu} => {
@@ -294,8 +294,51 @@ impl SgdOpt {
               operator.sync_params_v2();
             }
 
+            SyncOrder::SyncParamsThenStep => {
+              // Compute the update, possibly with momentum.
+              match self.config.momentum {
+                Momentum::Zero => {
+                  operator.accumulate_grads(-step_size, 0.0);
+                }
+                Momentum::Update{mu} |
+                Momentum::UpdateNesterov{mu} => {
+                  operator.accumulate_grads(-step_size, mu);
+                }
+                // XXX(20160422): These are the Torch `optim.sgd`-style update;
+                // see: <https://github.com/torch/optim/blob/master/sgd.lua>.
+                Momentum::Gradient{mu} => {
+                  operator.accumulate_grads(1.0, mu);
+                }
+                Momentum::GradientNesterov{mu} => {
+                  operator.accumulate_grads(1.0, mu);
+                }
+              }
+
+              // Communicate the parameters.
+              operator.sync_params_v2();
+
+              // Apply the update, possibly with momentum.
+              match self.config.momentum {
+                Momentum::Zero => {
+                  operator.update_params(1.0);
+                }
+                Momentum::Update{mu} |
+                Momentum::UpdateNesterov{mu} => {
+                  operator.update_params(1.0);
+                }
+                // XXX(20160422): These are the Torch `optim.sgd`-style update;
+                // see: <https://github.com/torch/optim/blob/master/sgd.lua>.
+                Momentum::Gradient{mu} => {
+                  operator.update_params(-step_size);
+                }
+                Momentum::GradientNesterov{mu} => {
+                  operator.update_params2(-step_size, -step_size * mu);
+                }
+              }
+            }
+
             SyncOrder::SyncUpdatesThenStep => {
-              // FIXME(20160424): necessary for sync all-reduce.
+              // FIXME(20160428): needed for sync allreduce.
               unimplemented!();
             }
           }
@@ -415,6 +458,7 @@ impl SgdOpt {
           operator.input_operator().expose_host_frame_buf(batch_counter)
             .copy_from_slice(frame_bytes.as_slice());
         }
+        _ => unimplemented!(),
       }
       operator.loss_operator(0).stage_label(batch_counter, maybe_label.unwrap());
       operator.loss_operator(0).stage_weight(batch_counter, 1.0 / num_samples as f32);

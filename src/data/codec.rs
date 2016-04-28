@@ -1,20 +1,22 @@
+use data_new::{SampleDatum};
+
 use array_new::{ArrayZeroExt, Array3d};
 use image::{GenericImage, DynamicImage, ImageFormat, load};
 
 use std::io::{Read, Cursor};
 
 pub trait DataCodec {
-  type Output;
+  //type Output;
 
-  fn decode(&self, value: &[u8]) -> Self::Output;
+  fn decode(&self, value: &[u8]) -> SampleDatum;
 }
 
 pub struct PngDataCodec;
 
 impl DataCodec for PngDataCodec {
-  type Output = Array3d<u8>;
+  //type Output = Array3d<u8>;
 
-  fn decode(&self, png_value: &[u8]) -> Array3d<u8> {
+  fn decode(&self, png_value: &[u8]) -> SampleDatum {
     let mut reader = Cursor::new(png_value);
     let image = match load(reader, ImageFormat::PNG) {
       Err(e) => panic!("png codec: failed to load png: {:?}", e),
@@ -27,7 +29,9 @@ impl DataCodec for PngDataCodec {
     let image_buf = image.to_rgb().to_vec();
     assert_eq!(image_buf.len(), image_width * image_height * 3);
 
-    let mut image_arr = Array3d::zeros((image_width, image_height, 3));
+    let image_arr = Array3d::with_data(image_buf, (3, image_width, image_height));
+
+    /*let mut image_arr = Array3d::zeros((image_width, image_height, 3));
     {
       let mut image_arr = image_arr.as_mut_slice();
       for k in 0 .. 3 {
@@ -38,8 +42,8 @@ impl DataCodec for PngDataCodec {
           }
         }
       }
-    }
+    }*/
 
-    image_arr
+    SampleDatum::CWHBytes(image_arr)
   }
 }

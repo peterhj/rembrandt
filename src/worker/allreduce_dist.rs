@@ -152,6 +152,10 @@ impl MpiDistSyncAllreduceCommWorker {
 }
 
 impl CommWorker for MpiDistSyncAllreduceCommWorker {
+  fn worker_data(&self) -> &WorkerData {
+    &self.worker_data
+  }
+
   fn next(&mut self) -> bool {
     // FIXME(20160412)
     self.iter_counter += 1;
