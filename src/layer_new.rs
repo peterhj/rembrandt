@@ -33,7 +33,6 @@ use std::cmp::{max};
 use std::io::{Read, Write, Cursor};
 use std::iter::{repeat};
 use std::rc::{Rc};
-use std::slice::bytes::{copy_memory};
 
 /*pub trait LayerConfig {
   fn get_in_dims(&self) -> (usize, usize, usize);
@@ -329,7 +328,8 @@ impl InputLayer for Data3dLayer {
   fn preload_frame(&mut self, batch_idx: usize, frame: &SampleDatum, ctx: &DeviceCtxRef) {
     match frame {
       &SampleDatum::WHCBytes(ref frame_bytes) => {
-        copy_memory(frame_bytes.as_slice(), self.expose_host_frame_buf(batch_idx));
+        self.expose_host_frame_buf(batch_idx)
+          .copy_from_slice(frame_bytes.as_slice());
       }
       //_ => unimplemented!(),
     }
@@ -2030,10 +2030,8 @@ impl LossLayer for SoftmaxKLLossLayer<Disable<SoftmaxKLLossHvData>> {
     assert!(batch_idx < self.batch_limit);
     let size = self.config.num_categories;
     assert_eq!(size, bytemask.len());
-    copy_memory(
-        bytemask,
-        &mut self.bytemasks_h[batch_idx * size .. (batch_idx + 1) * size],
-    );
+    (&mut self.bytemasks_h[batch_idx * size .. (batch_idx + 1) * size])
+      .copy_from_slice(bytemask);
   }
 
   fn expose_host_mask_buf(&mut self, batch_idx: usize) -> &mut [u8] {
@@ -2335,10 +2333,8 @@ impl LossLayer for SoftmaxIndicatorLossLayer {
     assert!(batch_idx < self.batch_limit);
     let size = self.config.num_categories;
     assert_eq!(size, bytemask.len());
-    copy_memory(
-        bytemask,
-        &mut self.bytemasks_h[batch_idx * size .. (batch_idx + 1) * size],
-    );
+    (&mut self.bytemasks_h[batch_idx * size .. (batch_idx + 1) * size])
+      .copy_from_slice(bytemask);
   }
 
   fn expose_host_mask_buf(&mut self, batch_idx: usize) -> &mut [u8] {

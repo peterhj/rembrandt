@@ -1,6 +1,3 @@
-#![feature(clone_from_slice)]
-#![feature(slice_bytes)]
-
 //extern crate array;
 extern crate array_cuda;
 extern crate array_dist;

@@ -1,6 +1,6 @@
 use data_new::{SampleDatum, SampleLabel};
 
-use array_new::{Array3d};
+use array_new::{ArrayZeroExt, Array3d};
 use image::{ImageBuffer, Luma};
 use image::imageops::{FilterType, resize};
 use rng::xorshift::{Xorshiftplus128Rng};
@@ -46,7 +46,9 @@ impl AugmentPreproc for RandomScalePreproc {
                 None => panic!("failed to create image buffer from bytes"),
                 Some(buf) => buf,
               };
-          let new_image_buf = resize(&old_image_buf, new_width as u32, new_height as u32, FilterType::Lanczos3);
+          //let new_image_buf = resize(&old_image_buf, new_width as u32, new_height as u32, FilterType::Lanczos3);
+          //let new_image_buf = resize(&old_image_buf, new_width as u32, new_height as u32, FilterType::CatmullRom);
+          let new_image_buf = resize(&old_image_buf, new_width as u32, new_height as u32, FilterType::Triangle);
           let new_plane = new_image_buf.to_vec();
           new_bytes.extend_from_slice(&new_plane);
         }
@@ -77,12 +79,83 @@ pub struct RandomCropPreproc {
 }
 
 impl AugmentPreproc for RandomCropPreproc {
-  fn transform(&self, datum: SampleDatum, label: Option<SampleLabel>, rng: &mut Xorshiftplus128Rng) -> (SampleDatum, Option<SampleLabel>) {
-    match datum {
+  fn transform(&self, old_datum: SampleDatum, label: Option<SampleLabel>, rng: &mut Xorshiftplus128Rng) -> (SampleDatum, Option<SampleLabel>) {
+    let new_datum = match old_datum {
       SampleDatum::WHCBytes(old_bytes) => {
+        let old_dims = old_bytes.bound();
+        let (old_width, old_height, channels) = old_dims;
+
+        let offset_w = if old_width > self.crop_width {
+          rng.gen_range(0, old_width - self.crop_width)
+        } else if old_width == self.crop_width {
+          0
+        } else {
+          unreachable!()
+        };
+        let offset_h = if old_height > self.crop_height {
+          rng.gen_range(0, old_height - self.crop_height)
+        } else if old_height == self.crop_height {
+          0
+        } else {
+          unreachable!()
+        };
+
+        let mut new_bytes = Array3d::zeros((self.crop_width, self.crop_height, channels));
+        {
+          let old_plane_len = old_width * old_height;
+          let new_plane_len = self.crop_width * self.crop_height;
+          let old_bytes = old_bytes.as_slice();
+          let mut new_bytes = new_bytes.as_mut_slice();
+          for k in 0 .. channels {
+            for j in 0 .. self.crop_height {
+              for i in 0 .. self.crop_width {
+                new_bytes[i + j * self.crop_width + k * new_plane_len] =
+                    old_bytes[offset_w + i + (offset_h + j) * old_width + k * old_plane_len]
+              }
+            }
+          }
+        }
+
+        SampleDatum::WHCBytes(new_bytes)
       }
-    }
-    // FIXME(20160425)
-    unimplemented!();
+    };
+    (new_datum, label)
+  }
+}
+
+pub struct CenterCropPreproc {
+  pub crop_width:   usize,
+  pub crop_height:  usize,
+}
+
+impl AugmentPreproc for CenterCropPreproc {
+  fn transform(&self, old_datum: SampleDatum, label: Option<SampleLabel>, _rng: &mut Xorshiftplus128Rng) -> (SampleDatum, Option<SampleLabel>) {
+    let new_datum = match old_datum {
+      SampleDatum::WHCBytes(old_bytes) => {
+        let old_dims = old_bytes.bound();
+        let (old_width, old_height, channels) = old_dims;
+        let offset_w = (old_width - self.crop_width) / 2;
+        let offset_h = (old_height - self.crop_height) / 2;
+
+        let mut new_bytes = Array3d::zeros((self.crop_width, self.crop_height, channels));
+        {
+          let old_plane_len = old_width * old_height;
+          let new_plane_len = self.crop_width * self.crop_height;
+          let old_bytes = old_bytes.as_slice();
+          let mut new_bytes = new_bytes.as_mut_slice();
+          for k in 0 .. channels {
+            for j in 0 .. self.crop_height {
+              for i in 0 .. self.crop_width {
+                new_bytes[i + j * self.crop_width + k * new_plane_len] =
+                    old_bytes[offset_w + i + (offset_h + j) * old_width + k * old_plane_len]
+              }
+            }
+          }
+        }
+
+        SampleDatum::WHCBytes(new_bytes)
+      }
+    };
+    (new_datum, label)
   }
 }
