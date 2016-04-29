@@ -97,95 +97,96 @@ impl MpiDistElasticServerCentralWorker {
   pub fn run(&mut self) {
     //println!("DEBUG: elastic server: central: running...");
 
-    /*let service_port = Mpi::open_port_().unwrap();
-    Mpi::publish_service_(&self.service_name, false, true, &service_port).unwrap();
-    //server_port = Some(service_port);
-    self.central_bar.wait();
-
-    println!("DEBUG: elastic server: central: begin accepting conns");
-    for r in 0 .. self.num_workers {
-      println!("DEBUG: elastic server: central: try to accept: {}", r);
-      let client_conn = MpiComm::accept(&service_port).unwrap();
-      self.client_conns.insert(r, client_conn);
-      println!("DEBUG: elastic server: central: accepted conn from client: {}", r);
-      self.central_bar.wait();
-    }
-    println!("DEBUG: elastic server: central: done accepting conns");*/
-
+    let ctx = &self.context.as_ref();
     let sleep_duration = Duration::new(0, 50_000);
-    let mut poll_ranks: Vec<_> = (0 .. self.num_workers).collect();
+    //let mut poll_ranks: Vec<_> = (0 .. self.num_workers).collect();
+
+    let mut dummy_buf: Vec<u8> = Vec::with_capacity(64);
+
+    // FIXME(20160428): initialization w/ initial params.
+    println!("DEBUG: elastic server: central: init params...");
+    self.recv_reqs.clear();
+    for msg in 0 .. self.num_buf_msgs {
+      let recv_req = match MpiComm::world().nonblocking_recv(&mut self.center_buf_h[msg * self.msg_len .. (msg+1) * self.msg_len], Some(0), Some(0x31)) {
+        Ok(req) => req,
+        Err(e) => panic!("elastic server: central: failed to do nonblocking recv: {:?}", e),
+      };
+      self.recv_reqs.append(recv_req);
+    }
+    println!("DEBUG: elastic server: central: init params: wait...");
+    self.recv_reqs.wait_all().unwrap();
+    self.center_buf.as_ref_mut(ctx).sync_load(&self.center_buf_h);
+    println!("DEBUG: elastic server: central: init params: done");
 
     'poll_loop: loop {
-      /*match self.act2pass_rx.try_recv() {
-        Err(TryRecvError::Empty) => {}
-        Err(e) => panic!("async gossip: passive thread: failed to poll receiver: {:?}", e),
-
-        Ok(AsyncPushGossipAct2PassMsg::Pause) => {
-          self.state = AsyncPushGossipPassiveState::Paused;
-          match self.pass2act_tx.send(AsyncPushGossipPass2ActMsg::AckPause) {
-            Err(e) => panic!("async gossip: passive thread: failed to send AckPause: {:?}", e),
-            Ok(_) => {}
-          }
-        }
-
-        Ok(AsyncPushGossipAct2PassMsg::Resume) => {
-          self.state = AsyncPushGossipPassiveState::Receiving;
-        }
-
-        Ok(_) => unimplemented!(),
-      }*/
-
-      /*match self.state {
-        AsyncPushGossipPassiveState::Receiving => {}
-        AsyncPushGossipPassiveState::Paused => {
-          sleep(sleep_duration);
-          continue 'poll_loop;
-        }
-      }*/
-
-      /*let mut chk_recv_rank = None;
-      // FIXME(20160422): could also randomize the order of checked ranks,
-      // may make things more unbiased?
-      self.rng.shuffle(&mut poll_ranks);
-      'chk_probe_loop: for &r in poll_ranks.iter() {
-        if r == self.worker_rank {
-          continue 'chk_probe_loop;
-        }
-        match self.client_conns[r].nonblocking_probe(Some(0), Some(2)) {
-          Err(e) => panic!("async gossip: passive thread: failed to do first recv: {:?}", e),
-          Ok(None) => {}
-          Ok(Some(_)) => {
-            chk_recv_rank = Some(r);
-            break 'chk_probe_loop;
-          }
-        };
-      }
-      if let Some(chk_recv_rank) = chk_recv_rank {
-        let mut dummy_buf: Vec<u8> = Vec::with_capacity(64);
-        let mut recv_req = match self.client_conns[chk_recv_rank].nonblocking_recv(&mut dummy_buf, Some(0), Some(2)) {
-          Ok(req) => req,
-          Err(e) => panic!("async gossip: passive thread: failed to do nonblocking recv: {:?}", e),
-        };
-        recv_req.wait().unwrap();
-        self.bar_signal.store(true, Ordering::Release);
-      }*/
-
-      /*let mut ctrl_recv_rank = None;
-      match MpiComm::world().nonblocking_probe(None, Some(2)) {
+      let mut ctrl_recv_rank = None;
+      match MpiComm::world().nonblocking_probe(None, Some(0x21)) {
         Err(e) => panic!("elastic server: central: failed to do control recv: {:?}", e),
         Ok(None) => {}
         Ok(Some(status)) => {
           ctrl_recv_rank = Some(status.src_rank);
         }
       }
-      if ctrl_recv_rank.is_none() {
-        sleep(sleep_duration);
-        continue 'poll_loop;
-      }
       if let Some(ctrl_recv_rank) = ctrl_recv_rank {
-        // FIXME(20160428)
-        unimplemented!();
-      }*/
+        println!("DEBUG: elastic server: central: received ctrl msg");
+        // FIXME(20160428): for simplicity, only allow rank 0 to direct the
+        // server to do stuff.
+        assert_eq!(0, ctrl_recv_rank);
+
+        println!("DEBUG: elastic server: central: receive ctrl msg...");
+        //self.recv_reqs.clear();
+        let mut recv_req = match MpiComm::world().nonblocking_recv(&mut dummy_buf[ .. 0], Some(0), Some(0x21)) {
+          Ok(req) => req,
+          Err(e) => panic!(),
+        };
+        //self.recv_reqs.append(recv_req);
+        //self.recv_reqs.wait_all();
+        recv_req.wait().unwrap();
+
+        println!("DEBUG: elastic server: central: signal clients to barrier...");
+        self.recv_reqs.clear();
+        for r in 0 .. self.num_workers {
+          let send_req = match MpiComm::world().nonblocking_send(&dummy_buf[ .. 0], r, 0x22) {
+            Ok(req) => req,
+            Err(e) => panic!(),
+          };
+          self.recv_reqs.append(send_req);
+        }
+        //send_req.wait().unwrap();
+        self.recv_reqs.wait_all().unwrap();
+
+        println!("DEBUG: elastic server: central: send center params to rank 0...");
+        self.recv_reqs.clear();
+        let send_req = match MpiComm::world().nonblocking_sync_send(&self.center_buf_h[ .. self.msg_len], 0, 0x20) {
+          Ok(req) => req,
+          Err(e) => panic!(),
+        };
+        self.recv_reqs.append(send_req);
+        self.recv_reqs.wait_all().unwrap();
+        for msg in 1 .. self.num_buf_msgs {
+          let send_req = match MpiComm::world().nonblocking_send(&self.center_buf_h[msg * self.msg_len .. (msg+1) * self.msg_len], 0, 0x20) {
+            Ok(req) => req,
+            Err(e) => panic!(),
+          };
+          self.recv_reqs.append(send_req);
+        }
+        self.recv_reqs.wait_all().unwrap();
+        println!("DEBUG: elastic server: central: done ctrl");
+
+        // XXX(20160428): now the broadcast happens on the client side.
+
+        /*for r in 0 .. self.num_workers {
+          for msg in 0 .. self.num_buf_msgs {
+            let send_req = match MpiComm::world().nonblocking_send(&dummy_buf[ .. 0], r, 0x20) {
+              Ok(req) => req,
+              Err(e) => panic!(),
+            };
+            self.recv_reqs.append(send_req);
+            unimplemented!();
+          }
+        }
+        self.recv_reqs.wait_all();*/
+      }
 
       //println!("DEBUG: elastic server: central: probing...");
       let mut recv_rank = None;
@@ -221,7 +222,6 @@ impl MpiDistElasticServerCentralWorker {
         }
         self.recv_reqs.wait_all();
 
-        let ctx = &self.context.as_ref();
         //let reduce_buf = self.reduce_buf.lock().unwrap();
         //let mut target_buf = self.target_buf.lock().unwrap();
 
@@ -230,14 +230,6 @@ impl MpiDistElasticServerCentralWorker {
         }
         self.recv_count.fetch_add(1, Ordering::AcqRel);
         fence(Ordering::AcqRel);*/
-
-        let beta = 0.8 / self.num_workers as f32;
-        self.target_buf.as_ref_mut(ctx).sync_load(&self.target_buf_h);
-        //reduce_buf.as_ref().async_vector_add(1.0, &target_buf.as_ref(), ctx);
-        self.center_buf.as_ref_mut(ctx).row_vector_scale(1.0 - beta);
-        self.center_buf.as_ref_mut(ctx).row_vector_sum(beta, &self.target_buf.as_ref(ctx));
-        //ctx.sync();
-        self.center_buf.as_ref(ctx).sync_store(&mut self.center_buf_h);
 
         //let mut target_buf_h = self.target_buf_h.lock().unwrap();
         //let recv_rank = recv_rank.unwrap();
@@ -250,6 +242,14 @@ impl MpiDistElasticServerCentralWorker {
           self.recv_reqs.append(send_req);
         }
         self.recv_reqs.wait_all();
+
+        let beta = 0.8 / self.num_workers as f32;
+        self.target_buf.as_ref_mut(ctx).sync_load(&self.target_buf_h);
+        //reduce_buf.as_ref().async_vector_add(1.0, &target_buf.as_ref(), ctx);
+        self.center_buf.as_ref_mut(ctx).row_vector_scale(1.0 - beta);
+        self.center_buf.as_ref_mut(ctx).row_vector_sum(beta, &self.target_buf.as_ref(ctx));
+        //ctx.sync();
+        self.center_buf.as_ref(ctx).sync_store(&mut self.center_buf_h);
       }
 
       //sleep(sleep_duration);
@@ -296,6 +296,8 @@ pub struct MpiDistElasticServerCommWorker {
   local_rng:    Xorshiftplus128Rng,
   ranks_range:  Range<usize>,
   iter_counter: usize,
+  rank0_init:   bool,
+  rank0_signal: bool,
 }
 
 impl MpiDistElasticServerCommWorker {
@@ -514,6 +516,8 @@ impl MpiDistElasticServerCommWorker {
       //ranks_perm:   (0 .. num_workers).collect(),
       ranks_range:  Range::new(0, num_workers),
       iter_counter: 0,
+      rank0_init:   false,
+      rank0_signal: false,
       //recv_success: true,
     }
   }
@@ -540,6 +544,17 @@ impl CommWorker for MpiDistElasticServerCommWorker {
   }
 
   fn signal_barrier(&mut self) {
+    assert_eq!(0, self.worker_data.worker_rank());
+    let mut dummy_buf: Vec<u8> = Vec::with_capacity(64);
+    self.send_reqs.clear();
+    let send_req = match MpiComm::world().nonblocking_sync_send(&mut dummy_buf[ .. 0], 0, 0x21) {
+      Ok(req) => req,
+      Err(e) => panic!(),
+    };
+    self.send_reqs.append(send_req);
+    self.send_reqs.wait_all();
+    self.rank0_signal = true;
+
     /*let prev_signal = self.bar_signal.compare_and_swap(false, true, Ordering::AcqRel);
     assert!(!prev_signal, "signal_barrier: tried to signal during an ongoing barrier");
 
@@ -563,6 +578,20 @@ impl CommWorker for MpiDistElasticServerCommWorker {
   }
 
   fn wait_barrier(&mut self) -> bool {
+    if self.rank0_signal {
+      self.rank0_signal = false;
+      return true;
+    }
+    match MpiComm::world().nonblocking_probe(Some(0), Some(0x22)) {
+      Err(e) => panic!("elastic server: central: failed to do first recv: {:?}", e),
+      Ok(None) => {
+        false
+      }
+      Ok(Some(status)) => {
+        true
+      }
+    }
+
     /*let bar_signal = self.bar_signal.load(Ordering::Acquire);
     if !bar_signal {
       false
@@ -571,7 +600,6 @@ impl CommWorker for MpiDistElasticServerCommWorker {
       self.bar_signal.store(false, Ordering::Release);
       true
     }*/
-    false
   }
 
   fn load(&mut self, offset: usize, data: &mut DeviceArray2d<f32>/*, ctx: &DeviceCtxRef*/) {
@@ -592,15 +620,44 @@ impl CommWorker for MpiDistElasticServerCommWorker {
     ctx.sync();
   }
 
+  fn communicate_first(&mut self) {
+    if self.worker_data.worker_rank() == 0 {
+      assert!(!self.rank0_init);
+      let ctx = &(*self.context).as_ref();
+      self.origin_buf.as_ref(ctx).sync_store(&mut self.origin_buf_h);
+      self.send_reqs.clear();
+      let send_req = match MpiComm::world().nonblocking_sync_send(&self.origin_buf_h[ .. self.msg_len], 0, 0x31) {
+        Ok(req) => req,
+        Err(e) => panic!("elastic server: active thread: failed to do nonblocking send: {:?}", e),
+      };
+      self.send_reqs.append(send_req);
+      self.send_reqs.wait_all();
+      for msg in 1 .. self.num_buf_msgs {
+        let send_req = match MpiComm::world().nonblocking_send(&self.origin_buf_h[msg * self.msg_len .. (msg+1) * self.msg_len], 0, 0x31) {
+          Ok(req) => req,
+          Err(e) => panic!("elastic server: active thread: failed to do nonblocking send: {:?}", e),
+        };
+        self.send_reqs.append(send_req);
+      }
+      self.send_reqs.wait_all();
+      self.rank0_init = true;
+    }
+    Mpi::barrier_().unwrap();
+  }
+
   fn communicate(&mut self/*, ctx: &DeviceCtxRef*/) {
+    let self_rank = self.worker_data.worker_rank();
+    //let send_rank = self.ranks_range.ind_sample(&mut self.local_rng);
+
+    if self_rank == 0 {
+      assert!(self.rank0_init);
+    }
+
     if self.iter_counter % self.com_interval != 0 {
       return;
     }
 
     let ctx = &(*self.context).as_ref();
-
-    let self_rank = self.worker_data.worker_rank();
-    //let send_rank = self.ranks_range.ind_sample(&mut self.local_rng);
 
     //self.origin_buf.sync_store(&mut self.origin_buf_h, ctx);
     self.origin_buf.as_ref(ctx).sync_store(&mut self.origin_buf_h);
@@ -642,15 +699,48 @@ impl CommWorker for MpiDistElasticServerCommWorker {
 
   fn communicate_exact(&mut self) {
     let ctx = &(*self.context).as_ref();
-    self.origin_buf.as_ref(ctx).sync_store(&mut self.origin_buf_h);
-    for msg in 0 .. self.num_buf_msgs {
-      Mpi::allreduce_(
-          &self.origin_buf_h[msg * self.msg_len .. (msg+1) * self.msg_len],
-          &mut self.target_buf_h[msg * self.msg_len .. (msg+1) * self.msg_len],
-          MpiSumOp,
-      ).unwrap();
+    //self.origin_buf.as_ref(ctx).sync_store(&mut self.target_buf_h);
+
+    let mut dummy_buf: Vec<u8> = Vec::with_capacity(64);
+
+    //println!("DEBUG: ");
+    let mut recv_req = match MpiComm::world().nonblocking_recv(&mut dummy_buf[ .. 0], Some(0), Some(0x22)) {
+      Ok(req) => req,
+      Err(e) => panic!(),
+    };
+    recv_req.wait().unwrap();
+
+    if self.worker_data.worker_rank() == 0 {
+      self.send_reqs.clear();
+      for msg in 0 .. self.num_buf_msgs {
+        let recv_req = match MpiComm::world().nonblocking_recv(&mut self.target_buf_h[msg * self.msg_len .. (msg+1) * self.msg_len], Some(0), Some(0x20)) {
+          Ok(req) => req,
+          Err(e) => panic!("elastic server: active thread: failed to do nonblocking recv: {:?}", e),
+        };
+        self.send_reqs.append(recv_req);
+      }
+      self.send_reqs.wait_all();
     }
     Mpi::barrier_().unwrap();
+
+    self.send_reqs.clear();
+    for msg in 0 .. self.num_buf_msgs {
+      // FIXME(20160428): can't directly do bcast here because rank 0 has both
+      // client and server, instead just let server send to just rank 0 and then
+      // do the bcast.
+      //unimplemented!();
+      let bcast_req = match Mpi::nonblocking_broadcast_(
+          &mut self.target_buf_h[msg * self.msg_len .. (msg+1) * self.msg_len],
+          0)
+      {
+        Ok(req) => req,
+        Err(e) => panic!(),
+      };
+      self.send_reqs.append(bcast_req);
+    }
+    self.send_reqs.wait_all().unwrap();
+    Mpi::barrier_().unwrap();
+
     self.final_buf.as_ref_mut(ctx).sync_load(&self.target_buf_h);
     self.final_buf.as_ref_mut(ctx).row_vector_scale(1.0 / self.worker_data.num_workers() as f32);
     ctx.sync();

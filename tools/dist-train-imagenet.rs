@@ -109,7 +109,8 @@ fn main() {
     //checkpoint_dir: PathBuf::from("models/imagenet_warp256x256-async_push_gossip_x8-run2"),
     //checkpoint_dir: PathBuf::from("models/imagenet_warp256x256-async_push_gossip_x8-run4"),
     //checkpoint_dir: PathBuf::from("models/imagenet_warp256x256-sync_x8-run0"),
-    checkpoint_dir: PathBuf::from("models/imagenet_warp256x256-test"),
+    checkpoint_dir: PathBuf::from("models/imagenet_warp256x256-async_elastic_server_x8-run1"),
+    //checkpoint_dir: PathBuf::from("models/imagenet_warp256x256-test"),
   };
   info!("sgd: {:?}", sgd_opt_cfg);
 

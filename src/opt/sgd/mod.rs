@@ -184,6 +184,9 @@ impl SgdOpt {
     }
     operator.reset();
 
+    // Do an initial (one-way) sync (necessary for parameter servers).
+    operator.first_one_way_sync_params();
+
     let mut start_time = get_time();
     let mut minibatch_start_time = start_time;
 
@@ -400,17 +403,31 @@ impl SgdOpt {
 
           if iter_counter % self.config.save_iters == 0 {
             if rank == 0 {
+              //println!("DEBUG: sgd: rank: {} signal checkpoint", rank);
               operator.signal_checkpoint();
             }
           }
 
           if operator.wait_checkpoint() {
+            //println!("DEBUG: sgd: rank: {} checkpoint...", rank);
             match self.local_log_file.flush() {
               Ok(_) => {}
               Err(e) => panic!("train: failed to flush local log file: {:?}", e),
             }
             operator.save_params();
+            // When saving params, if we are using the standard Nesterov update,
+            // undo the extra momentum applied for computing gradients.
+            match self.config.momentum {
+              Momentum::UpdateNesterov{mu} => {
+                if iter_counter > 0 {
+                  operator.update_params(-mu);
+                }
+              }
+              _ => {}
+            }
+            //println!("DEBUG: sgd: rank: {} exact sync...", rank);
             operator.exact_sync_params();
+            //println!("DEBUG: sgd: rank: {} done exact sync", rank);
             if rank == 0 {
               operator.checkpoint_params(iter_counter, &self.config.checkpoint_dir);
             }

@@ -1320,6 +1320,33 @@ impl<Comm> OperatorWorker for MpiDistSequentialOperatorWorker<Comm> where Comm: 
     self.comm_worker.borrow_mut().complete_store();
   }
 
+  fn first_one_way_sync_params(&mut self) {
+    if self.num_workers() <= 1 {
+      return;
+    }
+    println!("DEBUG: first one way sync: rank: {} staging...", self.worker_rank());
+    {
+      let mut offset = 0;
+      for op in self.hidden_ops.iter_mut() {
+        offset += op.stage_params_v2(offset, &mut *self.comm_worker.borrow_mut());
+      }
+    }
+    println!("DEBUG: first one way sync: rank: {} loading...", self.worker_rank());
+    self.comm_worker.borrow_mut().complete_load();
+    println!("DEBUG: first one way sync: rank: {} communicating...", self.worker_rank());
+    self.comm_worker.borrow_mut().communicate_first();
+    println!("DEBUG: first one way sync: rank: {} done", self.worker_rank());
+    // XXX(20160428): the first sync is by convention a one-way operation
+    // (e.g. a worker node sets the central param on the server).
+    /*{
+      let mut offset = 0;
+      for op in self.hidden_ops.iter_mut() {
+        offset += op.merge_params_v2(offset, &mut *self.comm_worker.borrow_mut());
+      }
+    }
+    self.comm_worker.borrow_mut().complete_store();*/
+  }
+
   fn exact_sync_params(&mut self) {
     if self.num_workers() <= 1 {
       return;
