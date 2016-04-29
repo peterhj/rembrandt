@@ -128,12 +128,12 @@ impl MpiDistElasticServerCentralWorker {
         }
       }
       if let Some(ctrl_recv_rank) = ctrl_recv_rank {
-        println!("DEBUG: elastic server: central: received ctrl msg");
+        //println!("DEBUG: elastic server: central: received ctrl msg");
         // FIXME(20160428): for simplicity, only allow rank 0 to direct the
         // server to do stuff.
         assert_eq!(0, ctrl_recv_rank);
 
-        println!("DEBUG: elastic server: central: receive ctrl msg...");
+        //println!("DEBUG: elastic server: central: receive ctrl msg...");
         //self.recv_reqs.clear();
         let mut recv_req = match MpiComm::world().nonblocking_recv(&mut dummy_buf[ .. 0], Some(0), Some(0x21)) {
           Ok(req) => req,
@@ -143,7 +143,7 @@ impl MpiDistElasticServerCentralWorker {
         //self.recv_reqs.wait_all();
         recv_req.wait().unwrap();
 
-        println!("DEBUG: elastic server: central: signal clients to barrier...");
+        //println!("DEBUG: elastic server: central: signal clients to barrier...");
         self.recv_reqs.clear();
         for r in 0 .. self.num_workers {
           let send_req = match MpiComm::world().nonblocking_send(&dummy_buf[ .. 0], r, 0x22) {
@@ -155,7 +155,7 @@ impl MpiDistElasticServerCentralWorker {
         //send_req.wait().unwrap();
         self.recv_reqs.wait_all().unwrap();
 
-        println!("DEBUG: elastic server: central: send center params to rank 0...");
+        //println!("DEBUG: elastic server: central: send center params to rank 0...");
         self.recv_reqs.clear();
         let send_req = match MpiComm::world().nonblocking_sync_send(&self.center_buf_h[ .. self.msg_len], 0, 0x20) {
           Ok(req) => req,
@@ -171,7 +171,7 @@ impl MpiDistElasticServerCentralWorker {
           self.recv_reqs.append(send_req);
         }
         self.recv_reqs.wait_all().unwrap();
-        println!("DEBUG: elastic server: central: done ctrl");
+        //println!("DEBUG: elastic server: central: done ctrl");
 
         // XXX(20160428): now the broadcast happens on the client side.
 
@@ -742,7 +742,6 @@ impl CommWorker for MpiDistElasticServerCommWorker {
     Mpi::barrier_().unwrap();
 
     self.final_buf.as_ref_mut(ctx).sync_load(&self.target_buf_h);
-    self.final_buf.as_ref_mut(ctx).row_vector_scale(1.0 / self.worker_data.num_workers() as f32);
     ctx.sync();
   }
 
