@@ -544,16 +544,18 @@ impl CommWorker for MpiDistElasticServerCommWorker {
   }
 
   fn signal_barrier(&mut self) {
-    assert_eq!(0, self.worker_data.worker_rank());
-    let mut dummy_buf: Vec<u8> = Vec::with_capacity(64);
-    self.send_reqs.clear();
-    let send_req = match MpiComm::world().nonblocking_sync_send(&mut dummy_buf[ .. 0], 0, 0x21) {
-      Ok(req) => req,
-      Err(e) => panic!(),
-    };
-    self.send_reqs.append(send_req);
-    self.send_reqs.wait_all();
-    self.rank0_signal = true;
+    if self.worker_data.worker_rank() == 0 {
+      //assert_eq!(0, self.worker_data.worker_rank());
+      let mut dummy_buf: Vec<u8> = Vec::with_capacity(64);
+      self.send_reqs.clear();
+      let send_req = match MpiComm::world().nonblocking_sync_send(&mut dummy_buf[ .. 0], 0, 0x21) {
+        Ok(req) => req,
+        Err(e) => panic!(),
+      };
+      self.send_reqs.append(send_req);
+      self.send_reqs.wait_all();
+      self.rank0_signal = true;
+    }
 
     /*let prev_signal = self.bar_signal.compare_and_swap(false, true, Ordering::AcqRel);
     assert!(!prev_signal, "signal_barrier: tried to signal during an ongoing barrier");
@@ -579,6 +581,7 @@ impl CommWorker for MpiDistElasticServerCommWorker {
 
   fn wait_barrier(&mut self) -> bool {
     if self.rank0_signal {
+      assert_eq!(0, self.worker_data.worker_rank());
       self.rank0_signal = false;
       return true;
     }

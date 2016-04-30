@@ -205,7 +205,7 @@ impl AsyncSgdOpt {
               unimplemented!();
             }
 
-            SyncOrder::SyncUpdatesThenStep => {
+            SyncOrder::SyncGradsThenStep => {
               // FIXME(20160424): necessary for sync all-reduce.
               unimplemented!();
             }

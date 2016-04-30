@@ -140,7 +140,7 @@ impl Operator for SoftmaxKLLossOperator {
     ) };
   }
 
-  fn sync_grads(&mut self) {
+  /*fn sync_grads(&mut self) {
     // Do nothing.
   }
 
@@ -150,7 +150,7 @@ impl Operator for SoftmaxKLLossOperator {
 
   fn reset_grads(&mut self, _scale: f32) {
     // Do nothing.
-  }
+  }*/
 }
 
 impl LossOperator for SoftmaxKLLossOperator {
@@ -330,7 +330,7 @@ impl Operator for MarginalizedSoftmaxIndLossOperator {
     ) };
   }
 
-  fn sync_grads(&mut self) {
+  /*fn sync_grads(&mut self) {
     // Do nothing.
   }
 
@@ -340,7 +340,7 @@ impl Operator for MarginalizedSoftmaxIndLossOperator {
 
   fn reset_grads(&mut self, _scale: f32) {
     // Do nothing.
-  }
+  }*/
 }
 
 impl LossOperator for MarginalizedSoftmaxIndLossOperator {

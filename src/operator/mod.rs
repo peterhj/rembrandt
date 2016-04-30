@@ -74,14 +74,14 @@ pub trait Operator {
   fn save_params(&mut self) {}
   fn restore_params(&mut self) {}
   fn set_grads_with_params_diff(&mut self) {}
-  fn sync_grads(&mut self) { unimplemented!(); }
+  /*fn sync_grads(&mut self) { unimplemented!(); }
   fn stage_params(&mut self) {}
-  fn sync_params(&mut self) {}
+  fn sync_params(&mut self) {}*/
   fn stage_grads_v2(&mut self, _offset: usize, _comm_worker: &mut CommWorker) -> usize { 0 }
   fn merge_grads_v2(&mut self, _offset: usize, _comm_worker: &mut CommWorker) -> usize { 0 }
   fn stage_params_v2(&mut self, _offset: usize, _comm_worker: &mut CommWorker) -> usize { 0 }
   fn merge_params_v2(&mut self, _offset: usize, _comm_worker: &mut CommWorker) -> usize { 0 }
-  fn reset_grads(&mut self, _scale: f32) {}
+  /*fn reset_grads(&mut self, _scale: f32) {}*/
   fn reset(&mut self) {}
 
   // Requires `HVBackward` capability.
@@ -354,7 +354,7 @@ impl Operator for SplitOperator {
     }
   }
 
-  fn sync_grads(&mut self) {
+  /*fn sync_grads(&mut self) {
     // Do nothing.
   }
 
@@ -364,7 +364,7 @@ impl Operator for SplitOperator {
 
   fn reset_grads(&mut self, _scale: f32) {
     // Do nothing.
-  }
+  }*/
 }
 
 pub struct JoinOperator;
@@ -770,7 +770,7 @@ impl Operator for Data3dOperator {
     // Do nothing.
   }
 
-  fn sync_grads(&mut self) {
+  /*fn sync_grads(&mut self) {
     // Do nothing.
   }
 
@@ -780,7 +780,7 @@ impl Operator for Data3dOperator {
 
   fn reset_grads(&mut self, _scale: f32) {
     // Do nothing.
-  }
+  }*/
 }
 
 impl InputOperator for Data3dOperator {
@@ -1214,7 +1214,7 @@ impl<Comm> Operator for AffineOperator<Comm> where Comm: CommWorker {
       .row_vector_sum(-1.0, &backward.save_bias.as_view(ctx));
   }
 
-  fn sync_grads(&mut self) {
+  /*fn sync_grads(&mut self) {
     unimplemented!();
   }
 
@@ -1234,25 +1234,29 @@ impl<Comm> Operator for AffineOperator<Comm> where Comm: CommWorker {
     let mut comm_worker = backward.comm_worker.borrow_mut();
     comm_worker.store(self.params_off, &mut self.weights); //, ctx);
     comm_worker.store(self.params_off, &mut self.bias); //, ctx);
-  }
+  }*/
 
-  /*fn stage_grads_v2(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
+  fn stage_grads_v2(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
+    assert!(self.backward.is_some());
+    let mut backward = self.backward.as_mut().unwrap();
     let mut offset = offset;
-    comm_worker.load(offset, &mut self.grad_weights);
-    offset += self.grad_weights.len();
-    comm_worker.load(offset, &mut self.grad_bias);
-    offset += self.grad_bias.len();
+    comm_worker.load(offset, &mut backward.grad_weights);
+    offset += backward.grad_weights.len();
+    comm_worker.load(offset, &mut backward.grad_bias);
+    offset += backward.grad_bias.len();
     self.config.params_len()
   }
 
   fn merge_grads_v2(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
+    assert!(self.backward.is_some());
+    let mut backward = self.backward.as_mut().unwrap();
     let mut offset = offset;
-    comm_worker.store(offset, &mut self.grad_weights);
-    offset += self.grad_weights.len();
-    comm_worker.store(offset, &mut self.grad_bias);
-    offset += self.grad_bias.len();
+    comm_worker.store(offset, &mut backward.grad_weights);
+    offset += backward.grad_weights.len();
+    comm_worker.store(offset, &mut backward.grad_bias);
+    offset += backward.grad_bias.len();
     self.config.params_len()
-  }*/
+  }
 
   fn stage_params_v2(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
     let mut offset = offset;
@@ -1272,7 +1276,7 @@ impl<Comm> Operator for AffineOperator<Comm> where Comm: CommWorker {
     self.config.params_len()
   }
 
-  fn reset_grads(&mut self, scale: f32) {
+  /*fn reset_grads(&mut self, scale: f32) {
     assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
     let mut backward = self.backward.as_mut().unwrap();
@@ -1280,7 +1284,7 @@ impl<Comm> Operator for AffineOperator<Comm> where Comm: CommWorker {
       .matrix_scale(scale);
     backward.grad_bias.as_view_mut(ctx)
       .row_vector_scale(scale);
-  }
+  }*/
 
   fn reset(&mut self) {
     assert!(self.backward.is_some());
@@ -1805,7 +1809,7 @@ impl<Comm> Operator for Conv2dOperator<Comm> where Comm: CommWorker {
       .row_vector_sum(-1.0, &backward.save_bias.as_view(ctx));
   }
 
-  fn sync_grads(&mut self) {
+  /*fn sync_grads(&mut self) {
     unimplemented!();
   }
 
@@ -1829,25 +1833,29 @@ impl<Comm> Operator for Conv2dOperator<Comm> where Comm: CommWorker {
     comm_worker.store(self.params_off, &mut self.bias); //, ctx);
     // FIXME(20160423): This code is broken!
     unimplemented!();
-  }
+  }*/
 
-  /*fn stage_grads_v2(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
+  fn stage_grads_v2(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
+    assert!(self.backward.is_some());
+    let mut backward = self.backward.as_mut().unwrap();
     let mut offset = offset;
-    comm_worker.load(offset, &mut self.grad_weights);
-    offset += self.grad_weights.len();
-    comm_worker.load(offset, &mut self.grad_bias);
-    offset += self.grad_bias.len();
+    comm_worker.load(offset, &mut backward.grad_weights);
+    offset += backward.grad_weights.len();
+    comm_worker.load(offset, &mut backward.grad_bias);
+    offset += backward.grad_bias.len();
     self.config.params_len()
   }
 
   fn merge_grads_v2(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
+    assert!(self.backward.is_some());
+    let mut backward = self.backward.as_mut().unwrap();
     let mut offset = offset;
-    comm_worker.store(offset, &mut self.grad_weights);
-    offset += self.grad_weights.len();
-    comm_worker.store(offset, &mut self.grad_bias);
-    offset += self.grad_bias.len();
+    comm_worker.store(offset, &mut backward.grad_weights);
+    offset += backward.grad_weights.len();
+    comm_worker.store(offset, &mut backward.grad_bias);
+    offset += backward.grad_bias.len();
     self.config.params_len()
-  }*/
+  }
 
   fn stage_params_v2(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
     let mut offset = offset;
@@ -1867,7 +1875,7 @@ impl<Comm> Operator for Conv2dOperator<Comm> where Comm: CommWorker {
     self.config.params_len()
   }
 
-  fn reset_grads(&mut self, scale: f32) {
+  /*fn reset_grads(&mut self, scale: f32) {
     assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
     let mut backward = self.backward.as_mut().unwrap();
@@ -1875,7 +1883,7 @@ impl<Comm> Operator for Conv2dOperator<Comm> where Comm: CommWorker {
       .matrix_scale(scale);
     backward.grad_bias.as_view_mut(ctx)
       .row_vector_scale(scale);
-  }
+  }*/
 
   fn reset(&mut self) {
     assert!(self.backward.is_some());
@@ -2008,13 +2016,13 @@ impl Operator for Pool2dOperator {
     }
   }
 
-  fn sync_grads(&mut self) {
+  /*fn sync_grads(&mut self) {
     // Do nothing.
   }
 
   fn sync_params(&mut self) {
     // Do nothing.
-  }
+  }*/
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -2131,11 +2139,11 @@ impl Operator for DropoutOperator {
     }
   }
 
-  fn sync_grads(&mut self) {
+  /*fn sync_grads(&mut self) {
     // Do nothing.
   }
 
   fn sync_params(&mut self) {
     // Do nothing.
-  }
+  }*/
 }

@@ -54,6 +54,9 @@ use rembrandt::templates::resnet::{
 use rembrandt::templates::vgg::{
   build_vgg_a,
 };
+use rembrandt::worker::allreduce_dist::{
+  MpiDistSyncAllreduceCommWorker,
+};
 use rembrandt::worker::elasticserver_dist::{
   MpiDistElasticServerCommWorker,
 };
@@ -80,6 +83,8 @@ fn main() {
   let num_workers = 1;
   let batch_size = 32;
   let minibatch_size = 32;
+  /*let batch_size = 64;
+  let minibatch_size = 64;*/
   info!("num workers: {} batch size: {}",
       num_workers, batch_size);
 
@@ -98,7 +103,8 @@ fn main() {
     //momentum:       Momentum::GradientNesterov{mu: 0.9},
     l2_reg_coef:    1.0e-4,
     //sync_order:     SyncOrder::StepThenSyncParams,
-    sync_order:     SyncOrder::SyncParamsThenStep,
+    //sync_order:     SyncOrder::SyncParamsThenStep,
+    sync_order:     SyncOrder::SyncGradsThenStep,
     /*display_iters:  25,
     save_iters:     625,
     valid_iters:    625,*/
@@ -109,7 +115,9 @@ fn main() {
     //checkpoint_dir: PathBuf::from("models/imagenet_warp256x256-async_push_gossip_x8-run2"),
     //checkpoint_dir: PathBuf::from("models/imagenet_warp256x256-async_push_gossip_x8-run4"),
     //checkpoint_dir: PathBuf::from("models/imagenet_warp256x256-sync_x8-run0"),
-    checkpoint_dir: PathBuf::from("models/imagenet_warp256x256-async_elastic_server_x8-run1"),
+    //checkpoint_dir: PathBuf::from("models/imagenet_warp256x256-async_elastic_server_x8-run1"),
+    //checkpoint_dir: PathBuf::from("models/imagenet_warp256x256-sync_x8-run1"),
+    checkpoint_dir: PathBuf::from("models/imagenet_warp256x256-sync_x8-run2"),
     //checkpoint_dir: PathBuf::from("models/imagenet_warp256x256-test"),
   };
   info!("sgd: {:?}", sgd_opt_cfg);
@@ -132,9 +140,10 @@ fn main() {
   //let comm_worker_builder = DeviceSyncGossipCommWorkerBuilder::new(num_workers, 1, worker_cfg.params_len());
   //let worker_builder = SequentialOperatorWorkerBuilder::new(num_workers, batch_size, worker_cfg, OpCapability::Backward);
   let worker_builder = MpiDistSequentialOperatorWorkerBuilder::new(batch_size, worker_cfg.clone(), OpCapability::Backward);
-  let pool = ThreadPool::new(num_workers);
-  let join_barrier = Arc::new(Barrier::new(num_workers + 1));
   let opt_shared = Arc::new(OptSharedData::new(num_workers));
+
+  /*let pool = ThreadPool::new(num_workers);
+  let join_barrier = Arc::new(Barrier::new(num_workers + 1));
   for tid in 0 .. num_workers {
     //let comm_worker_builder = comm_worker_builder.clone();
     let worker_builder = worker_builder.clone();
@@ -157,7 +166,8 @@ fn main() {
         com_interval: 1,
         buf_size:     worker_cfg.params_len(),
       };
-      let comm_worker = Rc::new(RefCell::new(MpiDistElasticServerCommWorker::new(paramserver_cfg, context.clone())));
+      //let comm_worker = Rc::new(RefCell::new(MpiDistElasticServerCommWorker::new(paramserver_cfg, context.clone())));
+      let comm_worker = Rc::new(RefCell::new(MpiDistSyncAllreduceCommWorker::new(paramserver_cfg, context.clone())));
       let mut worker = worker_builder.into_worker(context, comm_worker);
 
       let dataset_cfg = DatasetConfig::open(&PathBuf::from("examples/imagenet.data"));
@@ -179,5 +189,36 @@ fn main() {
       join_barrier.wait();
     });
   }
-  join_barrier.wait();
+  join_barrier.wait();*/
+
+  let context = Rc::new(DeviceContext::new(0));
+  /*let gossip_cfg = GossipConfig{
+    num_rounds: 1,
+    buf_size:   worker_cfg.params_len(),
+  };
+  let comm_worker = Rc::new(RefCell::new(MpiDistAsyncPushGossipCommWorker::new(gossip_cfg, context.clone())));*/
+  let paramserver_cfg = ParameterServerConfig{
+    com_interval: 1,
+    buf_size:     worker_cfg.params_len(),
+  };
+  //let comm_worker = Rc::new(RefCell::new(MpiDistElasticServerCommWorker::new(paramserver_cfg, context.clone())));
+  let comm_worker = Rc::new(RefCell::new(MpiDistSyncAllreduceCommWorker::new(paramserver_cfg, context.clone())));
+  let mut worker = worker_builder.into_worker(context, comm_worker);
+
+  let dataset_cfg = DatasetConfig::open(&PathBuf::from("examples/imagenet.data"));
+  let mut train_data =
+      /*//RandomEpisodeIterator::new(
+      SampleIterator::new(
+          dataset_cfg.build_with_cfg(datum_cfg, label_cfg, "train"),
+      );*/
+      dataset_cfg.build_partition_iterator("train", worker.worker_rank(), worker.num_workers());
+  let mut valid_data =
+      /*SampleIterator::new(
+          Box::new(PartitionDataSource::new(tid, num_workers, dataset_cfg.build_with_cfg(datum_cfg, label_cfg, "valid")))
+      );*/
+      //dataset_cfg.build_iterator("valid");
+      dataset_cfg.build_partition_iterator("valid", worker.worker_rank(), worker.num_workers());
+
+  let mut sgd_opt = SgdOpt::new(sgd_opt_cfg, Some(worker.worker_rank()), opt_shared);
+  sgd_opt.train(datum_cfg, label_cfg, &mut *train_data, &mut *valid_data, &mut worker);
 }

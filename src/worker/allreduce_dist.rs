@@ -13,6 +13,7 @@ use operator::comm::{
   //CommWorkerBuilder,
   CommWorker,
   GossipConfig,
+  ParameterServerConfig,
 };
 use operator::loss::{
   LossOperator,
@@ -23,6 +24,7 @@ use operator::worker::{
   OperatorWorker,
   SequentialOperatorConfig,
 };
+use worker::{MpiDistCommWorker};
 
 use array_cuda::device::array::{DeviceArray2d};
 use array_cuda::device::comm::{ReduceOperation, AverageReduceOperation, for_all_devices};
@@ -42,6 +44,7 @@ use rand::{Rng, SeedableRng, thread_rng};
 use rand::distributions::{IndependentSample};
 use rand::distributions::range::{Range};
 use std::cell::{RefCell};
+use std::cmp::{min};
 use std::collections::{HashSet};
 use std::ffi::{CString};
 use std::io::{Write};
@@ -86,23 +89,24 @@ pub struct MpiDistSyncAllreduceCommWorker {
   shared_rng:   Xorshiftplus128Rng,
   ranks_perm:   Vec<usize>,
   iter_counter: usize,
+  bar_signal: bool,
 }
 
 impl MpiDistSyncAllreduceCommWorker {
-  pub fn new(gossip_cfg: GossipConfig, context: Rc<DeviceContext>) -> MpiDistSyncAllreduceCommWorker {
+  pub fn new(paramserver_cfg: ParameterServerConfig, context: Rc<DeviceContext>) -> MpiDistSyncAllreduceCommWorker {
     // XXX(20160415): Empirically determined message length.
-    //let msg_len = 16; // FIXME(20160419): for debugging.
-    let msg_len = 32 * 1024;
-    let num_buf_msgs = (gossip_cfg.buf_size + msg_len - 1) / msg_len;
+    //let msg_len = 32 * 1024;
+    let msg_len = 1 * 1024 * 1024;
+    let num_buf_msgs = (paramserver_cfg.buf_size + msg_len - 1) / msg_len;
     let buf_len = num_buf_msgs * msg_len;
-    //let num_buf_msgs = 1; // FIXME(20160419): for debugging.
-    //let num_buf_msgs = 2; // FIXME(20160419): for debugging.
+    //let buf_len = paramserver_cfg.buf_size;
 
     let ctx = &(*context).as_ref();
     let origin_buf = unsafe { RawDeviceBuffer::new(buf_len, ctx) };
     let target_buf = unsafe { RawDeviceBuffer::new(buf_len, ctx) };
 
-    let mpi = Mpi::new();
+    //let mpi = Mpi::new();
+    let mpi = Mpi::new_serialized();
     let worker_rank = mpi.rank();
     let num_workers = mpi.size();
 
@@ -136,7 +140,7 @@ impl MpiDistSyncAllreduceCommWorker {
       buf_len:      buf_len,
       msg_len:      msg_len,
       num_buf_msgs: num_buf_msgs,
-      com_interval: 1,
+      com_interval: paramserver_cfg.com_interval,
       origin_buf:   origin_buf,
       target_buf:   target_buf,
       origin_buf_h: origin_buf_h,
@@ -147,7 +151,14 @@ impl MpiDistSyncAllreduceCommWorker {
       shared_rng:   Xorshiftplus128Rng::from_seed(shared_seed),
       ranks_perm:   (0 .. num_workers).collect(),
       iter_counter: 0,
+      bar_signal: false,
     }
+  }
+}
+
+impl MpiDistCommWorker for MpiDistSyncAllreduceCommWorker {
+  fn mpi(&self) -> &Mpi {
+    &self.mpi
   }
 }
 
@@ -160,6 +171,20 @@ impl CommWorker for MpiDistSyncAllreduceCommWorker {
     // FIXME(20160412)
     self.iter_counter += 1;
     true
+  }
+
+  fn signal_barrier(&mut self) {
+    self.bar_signal = true;
+  }
+
+  fn wait_barrier(&mut self) -> bool {
+    if self.bar_signal {
+      Mpi::barrier_().unwrap();
+      self.bar_signal = false;
+      true
+    } else {
+      false
+    }
   }
 
   fn load(&mut self, offset: usize, data: &mut DeviceArray2d<f32>/*, ctx: &DeviceCtxRef*/) {
@@ -179,6 +204,10 @@ impl CommWorker for MpiDistSyncAllreduceCommWorker {
     ctx.sync();
   }
 
+  fn communicate_first(&mut self) {
+    // Do nothing.
+  }
+
   fn communicate(&mut self/*, ctx: &DeviceCtxRef*/) {
     if self.iter_counter % self.com_interval != 0 {
       return;
@@ -195,8 +224,8 @@ impl CommWorker for MpiDistSyncAllreduceCommWorker {
           MpiSumOp,
       ).unwrap();*/
       let send_req = match Mpi::nonblocking_allreduce_(
-          &self.origin_buf_h[msg * self.msg_len .. (msg+1) * self.msg_len],
-          &mut self.target_buf_h[msg * self.msg_len .. (msg+1) * self.msg_len],
+          &self.origin_buf_h[msg * self.msg_len .. min(self.buf_len, (msg+1) * self.msg_len)],
+          &mut self.target_buf_h[msg * self.msg_len .. min(self.buf_len, (msg+1) * self.msg_len)],
           MpiSumOp)
       {
         Err(e) => panic!("nonblocking allreduce failed: {:?}", e),
@@ -206,6 +235,29 @@ impl CommWorker for MpiDistSyncAllreduceCommWorker {
     }
     self.send_reqs.wait_all().unwrap();
     //Mpi::barrier_().unwrap();
+    self.target_buf.sync_load(&self.target_buf_h, ctx);
+    self.target_buf.as_ref().async_vector_scale(1.0 / self.worker_data.num_workers() as f32, ctx);
+    ctx.sync();
+  }
+
+  fn communicate_exact(&mut self) {
+    let ctx = &(*self.context).as_ref();
+    self.origin_buf.sync_store(&mut self.origin_buf_h, ctx);
+    ctx.sync();
+    self.send_reqs.clear();
+    for msg in 0 .. self.num_buf_msgs {
+      let send_req = match Mpi::nonblocking_allreduce_(
+          &self.origin_buf_h[msg * self.msg_len .. min(self.buf_len, (msg+1) * self.msg_len)],
+          &mut self.target_buf_h[msg * self.msg_len .. min(self.buf_len, (msg+1) * self.msg_len)],
+          MpiSumOp)
+      {
+        Err(e) => panic!("nonblocking allreduce failed: {:?}", e),
+        Ok(req) => req,
+      };
+      self.send_reqs.append(send_req);
+    }
+    self.send_reqs.wait_all().unwrap();
+    Mpi::barrier_().unwrap();
     self.target_buf.sync_load(&self.target_buf_h, ctx);
     self.target_buf.as_ref().async_vector_scale(1.0 / self.worker_data.num_workers() as f32, ctx);
     ctx.sync();
@@ -226,5 +278,19 @@ impl CommWorker for MpiDistSyncAllreduceCommWorker {
   fn complete_store(&mut self) {
     let ctx = &(*self.context).as_ref();
     ctx.sync();
+  }
+
+  fn allreduce(&mut self, src_data: &[f32], dst_data: &mut [f32]) {
+    assert_eq!(src_data.len(), dst_data.len());
+    let n = src_data.len();
+    let num_msgs = (n + self.msg_len - 1) / self.msg_len;
+    for msg in 0 .. num_msgs {
+      Mpi::allreduce_(
+          &src_data[msg * self.msg_len .. min(n, (msg+1) * self.msg_len)],
+          &mut dst_data[msg * self.msg_len .. min(n, (msg+1) * self.msg_len)],
+          MpiSumOp,
+      ).unwrap();
+    }
+    Mpi::barrier_().unwrap();
   }
 }

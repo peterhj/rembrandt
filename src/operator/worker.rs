@@ -424,7 +424,7 @@ impl<Comm> Operator for SequentialOperatorWorker<Comm> where Comm: 'static + Com
     }
   }
 
-  fn sync_grads(&mut self) {
+  /*fn sync_grads(&mut self) {
     unimplemented!();
   }
 
@@ -454,7 +454,7 @@ impl<Comm> Operator for SequentialOperatorWorker<Comm> where Comm: 'static + Com
     for op in self.hidden_ops.iter_mut() {
       op.reset_grads(scale);
     }
-  }
+  }*/
 
   fn reset(&mut self) {
     for op in self.hidden_ops.iter_mut() {

@@ -96,7 +96,7 @@ pub enum Momentum {
 pub enum SyncOrder {
   StepThenSyncParams,
   SyncParamsThenStep,
-  SyncUpdatesThenStep,
+  SyncGradsThenStep,
 }
 
 pub struct OptSharedData {
@@ -270,27 +270,26 @@ impl SgdOpt {
           // update rules.
           match self.config.sync_order {
             SyncOrder::StepThenSyncParams => {
-              // Compute and apply the update, possibly with momentum.
+              // Compute the update, possibly with momentum.
               match self.config.momentum {
-                Momentum::Zero => {
-                  operator.accumulate_grads(-step_size, 0.0);
-                  operator.update_params(1.0);
-                }
+                Momentum::Zero                  => operator.accumulate_grads(-step_size, 0.0),
                 Momentum::Update{mu} |
-                Momentum::UpdateNesterov{mu} => {
-                  operator.accumulate_grads(-step_size, mu);
-                  operator.update_params(1.0);
-                }
+                Momentum::UpdateNesterov{mu}    => operator.accumulate_grads(-step_size, mu),
                 // XXX(20160422): These are the Torch `optim.sgd`-style update;
                 // see: <https://github.com/torch/optim/blob/master/sgd.lua>.
-                Momentum::Gradient{mu} => {
-                  operator.accumulate_grads(1.0, mu);
-                  operator.update_params(-step_size);
-                }
-                Momentum::GradientNesterov{mu} => {
-                  operator.accumulate_grads(1.0, mu);
-                  operator.update_params2(-step_size, -step_size * mu);
-                }
+                Momentum::Gradient{mu}          => operator.accumulate_grads(1.0, mu),
+                Momentum::GradientNesterov{mu}  => operator.accumulate_grads(1.0, mu),
+              }
+
+              // Apply the update, possibly with momentum.
+              match self.config.momentum {
+                Momentum::Zero                  => operator.update_params(1.0),
+                Momentum::Update{mu} |
+                Momentum::UpdateNesterov{mu}    => operator.update_params(1.0),
+                // XXX(20160422): These are the Torch `optim.sgd`-style update;
+                // see: <https://github.com/torch/optim/blob/master/sgd.lua>.
+                Momentum::Gradient{mu}          => operator.update_params(-step_size),
+                Momentum::GradientNesterov{mu}  => operator.update_params2(-step_size, -step_size * mu),
               }
 
               // Communicate the parameters.
@@ -300,21 +299,13 @@ impl SgdOpt {
             SyncOrder::SyncParamsThenStep => {
               // Compute the update, possibly with momentum.
               match self.config.momentum {
-                Momentum::Zero => {
-                  operator.accumulate_grads(-step_size, 0.0);
-                }
+                Momentum::Zero                  => operator.accumulate_grads(-step_size, 0.0),
                 Momentum::Update{mu} |
-                Momentum::UpdateNesterov{mu} => {
-                  operator.accumulate_grads(-step_size, mu);
-                }
+                Momentum::UpdateNesterov{mu}    => operator.accumulate_grads(-step_size, mu),
                 // XXX(20160422): These are the Torch `optim.sgd`-style update;
                 // see: <https://github.com/torch/optim/blob/master/sgd.lua>.
-                Momentum::Gradient{mu} => {
-                  operator.accumulate_grads(1.0, mu);
-                }
-                Momentum::GradientNesterov{mu} => {
-                  operator.accumulate_grads(1.0, mu);
-                }
+                Momentum::Gradient{mu}          => operator.accumulate_grads(1.0, mu),
+                Momentum::GradientNesterov{mu}  => operator.accumulate_grads(1.0, mu),
               }
 
               // Communicate the parameters.
@@ -322,40 +313,42 @@ impl SgdOpt {
 
               // Apply the update, possibly with momentum.
               match self.config.momentum {
-                Momentum::Zero => {
-                  operator.update_params(1.0);
-                }
+                Momentum::Zero                  => operator.update_params(1.0),
                 Momentum::Update{mu} |
-                Momentum::UpdateNesterov{mu} => {
-                  operator.update_params(1.0);
-                }
+                Momentum::UpdateNesterov{mu}    => operator.update_params(1.0),
                 // XXX(20160422): These are the Torch `optim.sgd`-style update;
                 // see: <https://github.com/torch/optim/blob/master/sgd.lua>.
-                Momentum::Gradient{mu} => {
-                  operator.update_params(-step_size);
-                }
-                Momentum::GradientNesterov{mu} => {
-                  operator.update_params2(-step_size, -step_size * mu);
-                }
+                Momentum::Gradient{mu}          => operator.update_params(-step_size),
+                Momentum::GradientNesterov{mu}  => operator.update_params2(-step_size, -step_size * mu),
               }
             }
 
-            SyncOrder::SyncUpdatesThenStep => {
-              // FIXME(20160428): needed for sync allreduce.
-              unimplemented!();
-            }
-          }
+            SyncOrder::SyncGradsThenStep => {
+              // Communicate the gradients.
+              operator.sync_grads_v2();
 
-          // If we are using the standard Nesterov update, apply some extra
-          // momentum.
-          // XXX(20160406): Interestingly, we should use the local update rather
-          // than the communicated update with momentum.
-          //operator.set_grads_with_params_diff();
-          match self.config.momentum {
-            Momentum::UpdateNesterov{mu} => {
-              operator.update_params(mu);
+              // Compute the update, possibly with momentum.
+              match self.config.momentum {
+                Momentum::Zero                  => operator.accumulate_grads(-step_size, 0.0),
+                Momentum::Update{mu} |
+                Momentum::UpdateNesterov{mu}    => operator.accumulate_grads(-step_size, mu),
+                // XXX(20160422): These are the Torch `optim.sgd`-style update;
+                // see: <https://github.com/torch/optim/blob/master/sgd.lua>.
+                Momentum::Gradient{mu}          => operator.accumulate_grads(1.0, mu),
+                Momentum::GradientNesterov{mu}  => operator.accumulate_grads(1.0, mu),
+              }
+
+              // Apply the update, possibly with momentum.
+              match self.config.momentum {
+                Momentum::Zero                  => operator.update_params(1.0),
+                Momentum::Update{mu} |
+                Momentum::UpdateNesterov{mu}    => operator.update_params(1.0),
+                // XXX(20160422): These are the Torch `optim.sgd`-style update;
+                // see: <https://github.com/torch/optim/blob/master/sgd.lua>.
+                Momentum::Gradient{mu}          => operator.update_params(-step_size),
+                Momentum::GradientNesterov{mu}  => operator.update_params2(-step_size, -step_size * mu),
+              }
             }
-            _ => {}
           }
 
           operator.reset();
@@ -402,10 +395,8 @@ impl SgdOpt {
           }
 
           if iter_counter % self.config.save_iters == 0 {
-            if rank == 0 {
-              //println!("DEBUG: sgd: rank: {} signal checkpoint", rank);
-              operator.signal_checkpoint();
-            }
+            //println!("DEBUG: sgd: rank: {} signal checkpoint", rank);
+            operator.signal_checkpoint();
           }
 
           if operator.wait_checkpoint() {
@@ -415,16 +406,6 @@ impl SgdOpt {
               Err(e) => panic!("train: failed to flush local log file: {:?}", e),
             }
             operator.save_params();
-            // When saving params, if we are using the standard Nesterov update,
-            // undo the extra momentum applied for computing gradients.
-            match self.config.momentum {
-              Momentum::UpdateNesterov{mu} => {
-                if iter_counter > 0 {
-                  operator.update_params(-mu);
-                }
-              }
-              _ => {}
-            }
             //println!("DEBUG: sgd: rank: {} exact sync...", rank);
             operator.exact_sync_params();
             //println!("DEBUG: sgd: rank: {} done exact sync", rank);
@@ -435,6 +416,18 @@ impl SgdOpt {
             operator.restore_params();
             start_time = get_time();
             minibatch_start_time = start_time;
+          }
+
+          // If we are using the standard Nesterov update, apply some extra
+          // momentum before the next iteration begins.
+          // XXX(20160406): Interestingly, we should use the local update rather
+          // than the communicated update with momentum.
+          //operator.set_grads_with_params_diff();
+          match self.config.momentum {
+            Momentum::UpdateNesterov{mu} => {
+              operator.update_params(mu);
+            }
+            _ => {}
           }
         }
       });

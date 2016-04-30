@@ -24,7 +24,7 @@ use operator::worker::{
   SequentialOperatorConfig,
 };
 use worker::{MpiDistCommWorker};
-use worker::allreduce_dist::{MpiDistSyncAllreduceCommWorker};
+//use worker::allreduce_dist::{MpiDistSyncAllreduceCommWorker};
 
 use array_cuda::device::array::{DeviceArray2d};
 use array_cuda::device::comm::{ReduceOperation, AverageReduceOperation, for_all_devices};
@@ -824,26 +824,28 @@ impl CommWorker for MpiDistAsyncPushGossipCommWorker {
   }
 
   fn signal_barrier(&mut self) {
-    let prev_signal = self.bar_signal.compare_and_swap(false, true, Ordering::AcqRel);
-    assert!(!prev_signal, "signal_barrier: tried to signal during an ongoing barrier");
+    if self.worker_data.worker_rank() == 0 {
+      let prev_signal = self.bar_signal.compare_and_swap(false, true, Ordering::AcqRel);
+      assert!(!prev_signal, "signal_barrier: tried to signal during an ongoing barrier");
 
-    let worker_rank = self.worker_data.worker_rank();
-    let num_workers = self.worker_data.num_workers();
+      let worker_rank = self.worker_data.worker_rank();
+      let num_workers = self.worker_data.num_workers();
 
-    let dummy_buf: Vec<u8> = Vec::with_capacity(64);
+      let dummy_buf: Vec<u8> = Vec::with_capacity(64);
 
-    self.send_reqs.clear();
-    for r in 0 .. num_workers {
-      if r == worker_rank {
-        continue;
+      self.send_reqs.clear();
+      for r in 0 .. num_workers {
+        if r == worker_rank {
+          continue;
+        }
+        let send_req = match self.server_conns[r].nonblocking_sync_send(&dummy_buf, 0, 2) {
+          Ok(req) => req,
+          Err(e) => panic!("async gossip: active thread: failed to do initial send: {:?}", e),
+        };
+        self.send_reqs.append(send_req);
       }
-      let send_req = match self.server_conns[r].nonblocking_sync_send(&dummy_buf, 0, 2) {
-        Ok(req) => req,
-        Err(e) => panic!("async gossip: active thread: failed to do initial send: {:?}", e),
-      };
-      self.send_reqs.append(send_req);
+      self.send_reqs.wait_all();
     }
-    self.send_reqs.wait_all();
   }
 
   fn wait_barrier(&mut self) -> bool {
@@ -1299,6 +1301,27 @@ impl<Comm> OperatorWorker for MpiDistSequentialOperatorWorker<Comm> where Comm: 
     }
   }
 
+  fn sync_grads_v2(&mut self) {
+    if self.num_workers() <= 1 {
+      return;
+    }
+    {
+      let mut offset = 0;
+      for op in self.hidden_ops.iter_mut() {
+        offset += op.stage_grads_v2(offset, &mut *self.comm_worker.borrow_mut());
+      }
+    }
+    self.comm_worker.borrow_mut().complete_load();
+    self.comm_worker.borrow_mut().communicate();
+    {
+      let mut offset = 0;
+      for op in self.hidden_ops.iter_mut() {
+        offset += op.merge_grads_v2(offset, &mut *self.comm_worker.borrow_mut());
+      }
+    }
+    self.comm_worker.borrow_mut().complete_store();
+  }
+
   fn sync_params_v2(&mut self) {
     if self.num_workers() <= 1 {
       return;
@@ -1324,18 +1347,18 @@ impl<Comm> OperatorWorker for MpiDistSequentialOperatorWorker<Comm> where Comm: 
     if self.num_workers() <= 1 {
       return;
     }
-    println!("DEBUG: first one way sync: rank: {} staging...", self.worker_rank());
+    //println!("DEBUG: first one way sync: rank: {} staging...", self.worker_rank());
     {
       let mut offset = 0;
       for op in self.hidden_ops.iter_mut() {
         offset += op.stage_params_v2(offset, &mut *self.comm_worker.borrow_mut());
       }
     }
-    println!("DEBUG: first one way sync: rank: {} loading...", self.worker_rank());
+    //println!("DEBUG: first one way sync: rank: {} loading...", self.worker_rank());
     self.comm_worker.borrow_mut().complete_load();
-    println!("DEBUG: first one way sync: rank: {} communicating...", self.worker_rank());
+    //println!("DEBUG: first one way sync: rank: {} communicating...", self.worker_rank());
     self.comm_worker.borrow_mut().communicate_first();
-    println!("DEBUG: first one way sync: rank: {} done", self.worker_rank());
+    //println!("DEBUG: first one way sync: rank: {} done", self.worker_rank());
     // XXX(20160428): the first sync is by convention a one-way operation
     // (e.g. a worker node sets the central param on the server).
     /*{
@@ -1460,7 +1483,7 @@ impl<Comm> Operator for MpiDistSequentialOperatorWorker<Comm> where Comm: CommWo
     }
   }
 
-  fn sync_grads(&mut self) {
+  /*fn sync_grads(&mut self) {
     unimplemented!();
   }
 
@@ -1503,7 +1526,7 @@ impl<Comm> Operator for MpiDistSequentialOperatorWorker<Comm> where Comm: CommWo
     for op in self.hidden_ops.iter_mut() {
       op.reset_grads(scale);
     }
-  }
+  }*/
 
   fn reset(&mut self) {
     for op in self.hidden_ops.iter_mut() {
