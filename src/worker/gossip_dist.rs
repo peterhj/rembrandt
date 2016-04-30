@@ -876,6 +876,10 @@ impl CommWorker for MpiDistAsyncPushGossipCommWorker {
     ctx.sync();
   }
 
+  fn communicate_first(&mut self) {
+    // Do nothing.
+  }
+
   fn communicate(&mut self/*, ctx: &DeviceCtxRef*/) {
     if self.iter_counter % self.com_interval != 0 {
       return;
