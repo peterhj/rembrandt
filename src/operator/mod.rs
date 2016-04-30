@@ -61,6 +61,8 @@ pub trait Operator {
   fn init_params(&mut self, _shared_seed: [u64; 2]) {}
   fn decode_params(&mut self, _blob: &[u8]) -> usize { 0 }
   fn encode_params(&mut self, _blob: &mut Vec<u8>) {}
+  fn decode_state(&mut self, _blob: &[u8]) -> usize { 0 }
+  fn encode_state(&mut self, _blob: &mut Vec<u8>) {}
   fn forward(&mut self, batch_size: usize, phase: OpPhase);
 
   // Requires `Backward` capability.
@@ -1006,6 +1008,45 @@ impl<Comm> Operator for AffineOperator<Comm> where Comm: CommWorker {
     save_bias.serialize(blob).unwrap();
   }
 
+  fn decode_state(&mut self, blob: &[u8]) -> usize {
+    assert!(self.backward.is_some());
+    let AffineOperatorConfig{in_channels, out_channels, ..} = self.config;
+    let ctx = &(*self.context).as_ref();
+    let mut backward = self.backward.as_mut().unwrap();
+    let mut reader = Cursor::new(blob);
+
+    let load_update_weights = Array2d::deserialize(&mut reader)
+      .ok().expect("AffineOperator failed to deserialize weights!");
+    let load_update_bias = Array2d::deserialize(&mut reader)
+      .ok().expect("AffineOperator failed to deserialize bias!");
+    assert_eq!((in_channels, out_channels), load_update_weights.as_view().bound());
+    assert_eq!((1, out_channels), load_update_bias.as_view().bound());
+
+    backward.acc_grad_weights.as_view_mut(ctx).sync_load(&load_update_weights.as_view());
+    backward.acc_grad_bias.as_view_mut(ctx).sync_load(&load_update_bias.as_view());
+
+    let progress = reader.position() as usize;
+    progress
+  }
+
+  fn encode_state(&mut self, blob: &mut Vec<u8>) {
+    assert!(self.backward.is_some());
+    let ctx = &(*self.context).as_ref();
+    let mut backward = self.backward.as_mut().unwrap();
+
+    let update_weights = backward.acc_grad_weights.as_view(ctx);
+    let update_bias = backward.acc_grad_bias.as_view(ctx);
+
+    let mut save_update_weights = Array2d::zeros(update_weights.bound());
+    let mut save_update_bias = Array2d::zeros(update_bias.bound());
+
+    update_weights.sync_store(&mut save_update_weights.as_view_mut());
+    update_bias.sync_store(&mut save_update_bias.as_view_mut());
+
+    save_update_weights.serialize(blob).unwrap();
+    save_update_bias.serialize(blob).unwrap();
+  }
+
   fn forward(&mut self, batch_size: usize, _phase: OpPhase) {
     assert!(batch_size <= self.batch_cap);
     let in_channels = self.config.in_channels;
@@ -1552,6 +1593,46 @@ impl<Comm> Operator for Conv2dOperator<Comm> where Comm: CommWorker {
     bias.sync_store(&mut save_bias.as_view_mut());
     save_weights.serialize(blob).unwrap();
     save_bias.serialize(blob).unwrap();
+  }
+
+  fn decode_state(&mut self, blob: &[u8]) -> usize {
+    assert!(self.backward.is_some());
+    let Conv2dOperatorConfig{in_dims, out_channels, conv_size, ..} = self.config;
+    let (_, _, in_channels) = in_dims;
+    let ctx = &(*self.context).as_ref();
+    let mut backward = self.backward.as_mut().unwrap();
+    let mut reader = Cursor::new(blob);
+
+    let load_update_weights = Array2d::deserialize(&mut reader)
+      .ok().expect("AffineOperator failed to deserialize weights!");
+    let load_update_bias = Array2d::deserialize(&mut reader)
+      .ok().expect("AffineOperator failed to deserialize bias!");
+    assert_eq!((conv_size * conv_size * in_channels, out_channels), load_update_weights.as_view().bound());
+    assert_eq!((1, out_channels), load_update_bias.as_view().bound());
+
+    backward.acc_grad_weights.as_view_mut(ctx).sync_load(&load_update_weights.as_view());
+    backward.acc_grad_bias.as_view_mut(ctx).sync_load(&load_update_bias.as_view());
+
+    let progress = reader.position() as usize;
+    progress
+  }
+
+  fn encode_state(&mut self, blob: &mut Vec<u8>) {
+    assert!(self.backward.is_some());
+    let ctx = &(*self.context).as_ref();
+    let mut backward = self.backward.as_mut().unwrap();
+
+    let update_weights = backward.acc_grad_weights.as_view(ctx);
+    let update_bias = backward.acc_grad_bias.as_view(ctx);
+
+    let mut save_update_weights = Array2d::zeros(update_weights.bound());
+    let mut save_update_bias = Array2d::zeros(update_bias.bound());
+
+    update_weights.sync_store(&mut save_update_weights.as_view_mut());
+    update_bias.sync_store(&mut save_update_bias.as_view_mut());
+
+    save_update_weights.serialize(blob).unwrap();
+    save_update_bias.serialize(blob).unwrap();
   }
 
   fn forward(&mut self, batch_size: usize, _phase: OpPhase) {
