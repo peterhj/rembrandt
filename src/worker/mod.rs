@@ -5,6 +5,7 @@ pub mod allreduce_dev;
 pub mod allreduce_dist;
 pub mod elasticserver_dist;
 pub mod gossip_dist;
+pub mod gossip_dist_dir;
 pub mod gossip_dist_p2p;
 //pub mod paramserver_dist;
 

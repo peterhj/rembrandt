@@ -62,8 +62,8 @@ impl AsyncSgdOpt {
       mut valid_data: Option<&mut DataIter<Item=(SampleDatum, Option<SampleLabel>)>>,
       operator: &mut OperatorWorker)
   {
-    assert_eq!(0, self.config.save_iters % self.config.display_iters);
-    assert_eq!(0, self.config.valid_iters % self.config.save_iters);
+    assert_eq!(0, self.config.checkpoint_iters % self.config.display_iters);
+    //assert_eq!(0, self.config.valid_iters % self.config.save_iters);
 
     let batch_size = operator.batch_size();
     let num_workers = operator.num_workers();
@@ -266,7 +266,7 @@ impl AsyncSgdOpt {
             minibatch_start_time = start_time;
           }
 
-          if iter_counter % self.config.save_iters == 0 {
+          if iter_counter % self.config.checkpoint_iters == 0 {
             if rank == 0 {
               operator.signal_checkpoint();
             }

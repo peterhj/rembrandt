@@ -26,9 +26,10 @@ pub struct SgdOptConfig {
   pub sync_order:     SyncOrder,
 
   pub display_iters:  usize,
-  pub save_iters:     usize,
-  pub valid_iters:    usize,
-  pub checkpoint_dir: PathBuf,
+  //pub save_iters:     usize,
+  //pub valid_iters:    usize,
+  pub checkpoint_iters:   usize,
+  pub checkpoint_dir:     PathBuf,
 }
 
 #[derive(Clone, Copy, RustcDecodable, RustcEncodable, Debug)]
@@ -124,6 +125,9 @@ pub struct SgdOpt {
   config:   SgdOptConfig,
   rank:     Option<usize>,
   shared:   Arc<OptSharedData>,
+
+  elapsed_checkpoint_iters: usize,
+  local_step_size:  f32,
   local_accum_loss: f32,
   local_log_file:   BufWriter<File>,
 }
@@ -147,6 +151,7 @@ impl SgdOpt {
       Err(e) => panic!("SgdOpt: failed to open log file: {:?}", e),
       Ok(file) => file,
     };
+    let init_step_size = config.step_size.at_iter(0);
     let mut writer = BufWriter::new(local_log_file);
     writeln!(&mut writer, "t,event,loss,error,elapsed").unwrap();
     writer.flush().unwrap();
@@ -154,14 +159,17 @@ impl SgdOpt {
       config:   config,
       rank:     rank,
       shared:   shared,
+      elapsed_checkpoint_iters: 0,
+      local_step_size:  init_step_size,
       local_accum_loss: 0.0,
       local_log_file:   writer,
     }
   }
 
   pub fn train(&mut self, datum_cfg: SampleDatumConfig, label_cfg: SampleLabelConfig, train_data: &mut DataIterator, valid_data: &mut DataIterator, operator: &mut OperatorWorker) {
-    assert_eq!(0, self.config.save_iters % self.config.display_iters);
-    assert_eq!(0, self.config.valid_iters % self.config.save_iters);
+    //assert_eq!(0, self.config.save_iters % self.config.display_iters);
+    //assert_eq!(0, self.config.valid_iters % self.config.save_iters);
+    assert_eq!(0, self.config.checkpoint_iters % self.config.display_iters);
 
     let batch_size = operator.batch_size();
     let num_workers = operator.num_workers();
@@ -250,7 +258,8 @@ impl SgdOpt {
 
         if local_counter % minibatch_size == 0 {
           let l2_reg_coef = self.config.l2_reg_coef;
-          let step_size = self.config.step_size.at_iter(iter_counter);
+          //let step_size = self.config.step_size.at_iter(iter_counter);
+          let step_size = self.local_step_size;
 
           // Apply regularization to the current gradient.
           operator.regularize(Regularization::L2{l2_reg_coef: l2_reg_coef});
@@ -394,7 +403,8 @@ impl SgdOpt {
             minibatch_start_time = start_time;
           }
 
-          if iter_counter % self.config.save_iters == 0 {
+          //if iter_counter % self.config.save_iters == 0 {
+          if iter_counter % self.config.checkpoint_iters == 0 {
             //println!("DEBUG: sgd: rank: {} signal checkpoint", rank);
             operator.signal_checkpoint();
           }
@@ -414,6 +424,8 @@ impl SgdOpt {
             }
             self.validate(iter_counter, datum_cfg, label_cfg, valid_data, operator);
             operator.restore_params();
+            self.elapsed_checkpoint_iters += self.config.checkpoint_iters;
+            self.local_step_size = self.config.step_size.at_iter(self.elapsed_checkpoint_iters);
             start_time = get_time();
             minibatch_start_time = start_time;
           }
