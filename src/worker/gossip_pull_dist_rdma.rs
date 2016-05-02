@@ -280,6 +280,7 @@ pub struct MpiDistAsyncPullGossipCommWorker {
   pull_target_win:    MpiOwnedWindow<f32, MpiMemory<f32>>,
   pull_origin_buf_h:  MpiMemory<f32>,
   dst_buf:      DeviceBuffer<f32>,
+  checkpt_sig:  bool,
 
   //client_conns: VecMap<MpiComm>,
   //server_conns: VecMap<MpiComm>,
@@ -307,7 +308,8 @@ impl MpiDistAsyncPullGossipCommWorker {
   pub fn new(gossip_cfg: GossipConfig, context: Rc<DeviceContext>) -> MpiDistAsyncPullGossipCommWorker {
     // XXX(20160415): Empirically determined message length.
     //let msg_len = 32 * 1024;
-    let msg_len = 4 * 1024 * 1024;
+    let msg_len = 1 * 1024 * 1024;
+    //let msg_len = 4 * 1024 * 1024;
     let num_buf_msgs = (gossip_cfg.buf_size + msg_len - 1) / msg_len;
     let buf_len = gossip_cfg.buf_size; //num_buf_msgs * msg_len;
     // XXX(20160501): For RDMA specifically, the buffer length is increased
@@ -491,6 +493,7 @@ impl MpiDistAsyncPullGossipCommWorker {
       pull_target_win:    pull_target_win,
       pull_origin_buf_h:  pull_origin_buf_h,
       dst_buf:      dst_buf,
+      checkpt_sig:  false,
       //client_conns: client_conns,
       //server_conns: server_conns,
       //server_ports: server_ports,
@@ -534,20 +537,24 @@ impl CommWorker for MpiDistAsyncPullGossipCommWorker {
 
   fn signal_barrier(&mut self) {
     if self.worker_data.worker_rank() == 0 {
-      let prev_signal = self.bar_signal.compare_and_swap(false, true, Ordering::AcqRel);
-      assert!(!prev_signal, "signal_barrier: tried to signal during an ongoing barrier");
+      /*let prev_signal = self.bar_signal.compare_and_swap(false, true, Ordering::AcqRel);
+      assert!(!prev_signal, "signal_barrier: tried to signal during an ongoing barrier");*/
 
       let worker_rank = self.worker_data.worker_rank();
       let num_workers = self.worker_data.num_workers();
 
       let dummy_buf: Vec<u8> = Vec::with_capacity(64);
-
       self.send_reqs.clear();
       for r in 0 .. num_workers {
         if r == worker_rank {
           continue;
         }
         // FIXME(20160501): send to world communicator.
+        let send_req = match MpiComm::world().nonblocking_sync_send(&dummy_buf, r, 2) {
+          Ok(req) => req,
+          Err(e) => panic!("async gossip: active thread: failed to do initial send: {:?}", e),
+        };
+        self.send_reqs.append(send_req);
         /*let send_req = match self.server_conns[r].nonblocking_sync_send(&dummy_buf, 0, 2) {
           Ok(req) => req,
           Err(e) => panic!("async gossip: active thread: failed to do initial send: {:?}", e),
@@ -555,16 +562,41 @@ impl CommWorker for MpiDistAsyncPullGossipCommWorker {
         self.send_reqs.append(send_req);*/
       }
       self.send_reqs.wait_all();
+
+      self.checkpt_sig = true;
     }
   }
 
   fn wait_barrier(&mut self) -> bool {
-    let bar_signal = self.bar_signal.load(Ordering::Acquire);
-    if !bar_signal {
+    if self.worker_data.worker_rank() != 0 {
+      let mut chk_recv_rank = None;
+      match MpiComm::world().nonblocking_probe(None, Some(2)) {
+        Err(e) => panic!("async gossip: passive thread: failed to do first recv: {:?}", e),
+        Ok(None) => {}
+        Ok(Some(status)) => {
+          chk_recv_rank = Some(status.src_rank);
+        }
+      }
+      if let Some(chk_recv_rank) = chk_recv_rank {
+        let mut dummy_buf: Vec<u8> = Vec::with_capacity(64);
+        let mut recv_req = match MpiComm::world().nonblocking_recv(&mut dummy_buf, Some(chk_recv_rank), Some(2)) {
+          Ok(req) => req,
+          Err(e) => panic!("async gossip: passive thread: failed to do nonblocking recv: {:?}", e),
+        };
+        recv_req.wait().unwrap();
+        //self.bar_signal.store(true, Ordering::Release);
+        self.checkpt_sig = true;
+      }
+    }
+
+    //let bar_signal = self.bar_signal.load(Ordering::Acquire);
+    //if !bar_signal {
+    if !self.checkpt_sig {
       false
     } else {
       Mpi::barrier_().unwrap();
-      self.bar_signal.store(false, Ordering::Release);
+      //self.bar_signal.store(false, Ordering::Release);
+      self.checkpt_sig = false;
       true
     }
   }
