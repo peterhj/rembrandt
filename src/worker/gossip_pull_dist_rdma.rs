@@ -279,6 +279,7 @@ pub struct MpiDistAsyncPullGossipCommWorker {
   src_buf:      DeviceBuffer<f32>,
   pull_target_win:    MpiOwnedWindow<f32, MpiMemory<f32>>,
   pull_origin_buf_h:  MpiMemory<f32>,
+  reduce_buf_h: Vec<f32>,
   dst_buf:      DeviceBuffer<f32>,
   checkpt_sig:  bool,
 
@@ -362,6 +363,10 @@ impl MpiDistAsyncPullGossipCommWorker {
     let pull_target_buf_h = MpiMemory::alloc_(buf_len).unwrap();
     let pull_target_win = MpiOwnedWindow::create_(pull_target_buf_h).unwrap();
     let pull_origin_buf_h = MpiMemory::alloc_(buf_len).unwrap();
+    let mut reduce_buf_h = Vec::with_capacity(buf_len);
+    for _ in 0 .. buf_len {
+      reduce_buf_h.push(0.0);
+    }
 
     /*let service_port = Mpi::open_port_().unwrap();
     let mut service_name_buf = vec![];
@@ -492,6 +497,7 @@ impl MpiDistAsyncPullGossipCommWorker {
       src_buf:      src_buf,
       pull_target_win:    pull_target_win,
       pull_origin_buf_h:  pull_origin_buf_h,
+      reduce_buf_h: reduce_buf_h,
       dst_buf:      dst_buf,
       checkpt_sig:  false,
       //client_conns: client_conns,
@@ -751,8 +757,21 @@ impl CommWorker for MpiDistAsyncPullGossipCommWorker {
   }
 
   fn communicate_exact(&mut self) {
-    // FIXME(20160502)
-    unimplemented!();
+    let ctx = &(*self.context).as_ref();
+    self.src_buf.as_ref(ctx).sync_store(self.pull_origin_buf_h.as_mut());
+    ctx.sync();
+    for msg in 0 .. self.num_buf_msgs {
+      Mpi::allreduce_(
+          &self.pull_origin_buf_h.as_ref()[msg * self.msg_len .. min(self.buf_len, (msg+1) * self.msg_len)],
+          &mut self.reduce_buf_h[msg * self.msg_len .. min(self.buf_len, (msg+1) * self.msg_len)],
+          MpiSumOp,
+      ).unwrap();
+    }
+    Mpi::barrier_().unwrap();
+    self.dst_buf.as_ref_mut(ctx).sync_load(&self.reduce_buf_h);
+    self.dst_buf.as_ref_mut(ctx).row_vector_scale(1.0 / self.worker_data.num_workers() as f32);
+    ctx.sync();
+
     /*let ctx = &(*self.context).as_ref();
     self.origin_buf.sync_store(&mut self.origin_buf_h, ctx);
     ctx.sync();
