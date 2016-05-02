@@ -606,8 +606,6 @@ impl CommWorker for MpiDistAsyncPullGossipCommWorker {
       return;
     }
 
-    let ctx = &(*self.context).as_ref();
-
     //let self_rank = self.worker_data.worker_rank();
     //let send_rank = self.ranks_range.ind_sample(&mut self.local_rng);
     let recv_rank = self.ranks_range.ind_sample(&mut self.local_rng);
