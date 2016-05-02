@@ -262,6 +262,8 @@ pub struct MpiDistAsyncPushGossipCommWorker {
   buf_len:      usize,
   msg_len:      usize,
   num_buf_msgs: usize,
+  rdma_buf_len: usize,
+  num_rdma_buf_msgs:    usize,
   com_interval: usize,
 
   origin_buf:   RawDeviceBuffer<f32>,
@@ -299,7 +301,8 @@ pub struct MpiDistAsyncPushGossipCommWorker {
 impl MpiDistAsyncPushGossipCommWorker {
   pub fn new(gossip_cfg: GossipConfig, context: Rc<DeviceContext>) -> MpiDistAsyncPushGossipCommWorker {
     // XXX(20160415): Empirically determined message length.
-    let msg_len = 32 * 1024;
+    //let msg_len = 32 * 1024;
+    let msg_len = 4 * 1024 * 1024;
     let num_buf_msgs = (gossip_cfg.buf_size + msg_len - 1) / msg_len;
     let buf_len = gossip_cfg.buf_size; //num_buf_msgs * msg_len;
     // XXX(20160501): For RDMA specifically, the buffer length is increased
@@ -317,8 +320,8 @@ impl MpiDistAsyncPushGossipCommWorker {
     origin_buf.as_ref().async_set_constant(0.0, ctx);
     let reduce_buf = unsafe { RawDeviceBuffer::new(buf_len, ctx) };
     reduce_buf.as_ref().async_set_constant(0.0, ctx);
-    let target_buf = unsafe { RawDeviceBuffer::new(buf_len, ctx) };
-    target_buf.as_ref().async_set_constant(0.0, ctx);
+    //let target_buf = unsafe { RawDeviceBuffer::new(buf_len, ctx) };
+    //target_buf.as_ref().async_set_constant(0.0, ctx);
     let final_buf = unsafe { RawDeviceBuffer::new(buf_len, ctx) };
     final_buf.as_ref().async_set_constant(0.0, ctx);
     ctx.sync();
@@ -455,6 +458,8 @@ impl MpiDistAsyncPushGossipCommWorker {
       buf_len:      buf_len,
       msg_len:      msg_len,
       num_buf_msgs: num_buf_msgs,
+      rdma_buf_len: rdma_buf_len,
+      num_rdma_buf_msgs:    num_rdma_buf_msgs,
       com_interval: 1,
       /*world_group:  world_group,
       solo_groups:  solo_groups,
@@ -585,13 +590,15 @@ impl CommWorker for MpiDistAsyncPushGossipCommWorker {
       // lock here.
       let rdma_win = self.rdma_win.lock().unwrap();
       rdma_win.lock(send_rank, MpiWindowLockMode::Exclusive).unwrap();
-      unsafe { rdma_win.put_accumulate_(
-          self.origin_buf_h.as_ptr(),
-          self.origin_buf_h.len(),
-          send_rank,
-          0,
-          MpiSumOp,
-      ) }.unwrap();
+      for msg in 0 .. self.num_rdma_buf_msgs {
+        unsafe { rdma_win.put_accumulate_(
+            self.origin_buf_h.as_ptr().offset((msg * self.msg_len) as isize),
+            min(self.msg_len, self.rdma_buf_len - msg * self.msg_len),
+            send_rank,
+            msg * self.msg_len,
+            MpiSumOp,
+        ) }.unwrap();
+      }
       rdma_win.unlock(send_rank).unwrap();
 
       /*//println!("DEBUG: async gossip: active thread ({}): round: {} initial send rank: {}", self_rank, self.iter_counter, send_rank);

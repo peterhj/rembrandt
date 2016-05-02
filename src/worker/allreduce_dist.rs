@@ -98,8 +98,8 @@ impl MpiDistSyncAllreduceCommWorker {
     //let msg_len = 32 * 1024;
     let msg_len = 1 * 1024 * 1024;
     let num_buf_msgs = (paramserver_cfg.buf_size + msg_len - 1) / msg_len;
-    let buf_len = num_buf_msgs * msg_len;
-    //let buf_len = paramserver_cfg.buf_size;
+    //let buf_len = num_buf_msgs * msg_len;
+    let buf_len = paramserver_cfg.buf_size;
 
     let ctx = &(*context).as_ref();
     let origin_buf = unsafe { RawDeviceBuffer::new(buf_len, ctx) };
