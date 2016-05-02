@@ -81,11 +81,13 @@ struct MpiDistAsyncPushGossipPassiveWorker {
   num_workers:  usize,
   msg_len:      usize,
   num_buf_msgs: usize,
+  rdma_buf_len: usize,
   state:        AsyncPushGossipPassiveState,
   context:      DeviceContext,
   reduce_buf:   Arc<Mutex<RawDeviceBuffer<f32>>>,
-  target_buf:   Arc<Mutex<RawDeviceBuffer<f32>>>,
-  target_buf_h: Arc<Mutex<Vec<f32>>>,
+  //target_buf:   Arc<Mutex<RawDeviceBuffer<f32>>>,
+  //target_buf_h: Arc<Mutex<Vec<f32>>>,
+  norm_buf_h:   Arc<Mutex<f32>>,
   rdma_buf_h:   Vec<f32>,
   rdma_win:     Arc<Mutex<MpiWindow<f32>>>,
   act2pass_rx:  Receiver<AsyncPushGossipAct2PassMsg>,
@@ -112,23 +114,28 @@ impl MpiDistAsyncPushGossipPassiveWorker {
           // lock here.
           {
             let mut rdma_win = self.rdma_win.lock().unwrap();
-            let mut target_buf_h = self.target_buf_h.lock().unwrap();
+            //let mut target_buf_h = self.target_buf_h.lock().unwrap();
             rdma_win.lock(self.worker_rank, MpiWindowLockMode::Exclusive).unwrap();
-            unsafe { rdma_win.get_(
-                target_buf_h.as_mut_ptr(),
-                target_buf_h.len(),
+            /*unsafe { rdma_win.get_(
+                self.target_buf_h.as_mut_ptr(),
+                self.target_buf_h.len(),
                 self.worker_rank,
                 0,
-            ) };
+            ) };*/
+            let mut norm_buf_h = self.norm_buf_h.lock().unwrap();
+            *norm_buf_h = self.rdma_buf_h[0];
+            let ctx = &self.context.as_ref();
+            let mut reduce_buf = self.reduce_buf.lock().unwrap();
+            reduce_buf.sync_load(&self.rdma_buf_h[1 .. ], ctx);
             rdma_win.unlock(self.worker_rank).unwrap();
           }
 
-          {
+          /*{
             let ctx = &self.context.as_ref();
-            let mut target_buf_h = self.target_buf_h.lock().unwrap();
+            //let mut target_buf_h = self.target_buf_h.lock().unwrap();
             let mut reduce_buf = self.reduce_buf.lock().unwrap();
-            reduce_buf.sync_load(&target_buf_h, ctx);
-          }
+            reduce_buf.sync_load(&self.target_buf_h, ctx);
+          }*/
 
           self.state = AsyncPushGossipPassiveState::Paused;
           match self.pass2act_tx.send(AsyncPushGossipPass2ActMsg::AckPause) {
@@ -138,6 +145,15 @@ impl MpiDistAsyncPushGossipPassiveWorker {
         }
 
         Ok(AsyncPushGossipAct2PassMsg::Resume) => {
+          {
+            let mut rdma_win = self.rdma_win.lock().unwrap();
+            rdma_win.lock(self.worker_rank, MpiWindowLockMode::Exclusive).unwrap();
+            for i in 0 .. self.rdma_buf_len {
+              self.rdma_buf_h[i] = 0.0;
+            }
+            rdma_win.unlock(self.worker_rank).unwrap();
+          }
+
           self.state = AsyncPushGossipPassiveState::Receiving;
         }
 
@@ -250,11 +266,12 @@ pub struct MpiDistAsyncPushGossipCommWorker {
 
   origin_buf:   RawDeviceBuffer<f32>,
   reduce_buf:   Arc<Mutex<RawDeviceBuffer<f32>>>,
-  target_buf:   Arc<Mutex<RawDeviceBuffer<f32>>>,
+  //target_buf:   Arc<Mutex<RawDeviceBuffer<f32>>>,
   final_buf:    RawDeviceBuffer<f32>,
   origin_buf_h: Vec<f32>,
-  target_buf_h: Arc<Mutex<Vec<f32>>>,
+  //target_buf_h: Arc<Mutex<Vec<f32>>>,
   final_buf_h:  Vec<f32>,
+  norm_buf_h:   Arc<Mutex<f32>>,
   rdma_win:     Arc<Mutex<MpiWindow<f32>>>,
 
   //client_conns: VecMap<MpiComm>,
@@ -284,11 +301,11 @@ impl MpiDistAsyncPushGossipCommWorker {
     // XXX(20160415): Empirically determined message length.
     let msg_len = 32 * 1024;
     let num_buf_msgs = (gossip_cfg.buf_size + msg_len - 1) / msg_len;
-    let buf_len = num_buf_msgs * msg_len;
+    let buf_len = gossip_cfg.buf_size; //num_buf_msgs * msg_len;
     // XXX(20160501): For RDMA specifically, the buffer length is increased
     // by one for a normalization value.
     let num_rdma_buf_msgs = (gossip_cfg.buf_size + 1 + msg_len - 1) / msg_len;
-    let rdma_buf_len = num_rdma_buf_msgs * msg_len;
+    let rdma_buf_len = gossip_cfg.buf_size + 1; //num_rdma_buf_msgs * msg_len;
 
     let mpi = Mpi::new_serialized();
     let worker_rank = mpi.rank();
@@ -306,15 +323,20 @@ impl MpiDistAsyncPushGossipCommWorker {
     final_buf.as_ref().async_set_constant(0.0, ctx);
     ctx.sync();
     let reduce_buf = Arc::new(Mutex::new(reduce_buf));
-    let target_buf = Arc::new(Mutex::new(target_buf));
+    //let target_buf = Arc::new(Mutex::new(target_buf));
 
-    let mut origin_buf_h = Vec::with_capacity(buf_len);
-    unsafe { origin_buf_h.set_len(buf_len) };
-    let mut target_buf_h = Vec::with_capacity(buf_len);
-    unsafe { target_buf_h.set_len(buf_len) };
+    let mut origin_buf_h = Vec::with_capacity(rdma_buf_len);
+    unsafe { origin_buf_h.set_len(rdma_buf_len) };
+    origin_buf_h[0] = 1.0;
+
     let mut final_buf_h = Vec::with_capacity(buf_len);
     unsafe { final_buf_h.set_len(buf_len) };
-    let target_buf_h = Arc::new(Mutex::new(target_buf_h));
+
+    //let mut target_buf_h = Vec::with_capacity(buf_len);
+    //unsafe { target_buf_h.set_len(buf_len) };
+    //let target_buf_h = Arc::new(Mutex::new(target_buf_h));
+
+    let mut norm_buf_h = Arc::new(Mutex::new(0.0));
 
     let mut rdma_buf_h = Vec::with_capacity(rdma_buf_len);
     for _ in 0 .. rdma_buf_len {
@@ -384,9 +406,10 @@ impl MpiDistAsyncPushGossipCommWorker {
 
     let passive_thr = {
       let reduce_buf = reduce_buf.clone();
-      let target_buf = target_buf.clone();
-      let target_buf_h = target_buf_h.clone();
+      //let target_buf = target_buf.clone();
+      //let target_buf_h = target_buf_h.clone();
       //let rdma_buf_h = rdma_buf_h;
+      let norm_buf_h = norm_buf_h.clone();
       let rdma_win = rdma_win.clone();
       let recv_count = recv_count.clone();
       let bar_signal = bar_signal.clone();
@@ -396,11 +419,13 @@ impl MpiDistAsyncPushGossipCommWorker {
           num_workers:  num_workers,
           msg_len:      msg_len,
           num_buf_msgs: num_buf_msgs,
+          rdma_buf_len: rdma_buf_len,
           state:        AsyncPushGossipPassiveState::Receiving,
           context:      DeviceContext::new(dev_idx),
           reduce_buf:   reduce_buf,
-          target_buf:   target_buf,
-          target_buf_h: target_buf_h,
+          //target_buf:   target_buf,
+          //target_buf_h: target_buf_h,
+          norm_buf_h:   norm_buf_h,
           rdma_buf_h:   rdma_buf_h,
           rdma_win:     rdma_win,
           act2pass_rx:  act2pass_rx,
@@ -436,12 +461,13 @@ impl MpiDistAsyncPushGossipCommWorker {
       pair_groups:  pair_groups,*/
       origin_buf:   origin_buf,
       reduce_buf:   reduce_buf,
-      target_buf:   target_buf,
+      //target_buf:   target_buf,
       final_buf:    final_buf,
       origin_buf_h: origin_buf_h,
-      target_buf_h: target_buf_h,
+      //target_buf_h: target_buf_h,
       final_buf_h:  final_buf_h,
       //target_win_h: target_win_h,
+      norm_buf_h:   norm_buf_h,
       rdma_win:     rdma_win,
       //client_conns: client_conns,
       //server_conns: server_conns,
@@ -553,7 +579,7 @@ impl CommWorker for MpiDistAsyncPushGossipCommWorker {
     let send_rank = self.ranks_range.ind_sample(&mut self.local_rng);
 
     if self_rank != send_rank {
-      self.origin_buf.sync_store(&mut self.origin_buf_h, ctx);
+      self.origin_buf.sync_store(&mut self.origin_buf_h[1 .. ], ctx);
 
       // FIXME(20160501): transfer the rdma buffer to gpu; need an exclusive
       // lock here.
@@ -603,7 +629,8 @@ impl CommWorker for MpiDistAsyncPushGossipCommWorker {
     {
       //let target_buf = self.target_buf.lock().unwrap();
       let reduce_buf = self.reduce_buf.lock().unwrap();
-      let recv_count = self.recv_count.load(Ordering::Acquire);
+      //let recv_count = self.recv_count.load(Ordering::Acquire);
+      let recv_count = *self.norm_buf_h.lock().unwrap();
 
       let self_weight = if self_rank == send_rank {
         2.0
@@ -613,19 +640,19 @@ impl CommWorker for MpiDistAsyncPushGossipCommWorker {
       /*if self_rank == 0 {
         println!("DEBUG: async push gossip: round: {} recv count: {}", self.iter_counter, recv_count);
       }*/
-      if recv_count == 0 {
+      if recv_count == 0.0 {
         self.origin_buf.raw_send(&self.final_buf, ctx);
       } else {
         reduce_buf.as_ref().async_vector_add(self_weight, &self.origin_buf.as_ref(), ctx);
-        reduce_buf.as_ref().async_vector_scale(1.0 / (recv_count as f32 + self_weight), ctx);
+        reduce_buf.as_ref().async_vector_scale(1.0 / (recv_count + self_weight), ctx);
         reduce_buf.raw_send(&self.final_buf, ctx);
       }
 
       ctx.sync();
 
       // Reset the common atomic counter.
-      self.recv_count.store(0, Ordering::Release);
-      fence(Ordering::AcqRel);
+      //self.recv_count.store(0, Ordering::Release);
+      //fence(Ordering::AcqRel);
     }
 
     match self.act2pass_tx.send(AsyncPushGossipAct2PassMsg::Resume) {
