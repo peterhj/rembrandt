@@ -110,16 +110,25 @@ impl MpiDistAsyncPushGossipPassiveWorker {
         Ok(AsyncPushGossipAct2PassMsg::Pause) => {
           // FIXME(20160501): transfer the rdma buffer to gpu; need an exclusive
           // lock here.
-          let mut rdma_win = self.rdma_win.lock().unwrap();
-          let mut target_buf_h = self.target_buf_h.lock().unwrap();
-          rdma_win.lock(self.worker_rank, MpiWindowLockMode::Exclusive).unwrap();
-          unsafe { rdma_win.get_(
-              target_buf_h.as_mut_ptr(),
-              target_buf_h.len(),
-              self.worker_rank,
-              0,
-          ) };
-          rdma_win.unlock(self.worker_rank).unwrap();
+          {
+            let mut rdma_win = self.rdma_win.lock().unwrap();
+            let mut target_buf_h = self.target_buf_h.lock().unwrap();
+            rdma_win.lock(self.worker_rank, MpiWindowLockMode::Exclusive).unwrap();
+            unsafe { rdma_win.get_(
+                target_buf_h.as_mut_ptr(),
+                target_buf_h.len(),
+                self.worker_rank,
+                0,
+            ) };
+            rdma_win.unlock(self.worker_rank).unwrap();
+          }
+
+          {
+            let ctx = &self.context.as_ref();
+            let mut target_buf_h = self.target_buf_h.lock().unwrap();
+            let mut reduce_buf = self.reduce_buf.lock().unwrap();
+            reduce_buf.sync_load(&target_buf_h, ctx);
+          }
 
           self.state = AsyncPushGossipPassiveState::Paused;
           match self.pass2act_tx.send(AsyncPushGossipPass2ActMsg::AckPause) {
@@ -281,6 +290,10 @@ impl MpiDistAsyncPushGossipCommWorker {
     let num_rdma_buf_msgs = (gossip_cfg.buf_size + 1 + msg_len - 1) / msg_len;
     let rdma_buf_len = num_rdma_buf_msgs * msg_len;
 
+    let mpi = Mpi::new_serialized();
+    let worker_rank = mpi.rank();
+    let num_workers = mpi.size();
+
     let ctx = &(*context).as_ref();
     let dev_idx = ctx.device();
     let origin_buf = unsafe { RawDeviceBuffer::new(buf_len, ctx) };
@@ -309,10 +322,6 @@ impl MpiDistAsyncPushGossipCommWorker {
     }
     let rdma_win = unsafe { MpiWindow::create_(rdma_buf_h.as_mut_ptr(), rdma_buf_h.len()) }.unwrap();
     let rdma_win = Arc::new(Mutex::new(rdma_win));
-
-    let mpi = Mpi::new();
-    let worker_rank = mpi.rank();
-    let num_workers = mpi.size();
 
     /*let service_port = Mpi::open_port_().unwrap();
     let mut service_name_buf = vec![];
