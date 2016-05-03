@@ -608,9 +608,9 @@ impl CommWorker for MpiDistAsyncPullGossipCommWorker {
   }
 
   fn load(&mut self, offset: usize, data: &mut DeviceArray2d<f32>/*, ctx: &DeviceCtxRef*/) {
-    if self.iter_counter % self.com_interval != 0 {
+    /*if self.iter_counter % self.com_interval != 0 {
       return;
-    }
+    }*/
     let ctx = &(*self.context).as_ref();
     let data_len = data.len();
     let data = data.as_view(ctx).data;
@@ -639,10 +639,10 @@ impl CommWorker for MpiDistAsyncPullGossipCommWorker {
     self.src_buf.as_ref_mut(ctx).sync_store(self.pull_target_win.as_mut_slice());
     self.pull_target_win.unlock(self_rank).unwrap();
 
-    if self.iter_counter % self.com_interval != 0 {
+    /*if self.iter_counter % self.com_interval != 0 {
       self.src_buf.as_ref(ctx).send(&mut self.dst_buf.as_ref_mut(ctx));
       return;
-    }
+    }*/
 
     //let self_rank = self.worker_data.worker_rank();
     //let send_rank = self.ranks_range.ind_sample(&mut self.local_rng);
@@ -803,9 +803,9 @@ impl CommWorker for MpiDistAsyncPullGossipCommWorker {
   }
 
   fn store(&mut self, offset: usize, data: &mut DeviceArray2d<f32>/*, ctx: &DeviceCtxRef*/) {
-    if self.iter_counter % self.com_interval != 0 {
+    /*if self.iter_counter % self.com_interval != 0 {
       return;
-    }
+    }*/
     let ctx = &(*self.context).as_ref();
     let data_len = data.len();
     let mut data = data.as_view_mut(ctx).data;

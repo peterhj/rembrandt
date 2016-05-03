@@ -606,9 +606,9 @@ impl CommWorker for MpiDistElasticServerCommWorker {
   }
 
   fn load(&mut self, offset: usize, data: &mut DeviceArray2d<f32>/*, ctx: &DeviceCtxRef*/) {
-    if self.iter_counter % self.com_interval != 0 {
+    /*if self.iter_counter % self.com_interval != 0 {
       return;
-    }
+    }*/
     let ctx = &(*self.context).as_ref();
     let data_len = data.len();
     let data = data.as_view(ctx).data;
@@ -656,9 +656,9 @@ impl CommWorker for MpiDistElasticServerCommWorker {
       assert!(self.rank0_init);
     }
 
-    if self.iter_counter % self.com_interval != 0 {
+    /*if self.iter_counter % self.com_interval != 0 {
       return;
-    }
+    }*/
 
     let ctx = &(*self.context).as_ref();
 
@@ -763,9 +763,9 @@ impl CommWorker for MpiDistElasticServerCommWorker {
   }
 
   fn store(&mut self, offset: usize, data: &mut DeviceArray2d<f32>/*, ctx: &DeviceCtxRef*/) {
-    if self.iter_counter % self.com_interval != 0 {
+    /*if self.iter_counter % self.com_interval != 0 {
       return;
-    }
+    }*/
     let ctx = &(*self.context).as_ref();
     let data_len = data.len();
     let mut data = data.as_view_mut(ctx).data;

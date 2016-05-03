@@ -24,6 +24,7 @@ pub struct SgdOptConfig {
   pub momentum:       Momentum,
   pub l2_reg_coef:    f32,
   pub sync_order:     SyncOrder,
+  pub comm_interval:  usize,
 
   pub display_iters:  usize,
   //pub save_iters:     usize,
@@ -302,7 +303,9 @@ impl SgdOpt {
               }
 
               // Communicate the parameters.
-              operator.sync_params_v2();
+              if iter_counter > 0 && iter_counter % self.config.comm_interval == 0 {
+                operator.sync_params_v2();
+              }
             }
 
             SyncOrder::SyncParamsThenStep => {
@@ -318,7 +321,9 @@ impl SgdOpt {
               }
 
               // Communicate the parameters.
-              operator.sync_params_v2();
+              if iter_counter > 0 && iter_counter % self.config.comm_interval == 0 {
+                operator.sync_params_v2();
+              }
 
               // Apply the update, possibly with momentum.
               match self.config.momentum {
@@ -334,7 +339,9 @@ impl SgdOpt {
 
             SyncOrder::SyncGradsThenStep => {
               // Communicate the gradients.
-              operator.sync_grads_v2();
+              if iter_counter > 0 && iter_counter % self.config.comm_interval == 0 {
+                operator.sync_grads_v2();
+              }
 
               // Compute the update, possibly with momentum.
               match self.config.momentum {

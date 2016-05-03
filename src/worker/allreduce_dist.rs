@@ -188,9 +188,9 @@ impl CommWorker for MpiDistSyncAllreduceCommWorker {
   }
 
   fn load(&mut self, offset: usize, data: &mut DeviceArray2d<f32>/*, ctx: &DeviceCtxRef*/) {
-    if self.iter_counter % self.com_interval != 0 {
+    /*if self.iter_counter % self.com_interval != 0 {
       return;
-    }
+    }*/
     let ctx = &(*self.context).as_ref();
     let data_len = data.len();
     let data = data.as_view(ctx).data;
@@ -209,9 +209,9 @@ impl CommWorker for MpiDistSyncAllreduceCommWorker {
   }
 
   fn communicate(&mut self/*, ctx: &DeviceCtxRef*/) {
-    if self.iter_counter % self.com_interval != 0 {
+    /*if self.iter_counter % self.com_interval != 0 {
       return;
-    }
+    }*/
     let ctx = &(*self.context).as_ref();
     self.origin_buf.sync_store(&mut self.origin_buf_h, ctx);
     ctx.sync();
@@ -264,9 +264,9 @@ impl CommWorker for MpiDistSyncAllreduceCommWorker {
   }
 
   fn store(&mut self, offset: usize, data: &mut DeviceArray2d<f32>/*, ctx: &DeviceCtxRef*/) {
-    if self.iter_counter % self.com_interval != 0 {
+    /*if self.iter_counter % self.com_interval != 0 {
       return;
-    }
+    }*/
     let ctx = &(*self.context).as_ref();
     let data_len = data.len();
     let mut data = data.as_view_mut(ctx).data;
