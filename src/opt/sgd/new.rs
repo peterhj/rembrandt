@@ -1,3 +1,4 @@
+use data::{DataShard, DataIter};
 use data_new::{
   DataIterator,
   SampleDatum, SampleDatumConfig, SampleLabel, SampleLabelConfig, 
@@ -13,9 +14,6 @@ use std::path::{PathBuf};
 use std::sync::{Arc, Barrier};
 use std::sync::atomic::{AtomicUsize, Ordering, fence};
 use time::{get_time};
-
-pub mod async;
-pub mod new;
 
 #[derive(Clone, RustcDecodable, RustcEncodable, Debug)]
 pub struct SgdOptConfig {
@@ -168,7 +166,15 @@ impl SgdOpt {
     }
   }
 
-  pub fn train(&mut self, datum_cfg: SampleDatumConfig, label_cfg: SampleLabelConfig, train_data: &mut DataIterator, valid_data: &mut DataIterator, operator: &mut OperatorWorker) {
+  pub fn train(&mut self,
+      datum_cfg: SampleDatumConfig,
+      label_cfg: SampleLabelConfig,
+      //train_data: &mut DataIterator,
+      //valid_data: &mut DataIterator,
+      mut train_data: &mut DataIter<Item=(SampleDatum, Option<SampleLabel>)>,
+      mut valid_data: Option<&mut DataIter<Item=(SampleDatum, Option<SampleLabel>)>>,
+      operator: &mut OperatorWorker)
+  {
     //assert_eq!(0, self.config.save_iters % self.config.display_iters);
     //assert_eq!(0, self.config.valid_iters % self.config.save_iters);
     assert_eq!(0, self.config.checkpoint_iters % self.config.display_iters);
@@ -178,10 +184,7 @@ impl SgdOpt {
     let rank = operator.worker_rank();
     let minibatch_size = self.config.minibatch_size;
     let minibatch_weight = 1.0 / minibatch_size as f32;
-    let epoch_size = (train_data.max_num_samples() / minibatch_size) * minibatch_size;
-    //let local_minibatch_size = minibatch_size / num_workers;
-    //let local_minibatch_weight = 1.0 / local_minibatch_size as f32;
-    //let epoch_size = (train_data.max_num_samples() / local_minibatch_size) * local_minibatch_size;
+    let epoch_size = train_data.num_shard_samples();
 
     match self.config.init_t {
       None => {
@@ -210,12 +213,14 @@ impl SgdOpt {
     let mut batch_counter = 0;
 
     loop {
-      train_data.each_sample(datum_cfg, label_cfg, &mut |epoch_idx, datum, maybe_label| {
-        if epoch_idx >= epoch_size {
+      //train_data.each_sample(datum_cfg, label_cfg, &mut |epoch_idx, datum, maybe_label| {
+      train_data.reset();
+      for (datum, maybe_label) in &mut train_data {
+        /*if epoch_idx >= epoch_size {
           return;
-        }
+        }*/
 
-        match (label_cfg, maybe_label) {
+        match (label_cfg, maybe_label.as_ref()) {
           (SampleLabelConfig::Category{num_categories}, Some(&SampleLabel::Category{category})) => {
             assert!(category >= 0);
             assert!(category < num_categories);
@@ -223,14 +228,14 @@ impl SgdOpt {
           _ => panic!("SgdOpt: unsupported label"),
         }
         match datum {
-          &SampleDatum::WHCBytes(ref frame_bytes) => {
+          SampleDatum::WHCBytes(ref frame_bytes) => {
             //println!("DEBUG: frame: {:?}", frame_bytes.as_slice());
             operator.input_operator().expose_host_frame_buf(batch_counter)
               .copy_from_slice(frame_bytes.as_slice());
           }
           _ => unimplemented!(),
         }
-        operator.loss_operator(0).stage_label(batch_counter, maybe_label.unwrap());
+        operator.loss_operator(0).stage_label(batch_counter, &maybe_label.unwrap());
         operator.loss_operator(0).stage_weight(batch_counter, minibatch_weight);
         local_counter += 1;
         epoch_counter = local_counter / epoch_size;
@@ -430,7 +435,10 @@ impl SgdOpt {
             if rank == 0 {
               operator.checkpoint_params(iter_counter, &self.config.checkpoint_dir);
             }
-            self.validate(iter_counter, datum_cfg, label_cfg, valid_data, operator);
+            //assert!(valid_data.is_some());
+            if let Some(ref mut valid_data) = valid_data {
+              self.validate(iter_counter, datum_cfg, label_cfg, *valid_data, operator);
+            }
             operator.restore_params();
             self.elapsed_checkpoint_iters += self.config.checkpoint_iters;
             self.local_step_size = self.config.step_size.at_iter(self.elapsed_checkpoint_iters);
@@ -450,18 +458,27 @@ impl SgdOpt {
             _ => {}
           }
         }
-      });
+      }
 
       //epoch_counter += 1;
     }
   }
 
-  pub fn validate(&mut self, iter_counter: usize, datum_cfg: SampleDatumConfig, label_cfg: SampleLabelConfig, valid_data: &mut DataIterator, operator: &mut OperatorWorker) {
+  pub fn validate(&mut self,
+      iter_counter: usize,
+      datum_cfg: SampleDatumConfig,
+      label_cfg: SampleLabelConfig,
+      //valid_data: &mut DataIterator,
+      mut valid_data: &mut DataIter<Item=(SampleDatum, Option<SampleLabel>)>,
+      operator: &mut OperatorWorker)
+  {
     let batch_size = operator.batch_size();
     let num_workers = operator.num_workers();
     let rank = operator.worker_rank();
 
-    let num_samples = valid_data.max_num_samples();
+    //let num_samples = valid_data.max_num_samples();
+    let num_shard_samples = valid_data.num_shard_samples();
+    let num_total_samples = valid_data.num_total_samples();
 
     //info!("DEBUG: validate: num samples: {}", num_samples);
     /*self.shared.acc_correct_count.store(0, Ordering::Release);
@@ -474,8 +491,9 @@ impl SgdOpt {
     let mut start_time = get_time();
     let mut local_counter = 0;
     let mut batch_counter = 0;
-    valid_data.each_sample(datum_cfg, label_cfg, &mut |epoch_idx, datum, maybe_label| {
-      match (label_cfg, maybe_label) {
+    //valid_data.each_sample(datum_cfg, label_cfg, &mut |epoch_idx, datum, maybe_label| {
+    for (datum, maybe_label) in &mut valid_data {
+      match (label_cfg, maybe_label.as_ref()) {
         (SampleLabelConfig::Category{num_categories}, Some(&SampleLabel::Category{category})) => {
           assert!(category >= 0);
           assert!(category < num_categories);
@@ -483,15 +501,15 @@ impl SgdOpt {
         _ => panic!("SgdOpt: unsupported label"),
       }
       match datum {
-        &SampleDatum::WHCBytes(ref frame_bytes) => {
+        SampleDatum::WHCBytes(ref frame_bytes) => {
           //println!("DEBUG: frame: {:?}", frame_bytes.as_slice());
           operator.input_operator().expose_host_frame_buf(batch_counter)
             .copy_from_slice(frame_bytes.as_slice());
         }
         _ => unimplemented!(),
       }
-      operator.loss_operator(0).stage_label(batch_counter, maybe_label.unwrap());
-      operator.loss_operator(0).stage_weight(batch_counter, 1.0 / num_samples as f32);
+      operator.loss_operator(0).stage_label(batch_counter, &maybe_label.unwrap());
+      operator.loss_operator(0).stage_weight(batch_counter, 1.0 / num_total_samples as f32);
       local_counter += 1;
       batch_counter += 1;
 
@@ -511,7 +529,7 @@ impl SgdOpt {
         local_acc_loss += local_loss;
         batch_counter = 0;
       }
-    });
+    }
     if batch_counter > 0 && batch_counter < batch_size {
       let batch_size = batch_counter;
       operator.input_operator().load_frames(batch_size);
@@ -530,7 +548,8 @@ impl SgdOpt {
       batch_counter = 0;
     }
 
-    assert_eq!(local_counter, num_samples);
+    assert_eq!(local_counter, num_shard_samples);
+    assert_eq!(local_acc_total_count, num_shard_samples);
 
     self.shared.sync();
     /*let acc_correct_count = self.shared.acc_correct_count.load(Ordering::Acquire);
@@ -553,7 +572,8 @@ impl SgdOpt {
 
     if rank == 0 {
       info!("SgdOpt: valid: sample count: {} loss: {:.06} accuracy: {:.03} elapsed: {:.03} s",
-          local_acc_total_count,
+          //local_acc_total_count,
+          num_total_samples,
           loss,
           accuracy,
           elapsed_ms as f32 * 0.001,

@@ -75,6 +75,7 @@ impl SampleDatumConfig {
 pub enum SampleDatum {
   WHCBytes(Array3d<u8>),
   CWHBytes(Array3d<u8>),
+  JpegBuffer(Vec<u8>),
 }
 
 #[derive(Clone, Copy, Debug)]

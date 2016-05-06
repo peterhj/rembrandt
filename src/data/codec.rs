@@ -1,7 +1,7 @@
 use data_new::{SampleDatum};
 
 use array_new::{ArrayZeroExt, Array3d};
-use image::{GenericImage, DynamicImage, ImageFormat, load};
+//use image::{GenericImage, DynamicImage, ImageFormat, load};
 
 use std::io::{Read, Cursor};
 
@@ -11,7 +11,15 @@ pub trait DataCodec {
   fn decode(&self, value: &[u8]) -> SampleDatum;
 }
 
-pub struct PngDataCodec;
+pub struct JpegDataCodec;
+
+impl DataCodec for JpegDataCodec {
+  fn decode(&self, jpeg_value: &[u8]) -> SampleDatum {
+    SampleDatum::JpegBuffer(jpeg_value.to_vec())
+  }
+}
+
+/*pub struct PngDataCodec;
 
 impl DataCodec for PngDataCodec {
   //type Output = Array3d<u8>;
@@ -46,4 +54,4 @@ impl DataCodec for PngDataCodec {
 
     SampleDatum::CWHBytes(image_arr)
   }
-}
+}*/

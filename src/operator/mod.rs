@@ -98,6 +98,8 @@ pub trait InputOperator: Operator {
   fn downcast(&self) -> &Operator;
   fn expose_host_frame_buf(&mut self, batch_idx: usize) -> &mut [u8];
   fn load_frames(&mut self, batch_size: usize);
+  fn stage_shape(&mut self, batch_idx: usize, shape: (usize, usize, usize));
+  //fn load_shapes(&mut self, batch_size: usize);
 }
 
 pub enum OperatorNode {
@@ -546,8 +548,8 @@ impl Data3dOperator {
                     crop_width, crop_height, in_channels, batch_size,
                 ).unwrap(),
             ),
-            woff_range: Range::new(0, max_offset_w),
-            hoff_range: Range::new(0, max_offset_h),
+            woff_range: Range::new(0, max_offset_w + 1),
+            hoff_range: Range::new(0, max_offset_h + 1),
           });
         }
         &Data3dPreproc::FlipX => {
@@ -749,6 +751,8 @@ impl Operator for Data3dOperator {
                   src_buf.send(&mut target_buf);
                 }
                 1 => {
+                  // FIXME(20160504): this version of flip comes _before_ crop.
+                  assert!(in_width <= 256);
                   unsafe { rembrandt_kernel_batch_blockmap256_flip(
                       src_buf.as_ptr(),
                       in_width as i32,
@@ -808,6 +812,17 @@ impl InputOperator for Data3dOperator {
       in_buf.sync_load(in_buf_h);
     }
   }
+
+  fn stage_shape(&mut self, batch_idx: usize, shape: (usize, usize, usize)) {
+    // Do nothing, but check that the input shape is correct.
+    assert!(batch_idx < self.batch_cap);
+    assert_eq!(shape, self.config.in_dims);
+  }
+
+  /*fn load_shapes(&mut self, batch_size: usize) {
+    // Do nothing.
+    assert!(batch_size <= self.batch_cap);
+  }*/
 }
 
 #[derive(Clone, Copy, Debug)]

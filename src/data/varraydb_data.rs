@@ -20,6 +20,22 @@ pub struct VarrayDbShard<Codec> {
 }
 
 impl<Codec> VarrayDbShard<Codec> where Codec: DataCodec {
+  pub fn open_range(data_path: &Path, labels_path: &Path, codec: Codec, start_idx: usize, end_idx: usize) -> Self {
+    let mut data = VarrayDb::open(data_path).unwrap();
+    let mut labels = VarrayDb::open(labels_path).unwrap();
+    assert_eq!(data.len(), labels.len());
+    let length = data.len();
+    data.prefetch_range(start_idx, end_idx);
+    labels.prefetch_range(start_idx, end_idx);
+    VarrayDbShard{
+      start_idx:    start_idx,
+      end_idx:      end_idx,
+      codec:    codec,
+      data:     data,
+      labels:   labels,
+    }
+  }
+
   pub fn open_partition(data_path: &Path, labels_path: &Path, codec: Codec, part: usize, num_parts: usize) -> Self {
     let mut data = VarrayDb::open(data_path).unwrap();
     let mut labels = VarrayDb::open(labels_path).unwrap();

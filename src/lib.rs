@@ -6,6 +6,7 @@ extern crate arraydb;
 //extern crate async;
 //extern crate async_cuda;
 extern crate cuda_dnn;
+//extern crate epeg;
 extern crate episodb;
 //extern crate linalg;
 extern crate lmdb;
@@ -16,7 +17,9 @@ extern crate openmpi as mpi;
 extern crate protobuf;
 extern crate rembrandt_kernels;
 extern crate rng;
+extern crate stb_image;
 extern crate toggle;
+extern crate turbojpeg;
 extern crate varraydb;
 extern crate worker as worker_;
 
@@ -24,7 +27,7 @@ extern crate worker as worker_;
 extern crate log;
 extern crate byteorder;
 extern crate env_logger;
-extern crate image;
+//extern crate image;
 extern crate memmap;
 extern crate rand;
 extern crate rustc_serialize;
@@ -34,7 +37,7 @@ extern crate toml;
 extern crate vec_map;
 
 #[macro_use]
-pub mod util;
+pub mod util_macros;
 pub mod caffe_proto;
 //pub mod config;
 //pub mod data;
