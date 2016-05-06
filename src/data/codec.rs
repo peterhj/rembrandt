@@ -32,6 +32,14 @@ impl DataCodec for Array3dDataCodec {
   }
 }
 
+pub struct FakeJpegDataCodec;
+
+impl DataCodec for FakeJpegDataCodec {
+  fn decode(&mut self, _value: &[u8]) -> SampleDatum {
+    SampleDatum::WHCBytes(Array3d::zeros((256, 256, 3)))
+  }
+}
+
 pub struct RawJpegDataCodec;
 
 impl DataCodec for RawJpegDataCodec {

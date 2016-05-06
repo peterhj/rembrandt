@@ -2,7 +2,7 @@
 name = "rembrandt"
 version = "0.4.0"
 authors = ["Peter Jin <peterhaijin@gmail.com>"]
-#build = "build.rs"
+build = "build_titan.rs"
 
 [lib]
 name = "rembrandt"
@@ -65,8 +65,8 @@ path = "tools/test-varraydb.rs"
 #path = "tools/dist-train-imagenet.rs"
 
 [[bin]]
-name = "new-dist-train-imagenet"
-path = "tools/new-dist-train-imagenet.rs"
+name = "new-dist-train-imagenet-titan"
+path = "tools/new-dist-train-imagenet-titan.rs"
 
 #[[bin]]
 #name = "dist-train-imagenet-shuf"
