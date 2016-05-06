@@ -1,6 +1,6 @@
 //extern crate array;
 extern crate array_cuda;
-extern crate array_dist;
+//extern crate array_dist;
 extern crate array_new;
 extern crate arraydb;
 //extern crate async;
