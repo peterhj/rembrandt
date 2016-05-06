@@ -1,21 +1,105 @@
 use data_new::{SampleDatum};
 
-use array_new::{ArrayZeroExt, Array3d};
+use array_new::{ArrayZeroExt, NdArraySerialize, Array3d};
 //use image::{GenericImage, DynamicImage, ImageFormat, load};
+use stb_image::image::{Image, LoadResult, load_from_memory};
+use turbojpeg::{TurbojpegDecoder, TurbojpegEncoder};
 
 use std::io::{Read, Cursor};
 
 pub trait DataCodec {
   //type Output;
 
-  fn decode(&self, value: &[u8]) -> SampleDatum;
+  fn decode(&mut self, value: &[u8]) -> SampleDatum;
 }
 
-pub struct JpegDataCodec;
+pub struct Array3dDataCodec;
+
+impl Array3dDataCodec {
+  pub fn new() -> Array3dDataCodec {
+    Array3dDataCodec
+  }
+}
+
+impl DataCodec for Array3dDataCodec {
+  fn decode(&mut self, ndarr_value: &[u8]) -> SampleDatum {
+    let mut reader = Cursor::new(ndarr_value);
+    let arr: Array3d<u8> = match NdArraySerialize::deserialize(&mut reader) {
+      Err(_) => panic!("array3d codec: failed to deserialize"),
+      Ok(arr) => arr,
+    };
+    SampleDatum::WHCBytes(arr)
+  }
+}
+
+pub struct RawJpegDataCodec;
+
+impl DataCodec for RawJpegDataCodec {
+  fn decode(&mut self, jpeg_value: &[u8]) -> SampleDatum {
+    SampleDatum::JpegBuffer(jpeg_value.to_vec())
+  }
+}
+
+pub struct JpegDataCodec {
+  turbo_decoder:    TurbojpegDecoder,
+}
+
+impl JpegDataCodec {
+  pub fn new() -> JpegDataCodec {
+    let mut decoder = TurbojpegDecoder::create().unwrap();
+    JpegDataCodec{
+      turbo_decoder:    decoder,
+    }
+  }
+}
 
 impl DataCodec for JpegDataCodec {
-  fn decode(&self, jpeg_value: &[u8]) -> SampleDatum {
-    SampleDatum::JpegBuffer(jpeg_value.to_vec())
+  fn decode(&mut self, jpeg_value: &[u8]) -> SampleDatum {
+    let (pixels, width, height) = match self.turbo_decoder.decode_rgb8(jpeg_value) {
+      Err(_) => {
+        match load_from_memory(jpeg_value) {
+          LoadResult::Error(_) |
+          LoadResult::ImageF32(_) => {
+            panic!("jpeg codec: backup stb_image decoder failed");
+          }
+          LoadResult::ImageU8(mut im) => {
+            if im.depth != 3 && im.depth != 1 {
+              panic!("jpeg codec: unsupported depth: {}", im.depth);
+            }
+            assert_eq!(im.depth * im.width * im.height, im.data.len());
+
+            if im.depth == 1 {
+              let mut rgb_data = Vec::with_capacity(3 * im.width * im.height);
+              assert_eq!(im.width * im.height, im.data.len());
+              for i in 0 .. im.data.len() {
+                rgb_data.push(im.data[i]);
+                rgb_data.push(im.data[i]);
+                rgb_data.push(im.data[i]);
+              }
+              assert_eq!(3 * im.width * im.height, rgb_data.len());
+              im = Image::new(im.width, im.height, 3, rgb_data);
+            }
+            assert_eq!(3, im.depth);
+
+            (im.data, im.width, im.height)
+          }
+        }
+      }
+      Ok((head, pixels)) => {
+        (pixels, head.width, head.height)
+      }
+    };
+    let mut transp_pixels = Vec::with_capacity(pixels.len());
+    for c in 0 .. 3 {
+      for y in 0 .. height {
+        for x in 0 .. width {
+          transp_pixels.push(pixels[c + x * 3 + y * 3 * width]);
+        }
+      }
+    }
+    assert_eq!(pixels.len(), transp_pixels.len());
+    let arr = Array3d::with_data(transp_pixels, (width, height, 3));
+    SampleDatum::WHCBytes(arr)
   }
 }
 

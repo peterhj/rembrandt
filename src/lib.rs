@@ -57,4 +57,5 @@ pub mod data;
 pub mod operator;
 pub mod opt;
 pub mod templates;
+pub mod util;
 pub mod worker;

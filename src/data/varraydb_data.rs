@@ -1,6 +1,7 @@
 use data::{DataShard, IndexedDataShard};
 use data::codec::{DataCodec};
 use data_new::{SampleDatum, SampleLabel};
+use util::{partition_range};
 
 use array_new::{Array3d};
 use byteorder::{ReadBytesExt, LittleEndian};
@@ -25,8 +26,8 @@ impl<Codec> VarrayDbShard<Codec> where Codec: DataCodec {
     let mut labels = VarrayDb::open(labels_path).unwrap();
     assert_eq!(data.len(), labels.len());
     let length = data.len();
-    data.prefetch_range(start_idx, end_idx);
-    labels.prefetch_range(start_idx, end_idx);
+    //data.prefetch_range(start_idx, end_idx);
+    //labels.prefetch_range(start_idx, end_idx);
     VarrayDbShard{
       start_idx:    start_idx,
       end_idx:      end_idx,
@@ -40,12 +41,14 @@ impl<Codec> VarrayDbShard<Codec> where Codec: DataCodec {
     let mut data = VarrayDb::open(data_path).unwrap();
     let mut labels = VarrayDb::open(labels_path).unwrap();
     assert_eq!(data.len(), labels.len());
-    let length = data.len();
+    /*let length = data.len();
     let part_len = (length + num_parts - 1) / num_parts;
     let start_idx = part * part_len;
-    let end_idx = min(length, (part+1) * part_len);
-    data.prefetch_range(start_idx, end_idx);
-    labels.prefetch_range(start_idx, end_idx);
+    let end_idx = min(length, (part+1) * part_len);*/
+    let part_bounds = partition_range(data.len(), num_parts);
+    let (start_idx, end_idx) = part_bounds[part];
+    //data.prefetch_range(start_idx, end_idx);
+    //labels.prefetch_range(start_idx, end_idx);
     VarrayDbShard{
       start_idx:    start_idx,
       end_idx:      end_idx,

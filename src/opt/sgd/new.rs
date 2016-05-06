@@ -5,8 +5,10 @@ use data_new::{
 };
 use operator::{Operator, OpPhase, Regularization};
 use operator::worker::{OperatorWorker};
+use opt::sgd::{SgdOptConfig, StepSizeSchedule, Momentum, SyncOrder, OptSharedData};
 
 //use array_cuda::device::context::{DeviceCtxRef};
+use array_new::{Shape};
 
 use std::fs::{File, OpenOptions, create_dir_all};
 use std::io::{Write, BufWriter};
@@ -15,7 +17,7 @@ use std::sync::{Arc, Barrier};
 use std::sync::atomic::{AtomicUsize, Ordering, fence};
 use time::{get_time};
 
-#[derive(Clone, RustcDecodable, RustcEncodable, Debug)]
+/*#[derive(Clone, RustcDecodable, RustcEncodable, Debug)]
 pub struct SgdOptConfig {
   pub init_t:         Option<usize>,
   pub minibatch_size: usize,
@@ -119,7 +121,7 @@ impl OptSharedData {
     self.barrier.wait();
     fence(Ordering::AcqRel);
   }
-}
+}*/
 
 pub struct SgdOpt {
   config:   SgdOptConfig,
@@ -230,7 +232,11 @@ impl SgdOpt {
         match datum {
           SampleDatum::WHCBytes(ref frame_bytes) => {
             //println!("DEBUG: frame: {:?}", frame_bytes.as_slice());
-            operator.input_operator().expose_host_frame_buf(batch_counter)
+            let frame_len = frame_bytes.bound().len();
+            operator.input_operator()
+              .stage_shape(batch_counter, frame_bytes.bound());
+            operator.input_operator()
+              .expose_host_frame_buf(batch_counter)[ .. frame_len]
               .copy_from_slice(frame_bytes.as_slice());
           }
           _ => unimplemented!(),
@@ -492,7 +498,7 @@ impl SgdOpt {
     let mut local_counter = 0;
     let mut batch_counter = 0;
     //valid_data.each_sample(datum_cfg, label_cfg, &mut |epoch_idx, datum, maybe_label| {
-    for (datum, maybe_label) in &mut valid_data {
+    for (datum, maybe_label) in (&mut valid_data).take(num_shard_samples) {
       match (label_cfg, maybe_label.as_ref()) {
         (SampleLabelConfig::Category{num_categories}, Some(&SampleLabel::Category{category})) => {
           assert!(category >= 0);
@@ -503,7 +509,11 @@ impl SgdOpt {
       match datum {
         SampleDatum::WHCBytes(ref frame_bytes) => {
           //println!("DEBUG: frame: {:?}", frame_bytes.as_slice());
-          operator.input_operator().expose_host_frame_buf(batch_counter)
+          let frame_len = frame_bytes.bound().len();
+          operator.input_operator()
+            .stage_shape(batch_counter, frame_bytes.bound());
+          operator.input_operator()
+            .expose_host_frame_buf(batch_counter)[ .. frame_len]
             .copy_from_slice(frame_bytes.as_slice());
         }
         _ => unimplemented!(),
@@ -561,7 +571,7 @@ impl SgdOpt {
     operator.allreduce(&local_stats, &mut total_stats);
 
     let accuracy = total_stats[1] / total_stats[2];
-    let loss = total_stats[3] / total_stats[0];
+    let loss = total_stats[3];
 
     let lap_time = get_time();
     let elapsed_ms = (lap_time - start_time).num_milliseconds();

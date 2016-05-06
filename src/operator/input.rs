@@ -40,7 +40,7 @@ use rand::distributions::{IndependentSample};
 use rand::distributions::normal::{Normal};
 use rand::distributions::range::{Range};
 use std::cell::{RefCell};
-use std::cmp::{max};
+use std::cmp::{max, min};
 use std::io::{Cursor};
 use std::iter::{repeat};
 use std::marker::{PhantomData};
@@ -64,14 +64,15 @@ pub enum VarData3dPreprocConfig {
   },
   FlipX,
   ScaleBicubic{
-    scale_width:    usize,
-    scale_height:   usize,
+    scale_lower:    usize,
+    scale_upper:    usize,
   },
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct VarData3dOperatorConfig {
-  pub max_in_dims:  (usize, usize, usize),
+  //pub max_in_dims:  (usize, usize, usize),
+  pub in_stride:    usize,
   pub out_dims:     (usize, usize, usize),
   pub normalize:    bool,
   pub preprocs:     Vec<VarData3dPreprocConfig>,
@@ -151,12 +152,13 @@ pub struct VarData3dOperator {
 impl VarData3dOperator {
   pub fn new(batch_size: usize, config: VarData3dOperatorConfig, context: Rc<DeviceContext>) -> VarData3dOperator {
     let ctx = &(*context).as_ref();
-    let in_dims = config.max_in_dims;
+    /*let in_dims = config.max_in_dims;
     let (in_width, in_height, in_channels) = in_dims;
-    let in_frame_len = in_dims.len();
+    let in_frame_len = in_dims.len();*/
+    let in_stride = config.in_stride;
     let out_dims = config.out_dims;
     let out_frame_len = out_dims.len();
-    let max_frame_len = max(in_frame_len, out_frame_len);
+    let max_frame_len = max(in_stride, out_frame_len);
 
     let mut preprocs = Vec::with_capacity(config.preprocs.len());
     for preproc_cfg in config.preprocs.iter() {
@@ -193,23 +195,6 @@ impl VarData3dOperator {
 
         &VarData3dPreprocConfig::Crop{crop_width, crop_height} => {
           preprocs.push(VarData3dPreprocState::Crop);
-          /*// FIXME(20160407): this formulation is only valid for a single
-          // crop, as it references `in_dims`.
-          let max_offset_w = in_width - crop_width;
-          let max_offset_h = in_height - crop_height;
-          preprocs.push(VarData3dPreprocState::Crop{
-            transform:  CudnnTransformOp::new(
-                CudnnTensorDesc::<f32>::create_4d_strided(
-                    crop_width, crop_height, in_channels, batch_size,
-                    1, in_width, in_width * in_height, in_width * in_height * in_channels,
-                ).unwrap(),
-                CudnnTensorDesc::<f32>::create_4d(
-                    crop_width, crop_height, in_channels, batch_size,
-                ).unwrap(),
-            ),
-            woff_range: Range::new(0, max_offset_w + 1),
-            hoff_range: Range::new(0, max_offset_h + 1),
-          });*/
         }
 
         &VarData3dPreprocConfig::FlipX => {
@@ -228,8 +213,8 @@ impl VarData3dOperator {
       batch_cap:    batch_size,
       config:       config,
       context:      context.clone(),
-      in_buf_h:     repeat(0).take(in_frame_len * batch_size).collect(),
-      in_buf:       DeviceBuffer::zeros(in_frame_len * batch_size, ctx),
+      in_buf_h:     repeat(0).take(in_stride * batch_size).collect(),
+      in_buf:       DeviceBuffer::zeros(in_stride * batch_size, ctx),
       in_shapes:    repeat((0, 0, 0)).take(batch_size).collect(),
       in_widths_h:  repeat(0).take(batch_size).collect(),
       in_heights_h: repeat(0).take(batch_size).collect(),
@@ -239,8 +224,9 @@ impl VarData3dOperator {
       in_y_offsets_h:   repeat(0).take(batch_size).collect(),
       in_x_offsets: DeviceBuffer::zeros(batch_size, ctx),
       in_y_offsets: DeviceBuffer::zeros(batch_size, ctx),
-      tmp_buf:      DeviceBuffer::zeros(max_frame_len * batch_size, ctx),
-      out_buf:      Rc::new(RefCell::new(DeviceBuffer::zeros(max_frame_len * batch_size, ctx))),
+      // FIXME(20160506): assuming `in_stride` is larger than `out_stride`.
+      tmp_buf:      DeviceBuffer::zeros(in_stride * batch_size, ctx),
+      out_buf:      Rc::new(RefCell::new(DeviceBuffer::zeros(in_stride * batch_size, ctx))),
       rng:          Xorshiftplus128Rng::new(&mut thread_rng()),
       preprocs:     preprocs,
     }
@@ -264,9 +250,9 @@ impl Operator for VarData3dOperator {
     assert!(batch_size <= self.batch_cap);
     let ctx = &(*self.context).as_ref();
 
-    let max_in_dims = self.config.max_in_dims;
-    let (max_in_width, max_in_height, max_in_channels) = max_in_dims;
-    let in_stride = max_in_dims.len();
+    /*let max_in_dims = self.config.max_in_dims;
+    let (max_in_width, max_in_height, max_in_channels) = max_in_dims;*/
+    let in_stride = self.config.in_stride;
     let out_dims = self.config.get_out_dims();
     let (out_width, out_height, out_channels) = out_dims;
 
@@ -327,7 +313,7 @@ impl Operator for VarData3dOperator {
         ( &VarData3dPreprocConfig::Crop{crop_width, crop_height},
           &mut VarData3dPreprocState::Crop,
         ) => {
-          for batch_idx in 0 .. batch_size {
+          /*for batch_idx in 0 .. batch_size {
             let (in_width, in_height, _) = self.in_shapes[batch_idx];
             let (offset_w, offset_h) = match phase {
               OpPhase::Inference => {
@@ -365,7 +351,39 @@ impl Operator for VarData3dOperator {
               crop_width as i32,
               crop_height as i32,
               ctx.stream.ptr,
-          ) };
+          ) };*/
+
+          let target_stride = crop_width * crop_height * out_channels;
+          for batch_idx in 0 .. batch_size {
+            let (in_width, in_height, _) = self.in_shapes[batch_idx];
+            assert!(in_width >= crop_width);
+            assert!(in_height >= crop_height);
+            let (offset_w, offset_h) = match phase {
+              OpPhase::Inference => {
+                let offset_w = (in_width - crop_width) / 2;
+                let offset_h = (in_height - crop_height) / 2;
+                (offset_w, offset_h)
+              }
+              OpPhase::Training{..} => {
+                let offset_w = self.rng.gen_range(0, in_width - crop_width + 1);
+                let offset_h = self.rng.gen_range(0, in_height - crop_height + 1);
+                (offset_w, offset_h)
+              }
+            };
+            unsafe { rembrandt_kernel_image3_crop(
+                src_buf.as_ptr().offset((batch_idx * in_stride) as isize),
+                in_width as i32,
+                in_height as i32,
+                out_channels as i32,
+                offset_w as i32,
+                offset_h as i32,
+                target_buf.as_mut_ptr().offset((batch_idx * target_stride) as isize),
+                crop_width as i32,
+                crop_height as i32,
+                ctx.stream.ptr,
+            ) };
+          }
+
           for batch_idx in 0 .. batch_size {
             self.in_shapes[batch_idx] = (crop_width, crop_height, out_channels);
           }
@@ -400,22 +418,47 @@ impl Operator for VarData3dOperator {
           }
         }
 
-        ( &VarData3dPreprocConfig::ScaleBicubic{scale_width, scale_height},
-          &mut VarData3dPreprocState::ScaleBicubic{..},
+        ( &VarData3dPreprocConfig::ScaleBicubic{scale_lower, scale_upper},
+          &mut VarData3dPreprocState::ScaleBicubic,
         ) => {
           // FIXME(20160504): should use a batch bicubic scale.
           for batch_idx in 0 .. batch_size {
+            let scale_dim = match phase {
+              OpPhase::Inference => {
+                scale_lower
+              }
+              OpPhase::Training{..} => {
+                self.rng.gen_range(scale_lower, scale_upper + 1)
+              }
+            };
+            assert!(scale_dim >= scale_lower);
+            assert!(scale_dim <= scale_upper);
             let (in_width, in_height, _) = self.in_shapes[batch_idx];
-            unsafe { rembrandt_kernel_image3_bicubic_scale(
-                src_buf.as_ptr().offset((batch_idx * in_stride) as isize),
-                in_width as i32,
-                in_height as i32,
-                out_channels as i32,
-                target_buf.as_mut_ptr().offset((batch_idx * in_stride) as isize),
-                scale_width as i32,
-                scale_height as i32,
-                ctx.stream.ptr,
-            ) };
+            assert!(in_width > 0);
+            assert!(in_height > 0);
+            let min_dim = min(in_width, in_height);
+            let (scale_width, scale_height) = if min_dim == in_width {
+              (scale_dim, (scale_dim as f32 / in_width as f32 * in_height as f32).round() as usize)
+            } else if min_dim == in_height {
+              ((scale_dim as f32 / in_height as f32 * in_width as f32).round() as usize, scale_dim)
+            } else {
+              unreachable!();
+            };
+            if in_width == scale_width && in_height == scale_height {
+              src_buf.range(batch_idx * in_stride, (batch_idx+1) * in_stride)
+                .send(&mut target_buf.mut_range(batch_idx * in_stride, (batch_idx+1) * in_stride));
+            } else {
+              unsafe { rembrandt_kernel_image3_catmullrom_scale(
+                  src_buf.as_ptr().offset((batch_idx * in_stride) as isize),
+                  in_width as i32,
+                  in_height as i32,
+                  out_channels as i32,
+                  target_buf.as_mut_ptr().offset((batch_idx * in_stride) as isize),
+                  scale_width as i32,
+                  scale_height as i32,
+                  ctx.stream.ptr,
+              ) };
+            }
             self.in_shapes[batch_idx] = (scale_width, scale_height, out_channels);
           }
         }
@@ -437,7 +480,7 @@ impl InputOperator for VarData3dOperator {
 
   fn expose_host_frame_buf(&mut self, batch_idx: usize) -> &mut [u8] {
     assert!(batch_idx < self.batch_cap);
-    let frame_len = self.config.max_in_dims.len();
+    let frame_len = self.config.in_stride;
     &mut self.in_buf_h[batch_idx * frame_len .. (batch_idx + 1) * frame_len]
   }
 
@@ -454,9 +497,10 @@ impl InputOperator for VarData3dOperator {
 
   fn stage_shape(&mut self, batch_idx: usize, shape: (usize, usize, usize)) {
     assert!(batch_idx < self.batch_cap);
-    assert!(shape.0 <= self.config.max_in_dims.0);
+    /*assert!(shape.0 <= self.config.max_in_dims.0);
     assert!(shape.1 <= self.config.max_in_dims.1);
-    assert_eq!(shape.2, self.config.max_in_dims.2);
+    assert_eq!(shape.2, self.config.max_in_dims.2);*/
+    assert!(shape.len() <= self.config.in_stride);
     self.in_shapes[batch_idx] = shape;
   }
 

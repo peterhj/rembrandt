@@ -8,6 +8,10 @@ use operator::conv::{
   ProjStackResConv2dOperatorConfig,
   ProjStackResConv2dOperator,
 };
+use operator::input::{
+  VarData3dOperatorConfig,
+  VarData3dOperator,
+};
 use operator::loss::{
   LossOperator,
   CategoricalLossConfig,
@@ -114,6 +118,7 @@ pub enum OperatorNode {
 //pub enum OperatorConfig<Comm> {
 pub enum OperatorConfig {
   Data3d(Data3dOperatorConfig),
+  VarData3d(VarData3dOperatorConfig),
   Affine(AffineOperatorConfig),
   Conv2d(Conv2dOperatorConfig),
   BNormConv2d(BNormConv2dOperatorConfig),
@@ -183,6 +188,9 @@ impl OperatorConfig {
       }
       &OperatorConfig::Data3d(ref cfg) => {
         OperatorNode::Input(Box::new(Data3dOperator::new(batch_size, cfg.clone(), context)))
+      }
+      &OperatorConfig::VarData3d(ref cfg) => {
+        OperatorNode::Input(Box::new(VarData3dOperator::new(batch_size, cfg.clone(), context)))
       }
       &OperatorConfig::SoftmaxKLLoss(ref cfg) => {
         OperatorNode::Loss(Box::new(SoftmaxKLLossOperator::new(batch_size, *cfg, prev_op, context)))

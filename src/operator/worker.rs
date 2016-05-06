@@ -20,6 +20,9 @@ use operator::conv::{
   BotResConv2dOperatorConfig,
   ProjBotResConv2dOperatorConfig,
 };
+use operator::input::{
+  VarData3dOperatorConfig,
+};
 use operator::loss::{
   LossOperator,
   CategoricalLossConfig,
@@ -160,6 +163,11 @@ impl SequentialOperatorConfig {
 
   pub fn data3d(&mut self, cfg: Data3dOperatorConfig) -> &mut Self {
     self.input_op = Some(OperatorConfig::Data3d(cfg));
+    self
+  }
+
+  pub fn var_data3d(&mut self, cfg: VarData3dOperatorConfig) -> &mut Self {
+    self.input_op = Some(OperatorConfig::VarData3d(cfg));
     self
   }
 

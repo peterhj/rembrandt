@@ -1,4 +1,6 @@
-pub fn partition_range(parts: usize, upper_bound: usize) -> Vec<(usize, usize)> {
+use std::cmp::{min};
+
+pub fn partition_range(upper_bound: usize, parts: usize) -> Vec<(usize, usize)> {
   let mut ranges = Vec::with_capacity(parts);
   let mut offset = 0;
   for p in 0 .. parts {
