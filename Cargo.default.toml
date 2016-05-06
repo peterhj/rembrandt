@@ -1,0 +1,144 @@
+[package]
+name = "rembrandt"
+version = "0.4.0"
+authors = ["Peter Jin <peterhaijin@gmail.com>"]
+#build = "build.rs"
+
+[lib]
+name = "rembrandt"
+path = "src/lib.rs"
+
+#[[bin]]
+#name = "test-mpich"
+#path = "tools/test-mpich.rs"
+
+#[[bin]]
+#name = "test-openmpi"
+#path = "tools/test-openmpi.rs"
+
+[[bin]]
+name = "sleep-test"
+path = "tools/sleep-test.rs"
+
+[[bin]]
+name = "dump-array3d-header"
+path = "tools/dump-array3d-header.rs"
+
+[[bin]]
+name = "load-array3d"
+path = "tools/load-array3d.rs"
+
+[[bin]]
+name = "calculate-cifar10-mean"
+path = "tools/calculate-cifar10-mean.rs"
+
+[[bin]]
+name = "test-lmdb"
+path = "tools/test-lmdb.rs"
+
+[[bin]]
+name = "test-varraydb"
+path = "tools/test-varraydb.rs"
+
+#[[bin]]
+#name = "train-mnist"
+#path = "tools/train-mnist.rs"
+
+#[[bin]]
+#name = "train-cifar10"
+#path = "tools/train-cifar10.rs"
+
+#[[bin]]
+#name = "train-imagenet"
+#path = "tools/train-imagenet.rs"
+
+#[[bin]]
+#name = "train-gogod"
+#path = "tools/train-gogod.rs"
+
+#[[bin]]
+#name = "dist-train-mnist"
+#path = "tools/dist-train-mnist.rs"
+
+[[bin]]
+name = "dist-train-imagenet"
+path = "tools/dist-train-imagenet.rs"
+
+[[bin]]
+name = "new-dist-train-imagenet"
+path = "tools/new-dist-train-imagenet.rs"
+
+#[[bin]]
+#name = "dist-train-imagenet-shuf"
+#path = "tools/dist-train-imagenet-shuf.rs"
+
+#[[bin]]
+#name = "bench-kernels"
+#path = "tools/bench-kernels.rs"
+
+#[[bin]]
+#name = "bench-cudnn"
+#path = "tools/bench-cudnn.rs"
+
+#[[bin]]
+#name = "bench-cublas"
+#path = "tools/bench-cublas.rs"
+
+#[[bin]]
+#name = "run-rembrandt"
+#path = "tools/run-rembrandt.rs"
+
+[dependencies]
+byteorder = "*"
+env_logger = "*"
+#image = { path = "../image" }
+libc = "*"
+log = "*"
+memmap = "*"
+protobuf = { path = "../rust-protobuf" }
+rand = "*"
+rustc-serialize = "*"
+#sdl2 = { path = "../rust-sdl2" }
+#sdl2_image = { path = "../rust-sdl2_image" }
+threadpool = "*"
+time = "*"
+#toggle = "*"
+toggle = { path = "../../libtoggle" }
+toml = { path = "../third_party/toml-rs" }
+vec_map = "*"
+
+array_cuda = { path = "../libarray_cuda" }
+array_dist = { path = "../libarray_dist" }
+array_new = { path = "../libarray_new" }
+arraydb = { path = "../arraydb" }
+cuda = { path = "../libcuda" }
+cuda_dnn = { path = "../libcuda_dnn" } #, features = ["cudnn_v3"] }
+#epeg = { path = "../libepeg" }
+episodb = { path = "../../episodb" }
+lmdb = { path = "../liblmdb" }
+#mpich = { path = "../../libmpich" }
+openmpi = { path = "../../libopenmpi" }
+procgroup = { path = "../../libprocgroup" }
+procgroup_mpi = { path = "../../libprocgroup_mpi" }
+rembrandt_kernels = { path = "../rembrandt_kernels" }
+#rembrandt_reportserv = { path = "../rembrandt_reportserv" }
+rng = { path = "../../librng" }
+stb_image = { path = "../rust-stb-image" }
+turbojpeg = { path = "../libturbojpeg" }
+varraydb = { path = "../varraydb" }
+worker = { path = "../../libworker" }
+
+#[dependencies.array]
+#path = "../libarray"
+
+#[dependencies.async]
+#path = "../libasync"
+
+#[dependencies.async_cuda]
+#path = "../libasync_cuda"
+
+#[dependencies.cuda_sparse]
+#path = "../libcuda_sparse"
+
+#[dependencies.linalg]
+#path = "../liblinalg"
