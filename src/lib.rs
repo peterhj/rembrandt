@@ -10,7 +10,9 @@ extern crate cuda_dnn;
 extern crate episodb;
 //extern crate linalg;
 extern crate lmdb;
-//extern crate mpich as mpi;
+#[cfg(feature = "mpich")]
+extern crate mpich as mpi;
+#[cfg(feature = "openmpi")]
 extern crate openmpi as mpi;
 //extern crate procgroup;
 //extern crate procgroup_mpi;
