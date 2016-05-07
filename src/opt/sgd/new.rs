@@ -288,6 +288,10 @@ impl SgdOpt {
             _ => {}
           }
 
+          // Increase the iteration counter _before_ updates and communication.
+          iter_counter += 1;
+          //info!("DEBUG: rank: {} post iter: {}", rank, iter_counter);
+
           // Depending on the order of the gradient step, apply different
           // update rules.
           match self.config.sync_order {
@@ -315,7 +319,7 @@ impl SgdOpt {
               }
 
               // Communicate the parameters.
-              if iter_counter > 0 && iter_counter % self.config.comm_interval == 0 {
+              if iter_counter % self.config.comm_interval == 0 {
                 operator.sync_params_v2();
               }
             }
@@ -333,7 +337,7 @@ impl SgdOpt {
               }
 
               // Communicate the parameters.
-              if iter_counter > 0 && iter_counter % self.config.comm_interval == 0 {
+              if iter_counter % self.config.comm_interval == 0 {
                 operator.sync_params_v2();
               }
 
@@ -351,7 +355,7 @@ impl SgdOpt {
 
             SyncOrder::SyncGradsThenStep => {
               // Communicate the gradients.
-              if iter_counter > 0 && iter_counter % self.config.comm_interval == 0 {
+              if iter_counter % self.config.comm_interval == 0 {
                 operator.sync_grads_v2();
               }
 
@@ -380,9 +384,6 @@ impl SgdOpt {
           }
 
           operator.reset();
-
-          iter_counter += 1;
-          //info!("DEBUG: rank: {} post iter: {}", rank, iter_counter);
 
           // FIXME(20160425): write iteration stats to log file.
           let minibatch_lap_time = get_time();
