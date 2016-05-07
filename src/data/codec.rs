@@ -48,28 +48,72 @@ impl DataCodec for RawJpegDataCodec {
   }
 }
 
-pub struct JpegDataCodec {
+pub struct StbJpegDataCodec;
+
+impl DataCodec for StbJpegDataCodec {
+  fn decode(&mut self, jpeg_value: &[u8]) -> SampleDatum {
+    let (pixels, width, height) = match load_from_memory(jpeg_value) {
+      LoadResult::ImageU8(mut im) => {
+        if im.depth != 3 && im.depth != 1 {
+          panic!("stb jpeg codec: unsupported depth: {}", im.depth);
+        }
+        assert_eq!(im.depth * im.width * im.height, im.data.len());
+
+        if im.depth == 1 {
+          let mut rgb_data = Vec::with_capacity(3 * im.width * im.height);
+          assert_eq!(im.width * im.height, im.data.len());
+          for i in 0 .. im.data.len() {
+            rgb_data.push(im.data[i]);
+            rgb_data.push(im.data[i]);
+            rgb_data.push(im.data[i]);
+          }
+          assert_eq!(3 * im.width * im.height, rgb_data.len());
+          im = Image::new(im.width, im.height, 3, rgb_data);
+        }
+        assert_eq!(3, im.depth);
+
+        (im.data, im.width, im.height)
+      }
+      LoadResult::Error(_) |
+      LoadResult::ImageF32(_) => {
+        panic!("stb jpeg codec: decoder failed");
+      }
+    };
+    let mut transp_pixels = Vec::with_capacity(pixels.len());
+    for c in 0 .. 3 {
+      for y in 0 .. height {
+        for x in 0 .. width {
+          transp_pixels.push(pixels[c + x * 3 + y * 3 * width]);
+        }
+      }
+    }
+    assert_eq!(pixels.len(), transp_pixels.len());
+    let arr = Array3d::with_data(transp_pixels, (width, height, 3));
+    SampleDatum::WHCBytes(arr)
+  }
+}
+
+pub struct TurboJpegDataCodec {
   turbo_decoder:    TurbojpegDecoder,
 }
 
-impl JpegDataCodec {
-  pub fn new() -> JpegDataCodec {
+impl TurboJpegDataCodec {
+  pub fn new() -> TurboJpegDataCodec {
     let mut decoder = TurbojpegDecoder::create().unwrap();
-    JpegDataCodec{
+    TurboJpegDataCodec{
       turbo_decoder:    decoder,
     }
   }
 }
 
-impl DataCodec for JpegDataCodec {
+impl DataCodec for TurboJpegDataCodec {
   fn decode(&mut self, jpeg_value: &[u8]) -> SampleDatum {
     let (pixels, width, height) = match self.turbo_decoder.decode_rgb8(jpeg_value) {
+      Ok((head, pixels)) => {
+        (pixels, head.width, head.height)
+      }
       Err(_) => {
         match load_from_memory(jpeg_value) {
-          LoadResult::Error(_) |
-          LoadResult::ImageF32(_) => {
-            panic!("jpeg codec: backup stb_image decoder failed");
-          }
           LoadResult::ImageU8(mut im) => {
             if im.depth != 3 && im.depth != 1 {
               panic!("jpeg codec: unsupported depth: {}", im.depth);
@@ -91,10 +135,11 @@ impl DataCodec for JpegDataCodec {
 
             (im.data, im.width, im.height)
           }
+          LoadResult::Error(_) |
+          LoadResult::ImageF32(_) => {
+            panic!("jpeg codec: backup stb_image decoder failed");
+          }
         }
-      }
-      Ok((head, pixels)) => {
-        (pixels, head.width, head.height)
       }
     };
     let mut transp_pixels = Vec::with_capacity(pixels.len());
