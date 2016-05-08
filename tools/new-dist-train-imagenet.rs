@@ -15,7 +15,7 @@ use rembrandt::data::{
 };
 use rembrandt::data::codec::{
   Array3dDataCodec,
-  JpegDataCodec,
+  TurboJpegDataCodec,
 };
 use rembrandt::data::varraydb_data::{VarrayDbShard};
 use rembrandt::data_new::{
@@ -76,6 +76,9 @@ use rembrandt::worker::allreduce_dist::{
 use rembrandt::worker::elasticserver_dist::{
   MpiDistElasticServerCommWorker,
 };
+use rembrandt::worker::gossip_pull_dist_rdma::{
+  MpiDistAsyncPullGossipCommWorker,
+};
 use rembrandt::worker::gossip_dist::{
   MpiDistAsyncPushGossipCommWorker,
   MpiDistSequentialOperatorWorkerBuilder,
@@ -97,8 +100,8 @@ fn main() {
   env_logger::init().unwrap();
 
   //let num_workers = 1;
-  let batch_size = 32;
-  let minibatch_size = 32;
+  let batch_size = 16;
+  let minibatch_size = 16;
   /*let batch_size = 32;
   let minibatch_size = 32;*/
   /*let batch_size = 64;
@@ -144,7 +147,11 @@ fn main() {
     //checkpoint_dir:     PathBuf::from("models/imagenet_warp256x256-elastic_x16_run4_tau10"),
     //checkpoint_dir:     PathBuf::from("models/imagenet_warp256x256-sync_x16_run1"),
     //checkpoint_dir:     PathBuf::from("models/imagenet_warp256x256-test"),
-    checkpoint_dir:     PathBuf::from("models/imagenet_maxscale480-pushgossip_x8_run1"),
+    //checkpoint_dir:     PathBuf::from("models/imagenet_maxscale480-pushgossip_x8_run1"),
+    //checkpoint_dir:     PathBuf::from("models/imagenet_maxscale480-pushgossip_x8_run2_lr0.1"),
+    //checkpoint_dir:     PathBuf::from("models/imagenet_maxscale480-pushgossip_x8_test"),
+    checkpoint_dir:     PathBuf::from("models/imagenet_maxscale480-pushgossip_x16_run1"),
+    //checkpoint_dir:     PathBuf::from("models/imagenet_maxscale480-pullgossip_x8_run1"),
     //checkpoint_dir:     PathBuf::from("models/imagenet_maxscale480-sync_x8_run1"),
     //checkpoint_dir:     PathBuf::from("models/imagenet_maxscale480-test"),
   };
@@ -178,7 +185,10 @@ fn main() {
     com_interval: 1,
     buf_size:     worker_cfg.params_len(),
   };
+
+  let msg_len = 32 * 1024;
   let comm_worker = Rc::new(RefCell::new(MpiDistAsyncPushGossipCommWorker::new(gossip_cfg, context.clone())));
+  //let comm_worker = Rc::new(RefCell::new(MpiDistAsyncPullGossipCommWorker::new(msg_len, gossip_cfg, context.clone())));
   //let comm_worker = Rc::new(RefCell::new(MpiDistElasticServerCommWorker::new(paramserver_cfg, context.clone())));
   //let comm_worker = Rc::new(RefCell::new(MpiDistSyncAllreduceCommWorker::new(paramserver_cfg, context.clone())));
   let mut worker = worker_builder.into_worker(context, comm_worker);
@@ -195,11 +205,12 @@ fn main() {
       VarrayDbShard::open_partition(
           &PathBuf::from("/rscratch/phj/data/ilsvrc2012_multiv2_shuf/ilsvrc2012_maxscale480_shuf_train_data.varraydb"),
           &PathBuf::from("/rscratch/phj/data/ilsvrc2012_multiv2_shuf/ilsvrc2012_maxscale480_shuf_train_labels.varraydb"),
-          JpegDataCodec::new(),
+          TurboJpegDataCodec::new(),
           worker.worker_rank(), worker.num_workers(),
       )));
 
   let mut valid_data =
+      //AsyncQueueDataIter::new(
       CyclicSampleDataIter::new(
       VarrayDbShard::open_partition(
           &PathBuf::from("/rscratch/phj/data/ilsvrc2012_multiv2_orig/ilsvrc2012_scale256_orig_valid_data.varraydb"),

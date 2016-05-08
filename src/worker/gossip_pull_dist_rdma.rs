@@ -306,11 +306,11 @@ pub struct MpiDistAsyncPullGossipCommWorker {
 }
 
 impl MpiDistAsyncPullGossipCommWorker {
-  pub fn new(gossip_cfg: GossipConfig, context: Rc<DeviceContext>) -> MpiDistAsyncPullGossipCommWorker {
+  pub fn new(msg_len: usize, gossip_cfg: GossipConfig, context: Rc<DeviceContext>) -> MpiDistAsyncPullGossipCommWorker {
     // XXX(20160415): Empirically determined message length.
-    //let msg_len = 32 * 1024;
+    /*//let msg_len = 32 * 1024;
     let msg_len = 1 * 1024 * 1024;
-    //let msg_len = 4 * 1024 * 1024;
+    //let msg_len = 4 * 1024 * 1024;*/
     let num_buf_msgs = (gossip_cfg.buf_size + msg_len - 1) / msg_len;
     let buf_len = gossip_cfg.buf_size; //num_buf_msgs * msg_len;
     // XXX(20160501): For RDMA specifically, the buffer length is increased
