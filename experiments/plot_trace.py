@@ -10,6 +10,45 @@ from ast import literal_eval
 import math
 import sys
 
+FONT_SIZE = 28
+TICK_FONT_SIZE = 28
+LEGEND_FONT_SIZE = 22
+
+def _make_error_plot(fig, ax, plots, num_procs, x_label, x_range, y_range, show_legend, out_prefix, out_suffix):
+  fig.subplots_adjust(bottom=0.15, left=0.20)
+  ax.spines["top"].set_visible(False)
+  ax.spines["right"].set_visible(False)
+  plt.title("p = {}".format(num_procs), fontsize=FONT_SIZE)
+  plt.xlabel(x_label, fontsize=FONT_SIZE)
+  plt.xlim(x_range[:2])
+  if len(x_range) == 2:
+    pass
+  elif len(x_range) == 3:
+    #ax.yaxis.set_ticks(np.arange(x_range[0], x_range[1], x_range[2]))
+    ax.xaxis.set_ticks(np.linspace(x_range[0], x_range[1], num=int(round((x_range[1] - x_range[0]) / x_range[2]))+1, endpoint=True))
+  else:
+    raise NotImplementedError
+  plt.setp(ax.get_xticklabels(), fontsize=TICK_FONT_SIZE)
+  ax.xaxis.set_ticks_position("bottom")
+  ax.axhline(linewidth=2.0, color="k")
+  plt.ylabel("validation error", fontsize=FONT_SIZE)
+  plt.ylim(y_range[:2])
+  if len(y_range) == 2:
+    pass
+  elif len(y_range) == 3:
+    #ax.yaxis.set_ticks(np.arange(y_range[0], y_range[1], y_range[2]))
+    ax.yaxis.set_ticks(np.linspace(y_range[0], y_range[1], num=int(round((y_range[1] - y_range[0]) / y_range[2]))+1, endpoint=True))
+  else:
+    raise NotImplementedError
+  plt.setp(ax.get_yticklabels(), fontsize=TICK_FONT_SIZE)
+  ax.yaxis.set_major_formatter(FuncFormatter(lambda y, _: "{:.0%}".format(y)))
+  ax.yaxis.set_ticks_position("left")
+  ax.axvline(linewidth=2.0, color="k")
+  if show_legend:
+    plt.legend(handles=plots, fontsize=LEGEND_FONT_SIZE)
+  plt.show()
+  plt.savefig("{}_{}.pdf".format(out_prefix, out_suffix))
+
 def main():
   cfg_path = sys.argv[1]
   with open(cfg_path, "r") as f:
@@ -18,16 +57,16 @@ def main():
 
   out_prefix = cfg["out_prefix"]
   num_procs = cfg["num_procs"]
+  minibatch_sz = cfg["minibatch_sz"]
   num_traces = len(cfg["traces"])
 
-  x_upper = cfg["x_upper"]
   show_legend = cfg["show_legend"]
+  x_upper = cfg["x_upper"]
+  hours_range = cfg["hours_range"]
+  epochs_range = cfg["epochs_range"]
+  error_range = cfg["error_range"]
 
   #rc("text", usetex=True)
-
-  FONT_SIZE = 24
-  TICK_FONT_SIZE = 18
-  LEGEND_FONT_SIZE = 18
 
   trace_colors = []
   trace_labels = []
@@ -58,7 +97,7 @@ def main():
     valid_df["tstamps"] = step_df["tstamps"].loc[valid_df.index] / 3600.0
     #print(valid_df)
 
-    valid_df["epochs"] = valid_df.index.map(lambda i: float(i) / (1281167.0 / (32.0 * 8.0)))
+    valid_df["epochs"] = valid_df.index.map(lambda i: float(i) / (1281167.0 / (float(num_procs) * float(minibatch_sz))))
 
     trace_colors.append(trace_color)
     trace_labels.append(trace_label)
@@ -77,19 +116,27 @@ def main():
     plot_h, = ax.plot(valid_df["tstamps"], valid_df["error"], color=trace_color, label=trace_label, linewidth=2.0)
     plots.append(plot_h)
 
-  fig.subplots_adjust(bottom=0.15, left=0.20)
-  plt.title("p = {}".format(num_procs), fontsize=FONT_SIZE)
-  plt.xlabel("training time (hours)", fontsize=FONT_SIZE)
-  plt.xlim([0.0, x_upper])
-  plt.setp(ax.get_xticklabels(), fontsize=TICK_FONT_SIZE)
-  plt.ylabel("validation error", fontsize=FONT_SIZE)
-  plt.ylim([0.0, 1.0])
-  plt.setp(ax.get_yticklabels(), fontsize=TICK_FONT_SIZE)
-  ax.yaxis.set_major_formatter(FuncFormatter(lambda y, _: "{:.0%}".format(y)))
-  if show_legend:
-    plt.legend(handles=plots, fontsize=LEGEND_FONT_SIZE)
-  plt.show()
-  plt.savefig("{}_error.pdf".format(out_prefix))
+  if False:
+    fig.subplots_adjust(bottom=0.15, left=0.20)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    plt.title("p = {}".format(num_procs), fontsize=FONT_SIZE)
+    plt.xlabel("training time (hours)", fontsize=FONT_SIZE)
+    plt.xlim(hours_range)
+    plt.setp(ax.get_xticklabels(), fontsize=TICK_FONT_SIZE)
+    ax.xaxis.set_ticks_position("bottom")
+    ax.axhline(linewidth=2.0, color="k")
+    plt.ylabel("validation error", fontsize=FONT_SIZE)
+    plt.ylim(error_range)
+    plt.setp(ax.get_yticklabels(), fontsize=TICK_FONT_SIZE)
+    ax.yaxis.set_major_formatter(FuncFormatter(lambda y, _: "{:.0%}".format(y)))
+    ax.yaxis.set_ticks_position("left")
+    ax.axvline(linewidth=2.0, color="k")
+    if show_legend:
+      plt.legend(handles=plots, fontsize=LEGEND_FONT_SIZE)
+    plt.show()
+    plt.savefig("{}_error.pdf".format(out_prefix))
+  _make_error_plot(fig, ax, plots, num_procs, "training time (hours)", hours_range, error_range, show_legend, out_prefix, "error")
 
   plots = []
 
@@ -146,20 +193,28 @@ def main():
     plot_h, = ax.plot(valid_df["epochs"], valid_df["error"], color=trace_color, label=trace_label, linewidth=2.0)
     plots.append(plot_h)
 
-  #fig.tight_layout()
-  fig.subplots_adjust(bottom=0.15, left=0.20)
-  plt.title("p = {}".format(num_procs), fontsize=FONT_SIZE)
-  plt.xlabel("epochs", fontsize=FONT_SIZE)
-  #plt.xlim()
-  plt.setp(ax.get_xticklabels(), fontsize=TICK_FONT_SIZE)
-  plt.ylabel("validation error", fontsize=FONT_SIZE)
-  plt.ylim([0.0, 1.0])
-  plt.setp(ax.get_yticklabels(), fontsize=TICK_FONT_SIZE)
-  ax.yaxis.set_major_formatter(FuncFormatter(lambda y, _: "{:.0%}".format(y)))
-  if show_legend:
-    plt.legend(handles=plots, fontsize=LEGEND_FONT_SIZE)
-  plt.show()
-  plt.savefig("{}_epoch.pdf".format(out_prefix))
+  if False:
+    #fig.tight_layout()
+    fig.subplots_adjust(bottom=0.15, left=0.20)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    plt.title("p = {}".format(num_procs), fontsize=FONT_SIZE)
+    plt.xlabel("training epochs", fontsize=FONT_SIZE)
+    plt.xlim(epochs_range)
+    plt.setp(ax.get_xticklabels(), fontsize=TICK_FONT_SIZE)
+    ax.xaxis.set_ticks_position("bottom")
+    ax.axhline(linewidth=2.0, color="k")
+    plt.ylabel("validation error", fontsize=FONT_SIZE)
+    plt.ylim(error_range)
+    plt.setp(ax.get_yticklabels(), fontsize=TICK_FONT_SIZE)
+    ax.yaxis.set_major_formatter(FuncFormatter(lambda y, _: "{:.0%}".format(y)))
+    ax.yaxis.set_ticks_position("left")
+    ax.axvline(linewidth=2.0, color="k")
+    if show_legend:
+      plt.legend(handles=plots, fontsize=LEGEND_FONT_SIZE)
+    plt.show()
+    #plt.savefig("{}_epoch.pdf".format(out_prefix))
+  _make_error_plot(fig, ax, plots, num_procs, "training epochs", epochs_range, error_range, show_legend, out_prefix, "epoch")
 
 if __name__ == "__main__":
   main()
