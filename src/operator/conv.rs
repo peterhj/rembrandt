@@ -405,6 +405,59 @@ impl<Comm> Operator for BNormConv2dOperator<Comm> where Comm: CommWorker {
     save_bn_running_ivar1.serialize(blob).unwrap();
   }
 
+  fn decode_state(&mut self, blob: &[u8]) -> usize {
+    assert!(self.backward.is_some());
+    let ctx = &(*self.context).as_ref();
+    let mut backward = self.backward.as_mut().unwrap();
+    let mut reader = Cursor::new(blob);
+
+    let load_weights1 = Array2d::deserialize(&mut reader).unwrap();
+    backward.acc_grad_weights.as_view_mut(ctx).sync_load(&load_weights1.as_view());
+
+    let load_bn_scale1 = Array2d::deserialize(&mut reader).unwrap();
+    self.acc_bn_scale1_grad.as_view_mut(ctx).sync_load(&load_bn_scale1.as_view());
+    let load_bn_bias1 = Array2d::deserialize(&mut reader).unwrap();
+    self.acc_bn_bias1_grad.as_view_mut(ctx).sync_load(&load_bn_bias1.as_view());
+    let bn_cached_mean1 = Array2d::deserialize(&mut reader).unwrap();
+    self.bn_cached_mean1.as_view_mut(ctx).sync_load(&bn_cached_mean1.as_view());
+    let bn_cached_ivar1 = Array2d::deserialize(&mut reader).unwrap();
+    self.bn_cached_ivar1.as_view_mut(ctx).sync_load(&bn_cached_ivar1.as_view());
+
+    let progress = reader.position() as usize;
+    progress
+  }
+
+  fn encode_state(&mut self, blob: &mut Vec<u8>) {
+    assert!(self.backward.is_some());
+    let ctx = &(*self.context).as_ref();
+    let mut backward = self.backward.as_mut().unwrap();
+
+    let weights1 = backward.acc_grad_weights.as_view(ctx);
+    let mut save_weights1 = Array2d::zeros(weights1.bound());
+    weights1.sync_store(&mut save_weights1.as_view_mut());
+    save_weights1.serialize(blob).unwrap();
+
+    let bn_scale1 = self.acc_bn_scale1_grad.as_view(ctx);
+    let mut save_bn_scale1 = Array2d::zeros(bn_scale1.bound());
+    bn_scale1.sync_store(&mut save_bn_scale1.as_view_mut());
+    save_bn_scale1.serialize(blob).unwrap();
+
+    let bn_bias1 = self.acc_bn_bias1_grad.as_view(ctx);
+    let mut save_bn_bias1 = Array2d::zeros(bn_bias1.bound());
+    bn_bias1.sync_store(&mut save_bn_bias1.as_view_mut());
+    save_bn_bias1.serialize(blob).unwrap();
+
+    let bn_running_mean1 = self.bn_cached_mean1.as_view(ctx);
+    let mut save_bn_running_mean1 = Array2d::zeros(bn_running_mean1.bound());
+    bn_running_mean1.sync_store(&mut save_bn_running_mean1.as_view_mut());
+    save_bn_running_mean1.serialize(blob).unwrap();
+
+    let bn_running_ivar1 = self.bn_cached_ivar1.as_view(ctx);
+    let mut save_bn_running_ivar1 = Array2d::zeros(bn_running_ivar1.bound());
+    bn_running_ivar1.sync_store(&mut save_bn_running_ivar1.as_view_mut());
+    save_bn_running_ivar1.serialize(blob).unwrap();
+  }
+
   fn forward(&mut self, batch_size: usize, phase: OpPhase) {
     assert!(batch_size <= self.batch_cap);
     let out_dims = self.config.get_out_dims();
@@ -1330,6 +1383,96 @@ impl<Comm> Operator for StackResConv2dOperator<Comm> where Comm: CommWorker {
     save_bn_running_mean2.serialize(blob).unwrap();
 
     let bn_running_ivar2 = self.bn_running_ivar2.as_view(ctx);
+    let mut save_bn_running_ivar2 = Array2d::zeros(bn_running_ivar2.bound());
+    bn_running_ivar2.sync_store(&mut save_bn_running_ivar2.as_view_mut());
+    save_bn_running_ivar2.serialize(blob).unwrap();
+  }
+
+  fn decode_state(&mut self, blob: &[u8]) -> usize {
+    assert!(self.backward.is_some());
+    let ctx = &(*self.context).as_ref();
+    let mut backward = self.backward.as_mut().unwrap();
+    let mut reader = Cursor::new(blob);
+
+    let load_weights1 = Array2d::deserialize(&mut reader).unwrap();
+    backward.acc_grad_weights1.as_view_mut(ctx).sync_load(&load_weights1.as_view());
+
+    let load_bn_scale1 = Array2d::deserialize(&mut reader).unwrap();
+    self.acc_bn_scale1_grad.as_view_mut(ctx).sync_load(&load_bn_scale1.as_view());
+    let load_bn_bias1 = Array2d::deserialize(&mut reader).unwrap();
+    self.acc_bn_bias1_grad.as_view_mut(ctx).sync_load(&load_bn_bias1.as_view());
+    let bn_cached_mean1 = Array2d::deserialize(&mut reader).unwrap();
+    self.bn_cached_mean1.as_view_mut(ctx).sync_load(&bn_cached_mean1.as_view());
+    let bn_cached_ivar1 = Array2d::deserialize(&mut reader).unwrap();
+    self.bn_cached_ivar1.as_view_mut(ctx).sync_load(&bn_cached_ivar1.as_view());
+
+    let load_weights2 = Array2d::deserialize(&mut reader).unwrap();
+    backward.acc_grad_weights2.as_view_mut(ctx).sync_load(&load_weights2.as_view());
+
+    let load_bn_scale2 = Array2d::deserialize(&mut reader).unwrap();
+    self.acc_bn_scale2_grad.as_view_mut(ctx).sync_load(&load_bn_scale2.as_view());
+    let load_bn_bias2 = Array2d::deserialize(&mut reader).unwrap();
+    self.acc_bn_bias2_grad.as_view_mut(ctx).sync_load(&load_bn_bias2.as_view());
+    let bn_cached_mean2 = Array2d::deserialize(&mut reader).unwrap();
+    self.bn_cached_mean2.as_view_mut(ctx).sync_load(&bn_cached_mean2.as_view());
+    let bn_cached_ivar2 = Array2d::deserialize(&mut reader).unwrap();
+    self.bn_cached_ivar2.as_view_mut(ctx).sync_load(&bn_cached_ivar2.as_view());
+
+    let progress = reader.position() as usize;
+    progress
+  }
+
+  fn encode_state(&mut self, blob: &mut Vec<u8>) {
+    assert!(self.backward.is_some());
+    let ctx = &(*self.context).as_ref();
+    let mut backward = self.backward.as_mut().unwrap();
+
+    let weights1 = backward.acc_grad_weights1.as_view(ctx);
+    let mut save_weights1 = Array2d::zeros(weights1.bound());
+    weights1.sync_store(&mut save_weights1.as_view_mut());
+    save_weights1.serialize(blob).unwrap();
+
+    let bn_scale1 = self.acc_bn_scale1_grad.as_view(ctx);
+    let mut save_bn_scale1 = Array2d::zeros(bn_scale1.bound());
+    bn_scale1.sync_store(&mut save_bn_scale1.as_view_mut());
+    save_bn_scale1.serialize(blob).unwrap();
+
+    let bn_bias1 = self.acc_bn_bias1_grad.as_view(ctx);
+    let mut save_bn_bias1 = Array2d::zeros(bn_bias1.bound());
+    bn_bias1.sync_store(&mut save_bn_bias1.as_view_mut());
+    save_bn_bias1.serialize(blob).unwrap();
+
+    let bn_running_mean1 = self.bn_cached_mean1.as_view(ctx);
+    let mut save_bn_running_mean1 = Array2d::zeros(bn_running_mean1.bound());
+    bn_running_mean1.sync_store(&mut save_bn_running_mean1.as_view_mut());
+    save_bn_running_mean1.serialize(blob).unwrap();
+
+    let bn_running_ivar1 = self.bn_cached_ivar1.as_view(ctx);
+    let mut save_bn_running_ivar1 = Array2d::zeros(bn_running_ivar1.bound());
+    bn_running_ivar1.sync_store(&mut save_bn_running_ivar1.as_view_mut());
+    save_bn_running_ivar1.serialize(blob).unwrap();
+
+    let weights2 = backward.acc_grad_weights2.as_view(ctx);
+    let mut save_weights2 = Array2d::zeros(weights2.bound());
+    weights2.sync_store(&mut save_weights2.as_view_mut());
+    save_weights2.serialize(blob).unwrap();
+
+    let bn_scale2 = self.acc_bn_scale2_grad.as_view(ctx);
+    let mut save_bn_scale2 = Array2d::zeros(bn_scale2.bound());
+    bn_scale2.sync_store(&mut save_bn_scale2.as_view_mut());
+    save_bn_scale2.serialize(blob).unwrap();
+
+    let bn_bias2 = self.acc_bn_bias2_grad.as_view(ctx);
+    let mut save_bn_bias2 = Array2d::zeros(bn_bias2.bound());
+    bn_bias2.sync_store(&mut save_bn_bias2.as_view_mut());
+    save_bn_bias2.serialize(blob).unwrap();
+
+    let bn_running_mean2 = self.bn_cached_mean2.as_view(ctx);
+    let mut save_bn_running_mean2 = Array2d::zeros(bn_running_mean2.bound());
+    bn_running_mean2.sync_store(&mut save_bn_running_mean2.as_view_mut());
+    save_bn_running_mean2.serialize(blob).unwrap();
+
+    let bn_running_ivar2 = self.bn_cached_ivar2.as_view(ctx);
     let mut save_bn_running_ivar2 = Array2d::zeros(bn_running_ivar2.bound());
     bn_running_ivar2.sync_store(&mut save_bn_running_ivar2.as_view_mut());
     save_bn_running_ivar2.serialize(blob).unwrap();
@@ -2709,8 +2852,84 @@ impl<Comm> Operator for ProjStackResConv2dOperator<Comm> where Comm: CommWorker 
   }
 
   fn encode_state(&mut self, blob: &mut Vec<u8>) {
-    // FIXME(20160430)
-    unimplemented!();
+    assert!(self.backward.is_some());
+    let ctx = &(*self.context).as_ref();
+    let mut backward = self.backward.as_mut().unwrap();
+
+    let weights1 = backward.acc_grad_weights1.as_view(ctx);
+    let mut save_weights1 = Array2d::zeros(weights1.bound());
+    weights1.sync_store(&mut save_weights1.as_view_mut());
+    save_weights1.serialize(blob).unwrap();
+
+    let bn_scale1 = self.acc_bn_scale1_grad.as_view(ctx);
+    let mut save_bn_scale1 = Array2d::zeros(bn_scale1.bound());
+    bn_scale1.sync_store(&mut save_bn_scale1.as_view_mut());
+    save_bn_scale1.serialize(blob).unwrap();
+
+    let bn_bias1 = self.acc_bn_bias1_grad.as_view(ctx);
+    let mut save_bn_bias1 = Array2d::zeros(bn_bias1.bound());
+    bn_bias1.sync_store(&mut save_bn_bias1.as_view_mut());
+    save_bn_bias1.serialize(blob).unwrap();
+
+    let bn_running_mean1 = self.bn_cached_mean1.as_view(ctx);
+    let mut save_bn_running_mean1 = Array2d::zeros(bn_running_mean1.bound());
+    bn_running_mean1.sync_store(&mut save_bn_running_mean1.as_view_mut());
+    save_bn_running_mean1.serialize(blob).unwrap();
+
+    let bn_running_ivar1 = self.bn_cached_ivar1.as_view(ctx);
+    let mut save_bn_running_ivar1 = Array2d::zeros(bn_running_ivar1.bound());
+    bn_running_ivar1.sync_store(&mut save_bn_running_ivar1.as_view_mut());
+    save_bn_running_ivar1.serialize(blob).unwrap();
+
+    let weights2 = backward.acc_grad_weights2.as_view(ctx);
+    let mut save_weights2 = Array2d::zeros(weights2.bound());
+    weights2.sync_store(&mut save_weights2.as_view_mut());
+    save_weights2.serialize(blob).unwrap();
+
+    let bn_scale2 = self.acc_bn_scale2_grad.as_view(ctx);
+    let mut save_bn_scale2 = Array2d::zeros(bn_scale2.bound());
+    bn_scale2.sync_store(&mut save_bn_scale2.as_view_mut());
+    save_bn_scale2.serialize(blob).unwrap();
+
+    let bn_bias2 = self.acc_bn_bias2_grad.as_view(ctx);
+    let mut save_bn_bias2 = Array2d::zeros(bn_bias2.bound());
+    bn_bias2.sync_store(&mut save_bn_bias2.as_view_mut());
+    save_bn_bias2.serialize(blob).unwrap();
+
+    let bn_running_mean2 = self.bn_cached_mean2.as_view(ctx);
+    let mut save_bn_running_mean2 = Array2d::zeros(bn_running_mean2.bound());
+    bn_running_mean2.sync_store(&mut save_bn_running_mean2.as_view_mut());
+    save_bn_running_mean2.serialize(blob).unwrap();
+
+    let bn_running_ivar2 = self.bn_cached_ivar2.as_view(ctx);
+    let mut save_bn_running_ivar2 = Array2d::zeros(bn_running_ivar2.bound());
+    bn_running_ivar2.sync_store(&mut save_bn_running_ivar2.as_view_mut());
+    save_bn_running_ivar2.serialize(blob).unwrap();
+
+    let weights3 = backward.acc_grad_weights3.as_view(ctx);
+    let mut save_weights3 = Array2d::zeros(weights3.bound());
+    weights3.sync_store(&mut save_weights3.as_view_mut());
+    save_weights3.serialize(blob).unwrap();
+
+    let bn_scale3 = self.acc_bn_scale3_grad.as_view(ctx);
+    let mut save_bn_scale3 = Array2d::zeros(bn_scale3.bound());
+    bn_scale3.sync_store(&mut save_bn_scale3.as_view_mut());
+    save_bn_scale3.serialize(blob).unwrap();
+
+    let bn_bias3 = self.acc_bn_bias3_grad.as_view(ctx);
+    let mut save_bn_bias3 = Array2d::zeros(bn_bias3.bound());
+    bn_bias3.sync_store(&mut save_bn_bias3.as_view_mut());
+    save_bn_bias3.serialize(blob).unwrap();
+
+    let bn_running_mean3 = self.bn_cached_mean3.as_view(ctx);
+    let mut save_bn_running_mean3 = Array2d::zeros(bn_running_mean3.bound());
+    bn_running_mean3.sync_store(&mut save_bn_running_mean3.as_view_mut());
+    save_bn_running_mean3.serialize(blob).unwrap();
+
+    let bn_running_ivar3 = self.bn_cached_ivar3.as_view(ctx);
+    let mut save_bn_running_ivar3 = Array2d::zeros(bn_running_ivar3.bound());
+    bn_running_ivar3.sync_store(&mut save_bn_running_ivar3.as_view_mut());
+    save_bn_running_ivar3.serialize(blob).unwrap();
   }
 
   fn forward(&mut self, batch_size: usize, phase: OpPhase) {
