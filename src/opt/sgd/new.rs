@@ -153,7 +153,14 @@ impl SgdOpt {
       Err(e) => panic!("SgdOpt: failed to open log file: {:?}", e),
       Ok(file) => file,
     };
-    let init_step_size = config.step_size.at_iter(0);
+    let (elapsed_iters, init_step_size) = match config.init_t {
+      None => {
+        (0, config.step_size.at_iter(0))
+      }
+      Some(t) => {
+        (t, config.step_size.at_iter(t))
+      }
+    };
     let mut writer = BufWriter::new(local_log_file);
     writeln!(&mut writer, "t,event,loss,error,elapsed").unwrap();
     writer.flush().unwrap();
@@ -161,7 +168,7 @@ impl SgdOpt {
       config:   config,
       rank:     rank,
       shared:   shared,
-      elapsed_checkpoint_iters: 0,
+      elapsed_checkpoint_iters: elapsed_iters,
       local_step_size:  init_step_size,
       local_accum_loss: 0.0,
       local_log_file:   writer,
