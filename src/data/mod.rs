@@ -17,6 +17,7 @@ use std::thread::{JoinHandle, spawn};
 
 pub mod augment;
 pub mod codec;
+pub mod lmdb_data;
 pub mod varraydb_data;
 
 pub trait DataShard {
