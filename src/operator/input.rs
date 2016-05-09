@@ -487,12 +487,22 @@ impl InputOperator for VarData3dOperator {
   fn load_frames(&mut self, batch_size: usize) {
     assert!(batch_size <= self.batch_cap);
     let ctx = &(*self.context).as_ref();
-    {
+    let in_stride = self.config.in_stride;
+    let &mut VarData3dOperator{ref mut in_buf, ref in_buf_h, ..} = self;
+    for batch_idx in 0 .. batch_size {
+      let shape = self.in_shapes[batch_idx];
+      let frame_len = shape.len();
+      assert!(frame_len <= in_stride);
+      let mut in_buf = in_buf.as_ref_mut_range(batch_idx * in_stride, batch_idx * in_stride + frame_len, ctx);
+      unsafe { in_buf.unsafe_async_load(&in_buf_h[batch_idx * in_stride .. batch_idx * in_stride + frame_len]) };
+    }
+    ctx.blocking_sync();
+    /*{
       // FIXME(20160329): does not use `batch_size` at all!
       let in_buf_h = &self.in_buf_h;
       let mut in_buf = self.in_buf.as_ref_mut(ctx);
       in_buf.sync_load(in_buf_h);
-    }
+    }*/
   }
 
   fn stage_shape(&mut self, batch_idx: usize, shape: (usize, usize, usize)) {
