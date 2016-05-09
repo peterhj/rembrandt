@@ -238,6 +238,8 @@ impl SgdOpt {
             operator.input_operator()
               .expose_host_frame_buf(batch_counter)[ .. frame_len]
               .copy_from_slice(frame_bytes.as_slice());
+            operator.input_operator()
+              .preload_frame(batch_counter);
           }
           _ => unimplemented!(),
         }
@@ -252,7 +254,8 @@ impl SgdOpt {
         assert!(batch_counter <= batch_size);
         if batch_counter == batch_size {
           operator.next();
-          operator.input_operator().load_frames(batch_size);
+          //operator.input_operator().load_frames(batch_size);
+          operator.input_operator().wait_preload_frames(batch_size);
           operator.loss_operator(0).load_labels(batch_size);
           operator.loss_operator(0).load_weights(batch_size);
           operator.forward(batch_size, OpPhase::Training{t: iter_counter});

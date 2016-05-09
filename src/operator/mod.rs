@@ -104,6 +104,8 @@ pub trait InputOperator: Operator {
   fn load_frames(&mut self, batch_size: usize);
   fn stage_shape(&mut self, batch_idx: usize, shape: (usize, usize, usize));
   //fn load_shapes(&mut self, batch_size: usize);
+  fn preload_frame(&mut self, _batch_idx: usize) { unimplemented!(); }
+  fn wait_preload_frames(&mut self, _batch_size: usize) { unimplemented!(); }
 }
 
 pub enum OperatorNode {

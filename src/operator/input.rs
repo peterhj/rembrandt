@@ -517,4 +517,22 @@ impl InputOperator for VarData3dOperator {
   /*fn load_shapes(&mut self, batch_size: usize) {
     //assert!(batch_size <= self.batch_cap);
   }*/
+
+  fn preload_frame(&mut self, batch_idx: usize) {
+    assert!(batch_idx < self.batch_cap);
+    let &mut VarData3dOperator{ref mut in_buf, ref in_buf_h, ..} = self;
+    let ctx = &(*self.context).as_ref();
+    let in_stride = self.config.in_stride;
+    let shape = self.in_shapes[batch_idx];
+    let frame_len = shape.len();
+    assert!(frame_len <= in_stride);
+    let mut in_buf = in_buf.as_ref_mut_range(batch_idx * in_stride, batch_idx * in_stride + frame_len, ctx);
+    unsafe { in_buf.unsafe_async_load(&in_buf_h[batch_idx * in_stride .. batch_idx * in_stride + frame_len]) };
+  }
+
+  fn wait_preload_frames(&mut self, batch_size: usize) {
+    assert!(batch_size <= self.batch_cap);
+    let ctx = &(*self.context).as_ref();
+    ctx.blocking_sync();
+  }
 }
