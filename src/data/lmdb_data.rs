@@ -78,10 +78,12 @@ impl LmdbCaffeShard {
       Ok(stat) => stat.entries(),
       Err(e) => panic!("failed to query lmdb env stat: {:?}", e),
     };
+    let part_bounds = partition_range(total_length, num_parts);
+    let (start_idx, end_idx) = part_bounds[part];
     LmdbCaffeShard{
       total_length: total_length,
-      start_idx:    0,
-      end_idx:      0,
+      start_idx:    start_idx,
+      end_idx:      end_idx,
       lmdb_env:     Rc::new(env),
       lmdb_cursor:  None,
       lmdb_iter:    None,
