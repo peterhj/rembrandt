@@ -331,7 +331,6 @@ impl CommWorker for MpiDistAsyncPullGossipAllreduceCommWorker {
     let ctx = &(*self.context).as_ref();
     self.src_buf.as_ref_mut(ctx).sync_store(&mut self.allsrc_buf_h);
 
-    // FIXME(20160508): do a reduce, not an allreduce.
     self.send_reqs.clear();
     for msg in 0 .. self.num_buf_msgs {
       let req = match self.group_comms[group_rank].nonblocking_reduce_(
@@ -345,8 +344,11 @@ impl CommWorker for MpiDistAsyncPullGossipAllreduceCommWorker {
       self.send_reqs.append(req);
     }
     self.send_reqs.wait_all().unwrap();
+    self.src_buf.as_ref_mut(ctx).sync_load(&self.alldst_buf_h);
+    self.src_buf.as_ref_mut(ctx).row_vector_scale(1.0 / self.group_size as f32);
 
     if self_rank % self.group_size == 0 {
+      self.src_buf.as_ref_mut(ctx).sync_store(&mut self.alldst_buf_h);
       self.pull_target_win.lock(self_rank, MpiWindowLockMode::Exclusive).unwrap();
       self.pull_target_win.as_mut_slice().copy_from_slice(&self.alldst_buf_h);
       self.pull_target_win.unlock(self_rank).unwrap();
@@ -369,17 +371,17 @@ impl CommWorker for MpiDistAsyncPullGossipAllreduceCommWorker {
         self.pull_target_win.unlock(recv_rank).unwrap();
       }
 
-      if self_rank == recv_rank {
-        self.src_buf.as_ref(ctx).send(&mut self.dst_buf.as_ref_mut(ctx));
-      } else {
+      if self_rank != recv_rank {
         self.dst_buf.as_ref_mut(ctx).sync_load(self.pull_origin_buf_h.as_ref());
         self.dst_buf.as_ref_mut(ctx).row_vector_sum(1.0, &self.src_buf.as_ref(ctx));
         self.dst_buf.as_ref_mut(ctx).row_vector_scale(0.5);
+      } else {
+        self.src_buf.as_ref(ctx).send(&mut self.dst_buf.as_ref_mut(ctx));
       }
-      ctx.sync();
+
+      self.dst_buf.as_ref_mut(ctx).sync_store(&mut self.alldst_buf_h);
     }
 
-    // FIXME(20160508): do a broadcast.
     self.send_reqs.clear();
     for msg in 0 .. self.num_buf_msgs {
       let req = match self.group_comms[group_rank].nonblocking_broadcast_(
@@ -392,6 +394,11 @@ impl CommWorker for MpiDistAsyncPullGossipAllreduceCommWorker {
       self.send_reqs.append(req);
     }
     self.send_reqs.wait_all().unwrap();
+    if self_rank % self.group_size != 0 {
+      self.dst_buf.as_ref_mut(ctx).sync_load(&self.alldst_buf_h);
+    }
+
+    ctx.sync();
   }
 
   fn communicate_exact(&mut self) {
