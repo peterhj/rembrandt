@@ -60,9 +60,9 @@ path = "tools/test-varraydb.rs"
 #name = "dist-train-mnist"
 #path = "tools/dist-train-mnist.rs"
 
-[[bin]]
-name = "dist-train-imagenet"
-path = "tools/dist-train-imagenet.rs"
+#[[bin]]
+#name = "dist-train-imagenet"
+#path = "tools/dist-train-imagenet.rs"
 
 [[bin]]
 name = "new-dist-train-imagenet"

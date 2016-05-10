@@ -57,7 +57,7 @@ use std::rc::{Rc};
 use std::sync::{Arc, Barrier, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering, fence};
 use std::sync::mpsc::{Sender, Receiver, TryRecvError, channel};
-use std::thread::{JoinHandle, sleep, spawn};
+use std::thread::{JoinHandle, sleep, sleep_ms, spawn};
 use std::time::{Duration};
 use vec_map::{VecMap};
 
@@ -1025,11 +1025,18 @@ impl CommWorker for MpiDistAsyncPushGossipCommWorker {
 }
 
 #[derive(Clone)]
+pub struct ExperimentConfig {
+  pub straggler_ranks:          Vec<usize>,
+  pub straggler_max_delay_ms:   u32,
+}
+
+#[derive(Clone)]
 pub struct MpiDistSequentialOperatorWorkerBuilder {
   //num_workers:  usize,
   batch_size:   usize,
   config:       SequentialOperatorConfig,
   capability:   OpCapability,
+  exp_cfg:      ExperimentConfig,
   shared_seed:  [u64; 2],
   // XXX: Contravariance.
   //_marker:      PhantomData<fn () -> Comm>,
@@ -1050,12 +1057,13 @@ pub struct MpiDistSequentialOperatorWorkerBuilder {
 
 impl MpiDistSequentialOperatorWorkerBuilder {
   //pub fn new(num_workers: usize, batch_size: usize, config: SequentialOperatorConfig<Comm>, capability: OpCapability) -> MpiDistSequentialOperatorWorkerBuilder<Comm> {
-  pub fn new(/*num_workers: usize,*/ batch_size: usize, config: SequentialOperatorConfig, capability: OpCapability) -> MpiDistSequentialOperatorWorkerBuilder {
+  pub fn new(/*num_workers: usize,*/ batch_size: usize, config: SequentialOperatorConfig, capability: OpCapability, exp_cfg: ExperimentConfig) -> MpiDistSequentialOperatorWorkerBuilder {
     MpiDistSequentialOperatorWorkerBuilder{
       //num_workers:  num_workers,
       batch_size:   batch_size,
       config:       config,
       capability:   capability,
+      exp_cfg:      exp_cfg,
       shared_seed:  [thread_rng().next_u64(), thread_rng().next_u64()],
       //_marker:      PhantomData,
     }
@@ -1120,12 +1128,27 @@ impl MpiDistSequentialOperatorWorkerBuilder {
       config.loss_op.unwrap().build_loss_operator::<Comm>(self.batch_size, Some(prev_op), context.clone())
     };
 
+    let mut exp_is_straggler = false;
+    {
+      let self_rank = worker_data.worker_rank();
+      for &r in self.exp_cfg.straggler_ranks.iter() {
+        if self_rank == r {
+          println!("DEBUG: MpiDistSequentialOperatorWorker: rank: {} is straggler", self_rank);
+          exp_is_straggler = true;
+          break;
+        }
+      }
+    }
+
     MpiDistSequentialOperatorWorker{
       worker_data:  worker_data,
       batch_size:   self.batch_size,
       config:       self.config,
+      exp_cfg:      self.exp_cfg,
+      exp_is_straggler: exp_is_straggler,
       //shared_seed:  self.shared_seed,
       shared_seed:  shared_seed,
+      local_rng:    Xorshiftplus128Rng::new(&mut thread_rng()),
       context:      context,
       comm_worker:  comm_worker,
       input_op:     input_op,
@@ -1139,7 +1162,10 @@ pub struct MpiDistSequentialOperatorWorker<Comm> {
   worker_data:  WorkerData,
   batch_size:   usize,
   config:       SequentialOperatorConfig,
+  exp_cfg:      ExperimentConfig,
+  exp_is_straggler: bool,
   shared_seed:  [u64; 2],
+  local_rng:    Xorshiftplus128Rng,
 
   context:      Rc<DeviceContext>,
   comm_worker:  Rc<RefCell<Comm>>,
@@ -1439,6 +1465,12 @@ impl<Comm> Operator for MpiDistSequentialOperatorWorker<Comm> where Comm: CommWo
     self.loss_op.backward(batch_size);
     for op in self.hidden_ops.iter_mut().rev() {
       op.backward(batch_size);
+    }
+    if self.exp_is_straggler {
+      let ctx = &(*self.context).as_ref();
+      ctx.blocking_sync();
+      let delay_ms = self.local_rng.gen_range(0, self.exp_cfg.straggler_max_delay_ms + 1);
+      sleep_ms(delay_ms);
     }
   }
 
