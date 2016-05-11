@@ -54,6 +54,10 @@ pub enum StepSizeSchedule {
     decay_rate:     f32,
     decay_iters:    usize,
   },
+  Inverse{
+    init_step_size: f32,
+    lambda:         f32,
+  },
 }
 
 impl StepSizeSchedule {
@@ -81,6 +85,9 @@ impl StepSizeSchedule {
       &StepSizeSchedule::Decay{..} => {
         // FIXME(20160330)
         unimplemented!();
+      }
+      &StepSizeSchedule::Inverse{init_step_size, lambda} => {
+        init_step_size / (1.0 + init_step_size * lambda * (t as f32))
       }
     }
   }
