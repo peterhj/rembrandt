@@ -5,7 +5,14 @@ use data_new::{
 };
 use operator::{Operator, OpPhase, Regularization};
 use operator::worker::{OperatorWorker};
-use opt::sgd::{SgdOptConfig, StepSizeSchedule, Momentum, SyncOrder, OptSharedData};
+use opt::sgd::{
+  SgdOptConfig,
+  StepSizeSchedule,
+  StepSizeReference,
+  Momentum,
+  SyncOrder,
+  OptSharedData,
+};
 
 //use array_cuda::device::context::{DeviceCtxRef};
 use array_new::{Shape};
@@ -129,7 +136,7 @@ pub struct SgdOpt {
   shared:   Arc<OptSharedData>,
 
   elapsed_checkpoint_iters: usize,
-  local_step_size:  f32,
+  chkpt_step_size:  f32,
   local_accum_loss: f32,
   local_log_file:   BufWriter<File>,
 }
@@ -169,7 +176,7 @@ impl SgdOpt {
       rank:     rank,
       shared:   shared,
       elapsed_checkpoint_iters: elapsed_iters,
-      local_step_size:  init_step_size,
+      chkpt_step_size:  init_step_size,
       local_accum_loss: 0.0,
       local_log_file:   writer,
     }
@@ -282,7 +289,14 @@ impl SgdOpt {
         if local_counter % minibatch_size == 0 {
           let l2_reg_coef = self.config.l2_reg_coef;
           //let step_size = self.config.step_size.at_iter(iter_counter);
-          let step_size = self.local_step_size;
+          let step_size = match self.config.step_ref {
+            StepSizeReference::Local => {
+              self.config.step_size.at_iter(iter_counter)
+            }
+            StepSizeReference::Checkpoint => {
+              self.chkpt_step_size
+            }
+          };
 
           // Apply regularization to the current gradient.
           operator.regularize(Regularization::L2{l2_reg_coef: l2_reg_coef});
@@ -458,7 +472,7 @@ impl SgdOpt {
             }
             operator.restore_params();
             self.elapsed_checkpoint_iters += self.config.checkpoint_iters;
-            self.local_step_size = self.config.step_size.at_iter(self.elapsed_checkpoint_iters);
+            self.chkpt_step_size = self.config.step_size.at_iter(self.elapsed_checkpoint_iters);
             start_time = get_time();
             minibatch_start_time = start_time;
           }

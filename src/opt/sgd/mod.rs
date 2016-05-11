@@ -22,6 +22,7 @@ pub struct SgdOptConfig {
   pub init_t:         Option<usize>,
   pub minibatch_size: usize,
   pub step_size:      StepSizeSchedule,
+  pub step_ref:       StepSizeReference,
   pub momentum:       Momentum,
   pub l2_reg_coef:    f32,
   pub sync_order:     SyncOrder,
@@ -48,6 +49,17 @@ pub enum StepSizeSchedule {
     step1_iters:    usize,
     step2:          f32,
     step2_iters:    usize,
+  },
+  Anneal4{
+    step0:          f32,
+    step1:          f32,
+    step1_iters:    usize,
+    step2:          f32,
+    step2_iters:    usize,
+    step3:          f32,
+    step3_iters:    usize,
+    step4:          f32,
+    step4_iters:    usize,
   },
   Decay{
     init_step:      f32,
@@ -82,6 +94,25 @@ impl StepSizeSchedule {
           step2
         }
       }
+      &StepSizeSchedule::Anneal4{
+        step0,
+        step1_iters, step1,
+        step2_iters, step2,
+        step3_iters, step3,
+        step4_iters, step4} =>
+      {
+        if t < step1_iters {
+          step0
+        } else if t < step2_iters {
+          step1
+        } else if t < step3_iters {
+          step2
+        } else if t < step4_iters {
+          step3
+        } else {
+          step4
+        }
+      }
       &StepSizeSchedule::Decay{..} => {
         // FIXME(20160330)
         unimplemented!();
@@ -91,6 +122,12 @@ impl StepSizeSchedule {
       }
     }
   }
+}
+
+#[derive(Clone, Copy, RustcDecodable, RustcEncodable, Debug)]
+pub enum StepSizeReference {
+  Local,
+  Checkpoint,
 }
 
 #[derive(Clone, Copy, RustcDecodable, RustcEncodable, Debug)]
