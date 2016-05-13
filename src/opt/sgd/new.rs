@@ -194,7 +194,7 @@ impl SgdOpt {
   {
     //assert_eq!(0, self.config.save_iters % self.config.display_iters);
     //assert_eq!(0, self.config.valid_iters % self.config.save_iters);
-    assert_eq!(0, self.config.checkpoint_iters % self.config.display_iters);
+    //assert_eq!(0, self.config.checkpoint_iters % self.config.display_iters);
 
     let batch_size = operator.batch_size();
     let num_workers = operator.num_workers();
@@ -462,20 +462,26 @@ impl SgdOpt {
               Ok(_) => {}
               Err(e) => panic!("train: failed to flush local log file: {:?}", e),
             }
+
+            self.elapsed_checkpoint_iters += self.config.checkpoint_iters;
+
             operator.save_params();
             //println!("DEBUG: sgd: rank: {} exact sync...", rank);
             operator.exact_sync_params();
             //println!("DEBUG: sgd: rank: {} done exact sync", rank);
 
+            let mut save_or_valid = false;
             let save_and_valid_start_time = get_time();
-            if iter_counter % self.config.save_iters == 0 {
+            if self.elapsed_checkpoint_iters % self.config.save_iters == 0 {
               if rank == 0 {
-                operator.checkpoint_params(iter_counter, &self.config.checkpoint_dir);
+                save_or_valid = true;
+                operator.checkpoint_params(self.elapsed_checkpoint_iters, &self.config.checkpoint_dir);
               }
             }
-            if iter_counter % self.config.valid_iters == 0 {
+            if self.elapsed_checkpoint_iters % self.config.valid_iters == 0 {
               //assert!(valid_data.is_some());
               if let Some(ref mut valid_data) = valid_data {
+                save_or_valid = true;
                 self.validate(iter_counter, datum_cfg, label_cfg, *valid_data, operator);
               }
             }
@@ -490,11 +496,12 @@ impl SgdOpt {
               }
               CheckpointBehavior::Keep => {
                 // XXX(20160512): Adjust for time spent doing validation.
-                minibatch_offset_ms += -save_and_valid_elapsed_ms;
+                if save_or_valid {
+                  minibatch_offset_ms += -save_and_valid_elapsed_ms;
+                }
               }
             }
 
-            self.elapsed_checkpoint_iters += self.config.checkpoint_iters;
             self.chkpt_step_size = self.config.step_size.at_iter(self.elapsed_checkpoint_iters);
           }
 
