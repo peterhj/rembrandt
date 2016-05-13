@@ -407,6 +407,36 @@ impl SgdOpt {
                 Momentum::GradientNesterov{mu}  => operator.update_params2(-step_size, -step_size * mu),
               }
             }
+
+            SyncOrder::SyncParamsAndGradsThenStep => {
+              // Communicate the parameters and the gradients.
+              if iter_counter % self.config.comm_interval == 0 {
+                operator.sync_params_v2();
+                operator.sync_grads_v2();
+              }
+
+              // Compute the update, possibly with momentum.
+              match self.config.momentum {
+                Momentum::Zero                  => operator.accumulate_grads(-step_size, 0.0),
+                Momentum::Update{mu} |
+                Momentum::UpdateNesterov{mu}    => operator.accumulate_grads(-step_size, mu),
+                // XXX(20160422): These are the Torch `optim.sgd`-style update;
+                // see: <https://github.com/torch/optim/blob/master/sgd.lua>.
+                Momentum::Gradient{mu}          => operator.accumulate_grads(1.0, mu),
+                Momentum::GradientNesterov{mu}  => operator.accumulate_grads(1.0, mu),
+              }
+
+              // Apply the update, possibly with momentum.
+              match self.config.momentum {
+                Momentum::Zero                  => operator.update_params(1.0),
+                Momentum::Update{mu} |
+                Momentum::UpdateNesterov{mu}    => operator.update_params(1.0),
+                // XXX(20160422): These are the Torch `optim.sgd`-style update;
+                // see: <https://github.com/torch/optim/blob/master/sgd.lua>.
+                Momentum::Gradient{mu}          => operator.update_params(-step_size),
+                Momentum::GradientNesterov{mu}  => operator.update_params2(-step_size, -step_size * mu),
+              }
+            }
           }
 
           operator.reset();
@@ -465,7 +495,13 @@ impl SgdOpt {
 
             self.elapsed_checkpoint_iters += self.config.checkpoint_iters;
 
-            operator.save_params();
+            match self.config.checkpoint {
+              CheckpointBehavior::Discard => {
+                operator.save_params();
+              }
+              CheckpointBehavior::Keep => {}
+            }
+
             //println!("DEBUG: sgd: rank: {} exact sync...", rank);
             operator.exact_sync_params();
             //println!("DEBUG: sgd: rank: {} done exact sync", rank);

@@ -14,7 +14,7 @@ use std::sync::{Arc, Barrier};
 use std::sync::atomic::{AtomicUsize, Ordering, fence};
 use time::{get_time};
 
-pub mod async;
+//pub mod async;
 pub mod new;
 
 #[derive(Clone, RustcDecodable, RustcEncodable, Debug)]
@@ -145,6 +145,7 @@ pub enum SyncOrder {
   StepThenSyncParams,
   SyncParamsThenStep,
   SyncGradsThenStep,
+  SyncParamsAndGradsThenStep,
 }
 
 #[derive(Clone, Copy, RustcDecodable, RustcEncodable, Debug)]
@@ -416,6 +417,11 @@ impl SgdOpt {
                 Momentum::Gradient{mu}          => operator.update_params(-step_size),
                 Momentum::GradientNesterov{mu}  => operator.update_params2(-step_size, -step_size * mu),
               }
+            }
+
+            SyncOrder::SyncParamsAndGradsThenStep => {
+              // FIXME(20160513)
+              unimplemented!();
             }
           }
 
