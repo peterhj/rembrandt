@@ -464,18 +464,14 @@ impl CommWorker for MpiDistAsyncPullGossipCommWorker {
           Err(e) => panic!("async gossip: passive thread: failed to do nonblocking recv: {:?}", e),
         };
         recv_req.wait().unwrap();
-        //self.bar_signal.store(true, Ordering::Release);
         self.checkpt_sig = true;
       }
     }
 
-    //let bar_signal = self.bar_signal.load(Ordering::Acquire);
-    //if !bar_signal {
     if !self.checkpt_sig {
       false
     } else {
-      Mpi::barrier_().unwrap();
-      //self.bar_signal.store(false, Ordering::Release);
+      //Mpi::barrier_().unwrap();
       self.checkpt_sig = false;
       true
     }
