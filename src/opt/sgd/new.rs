@@ -11,6 +11,7 @@ use opt::sgd::{
   StepSizeReference,
   Momentum,
   SyncOrder,
+  CheckpointBehavior,
   OptSharedData,
 };
 
@@ -218,6 +219,7 @@ impl SgdOpt {
 
     let mut start_time = get_time();
     let mut minibatch_start_time = start_time;
+    let mut minibatch_offset_ms: i64 = 0;
 
     let mut minibatch_acc_correct_count = 0;
     let mut minibatch_acc_total_count = 0;
@@ -411,11 +413,12 @@ impl SgdOpt {
 
           // FIXME(20160425): write iteration stats to log file.
           let minibatch_lap_time = get_time();
-          let minibatch_elapsed_ms = (minibatch_lap_time - minibatch_start_time).num_milliseconds();
+          let minibatch_elapsed_ms = (minibatch_lap_time - minibatch_start_time).num_milliseconds() + minibatch_offset_ms;
           let minibatch_accuracy = minibatch_acc_correct_count as f32 / minibatch_acc_total_count as f32;
           writeln!(&mut self.local_log_file, "{},step,{:.6},{:.4},{:.3}",
               iter_counter, minibatch_acc_loss, 1.0 - minibatch_accuracy, minibatch_elapsed_ms as f32 * 0.001).unwrap();
           minibatch_start_time = get_time();
+          minibatch_offset_ms = 0;
           minibatch_acc_correct_count = 0;
           minibatch_acc_total_count = 0;
           minibatch_acc_loss = 0.0;
@@ -463,18 +466,36 @@ impl SgdOpt {
             //println!("DEBUG: sgd: rank: {} exact sync...", rank);
             operator.exact_sync_params();
             //println!("DEBUG: sgd: rank: {} done exact sync", rank);
-            if rank == 0 {
-              operator.checkpoint_params(iter_counter, &self.config.checkpoint_dir);
+
+            let save_and_valid_start_time = get_time();
+            if iter_counter % self.config.save_iters == 0 {
+              if rank == 0 {
+                operator.checkpoint_params(iter_counter, &self.config.checkpoint_dir);
+              }
             }
-            //assert!(valid_data.is_some());
-            if let Some(ref mut valid_data) = valid_data {
-              self.validate(iter_counter, datum_cfg, label_cfg, *valid_data, operator);
+            if iter_counter % self.config.valid_iters == 0 {
+              //assert!(valid_data.is_some());
+              if let Some(ref mut valid_data) = valid_data {
+                self.validate(iter_counter, datum_cfg, label_cfg, *valid_data, operator);
+              }
             }
-            operator.restore_params();
+            let save_and_valid_lap_time = get_time();
+            let save_and_valid_elapsed_ms = (save_and_valid_lap_time - save_and_valid_start_time).num_milliseconds();
+
+            match self.config.checkpoint {
+              CheckpointBehavior::Discard => {
+                operator.restore_params();
+                start_time = get_time();
+                minibatch_start_time = start_time;
+              }
+              CheckpointBehavior::Keep => {
+                // XXX(20160512): Adjust for time spent doing validation.
+                minibatch_offset_ms += -save_and_valid_elapsed_ms;
+              }
+            }
+
             self.elapsed_checkpoint_iters += self.config.checkpoint_iters;
             self.chkpt_step_size = self.config.step_size.at_iter(self.elapsed_checkpoint_iters);
-            start_time = get_time();
-            minibatch_start_time = start_time;
           }
 
           // If we are using the standard Nesterov update, apply some extra

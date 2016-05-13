@@ -27,12 +27,13 @@ pub struct SgdOptConfig {
   pub l2_reg_coef:    f32,
   pub sync_order:     SyncOrder,
   pub comm_interval:  usize,
+  pub checkpoint:     CheckpointBehavior,
 
   pub display_iters:  usize,
-  //pub save_iters:     usize,
-  //pub valid_iters:    usize,
   pub checkpoint_iters:   usize,
   pub checkpoint_dir:     PathBuf,
+  pub save_iters:     usize,
+  pub valid_iters:    usize,
 }
 
 #[derive(Clone, Copy, RustcDecodable, RustcEncodable, Debug)]
@@ -144,6 +145,12 @@ pub enum SyncOrder {
   StepThenSyncParams,
   SyncParamsThenStep,
   SyncGradsThenStep,
+}
+
+#[derive(Clone, Copy, RustcDecodable, RustcEncodable, Debug)]
+pub enum CheckpointBehavior {
+  Discard,
+  Keep,
 }
 
 pub struct OptSharedData {

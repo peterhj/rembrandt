@@ -566,18 +566,22 @@ impl CommWorker for MpiDistAsyncPullGossipCommWorker {
   fn communicate_exact(&mut self) {
     let ctx = &(*self.context).as_ref();
     self.src_buf.as_ref(ctx).sync_store(self.pull_origin_buf_h.as_mut());
-    ctx.sync();
+    //ctx.sync();
+    self.send_reqs.clear();
     for msg in 0 .. self.num_buf_msgs {
-      Mpi::allreduce_(
+      //Mpi::allreduce_(
+      let req = Mpi::nonblocking_allreduce_(
           &self.pull_origin_buf_h.as_ref()[msg * self.msg_len .. min(self.buf_len, (msg+1) * self.msg_len)],
           &mut self.reduce_buf_h[msg * self.msg_len .. min(self.buf_len, (msg+1) * self.msg_len)],
           MpiSumOp,
       ).unwrap();
+      self.send_reqs.append(req);
     }
-    Mpi::barrier_().unwrap();
+    self.send_reqs.wait_all().unwrap();
+    //Mpi::barrier_().unwrap();
     self.dst_buf.as_ref_mut(ctx).sync_load(&self.reduce_buf_h);
     self.dst_buf.as_ref_mut(ctx).row_vector_scale(1.0 / self.worker_data.num_workers() as f32);
-    ctx.sync();
+    ctx.blocking_sync();
 
     /*let ctx = &(*self.context).as_ref();
     self.origin_buf.sync_store(&mut self.origin_buf_h, ctx);
