@@ -1373,6 +1373,33 @@ impl<Comm> OperatorWorker for MpiDistSequentialOperatorWorker<Comm> where Comm: 
     self.comm_worker.borrow_mut().complete_store();
   }
 
+  fn sync_params_and_grads_v2(&mut self) {
+    if self.num_workers() <= 1 {
+      return;
+    }
+    {
+      let mut offset = 0;
+      for op in self.hidden_ops.iter_mut() {
+        offset += op.stage_params_v2(offset, &mut *self.comm_worker.borrow_mut());
+      }
+      for op in self.hidden_ops.iter_mut() {
+        offset += op.stage_grads_v2(offset, &mut *self.comm_worker.borrow_mut());
+      }
+    }
+    self.comm_worker.borrow_mut().complete_load();
+    self.comm_worker.borrow_mut().communicate(false);
+    {
+      let mut offset = 0;
+      for op in self.hidden_ops.iter_mut() {
+        offset += op.merge_params_v2(offset, &mut *self.comm_worker.borrow_mut());
+      }
+      for op in self.hidden_ops.iter_mut() {
+        offset += op.merge_grads_v2(offset, &mut *self.comm_worker.borrow_mut());
+      }
+    }
+    self.comm_worker.borrow_mut().complete_store();
+  }
+
   fn first_one_way_sync_params(&mut self) {
     if self.num_workers() <= 1 {
       return;

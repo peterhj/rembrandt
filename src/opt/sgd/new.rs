@@ -411,8 +411,7 @@ impl SgdOpt {
             SyncOrder::SyncParamsAndGradsThenStep => {
               // Communicate the parameters and the gradients.
               if iter_counter % self.config.comm_interval == 0 {
-                operator.sync_params_v2();
-                operator.sync_grads_v2(true);
+                operator.sync_params_and_grads_v2();
               }
 
               // Compute the update, possibly with momentum.
