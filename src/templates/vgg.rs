@@ -33,7 +33,7 @@ use operator::worker::{
   SequentialOperatorWorkerBuilder,
 };
 use opt::sgd::{
-  SgdOptConfig, StepSizeSchedule, Momentum, SyncOrder, OptSharedData, SgdOpt,
+  SgdOptConfig, StepSizeSchedule, Momentum, SyncOrder, OptSharedData, //SgdOpt,
 };
 use worker::gossip_dist::{
   MpiDistSequentialOperatorWorkerBuilder,

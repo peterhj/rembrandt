@@ -1276,6 +1276,27 @@ impl<Comm> OperatorWorker for MpiDistSequentialOperatorWorker<Comm> where Comm: 
     writeln!(checkpoint_file, "{}", t);
   }
 
+  fn can_rollback(&mut self, prefix: &Path) -> Option<usize> {
+    let prefix = PathBuf::from(prefix);
+
+    let mut checkpoint_path = prefix.clone();
+    checkpoint_path.push("checkpoint");
+    //checkpoint_path.exists()
+
+    let checkpoint_file = match OpenOptions::new().read(true).open(&checkpoint_path) {
+      Ok(file) => file,
+      Err(e) => panic!("rollback_params: failed to open checkpoint file: {:?}", e),
+    };
+
+    let mut latest_t: Option<usize> = None;
+    for line in BufReader::new(checkpoint_file).lines() {
+      let line = line.unwrap();
+      latest_t = line.parse().ok();
+      break;
+    }
+    latest_t
+  }
+
   fn rollback_params(&mut self, t: Option<usize>, prefix: &Path) {
     let prefix = PathBuf::from(prefix);
 

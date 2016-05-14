@@ -7,6 +7,7 @@ use operator::{Operator, OpPhase, Regularization};
 use operator::worker::{OperatorWorker};
 use opt::sgd::{
   SgdOptConfig,
+  InitBehavior,
   StepSizeSchedule,
   StepSizeReference,
   Momentum,
@@ -145,15 +146,36 @@ pub struct SgdOpt {
 impl SgdOpt {
   pub fn new(config: SgdOptConfig, rank: Option<usize>, shared: Arc<OptSharedData>) -> SgdOpt {
     create_dir_all(&config.checkpoint_dir).ok();
-    let mut local_log_path = config.checkpoint_dir.clone();
-    match rank {
-      None => {
-        local_log_path.push("trace_sgd.log");
+    let local_log_path = {
+      let mut local_log_path = config.checkpoint_dir.clone();
+      let mut attempt = 0;
+      loop {
+        match rank {
+          None => {
+            if attempt == 0 {
+              local_log_path.push("trace_sgd.log");
+            } else {
+              local_log_path.push(&format!("trace_sgd.log.{}", attempt));
+            }
+          }
+          Some(rank) => {
+            if attempt == 0 {
+              local_log_path.push(&format!("trace_sgd.{}.log", rank));
+            } else {
+              local_log_path.push(&format!("trace_sgd.{}.log.{}", rank, attempt));
+            }
+          }
+        }
+        if local_log_path.exists() {
+          local_log_path = config.checkpoint_dir.clone();
+          attempt += 1;
+          continue;
+        } else {
+          break;
+        }
       }
-      Some(rank) => {
-        local_log_path.push(&format!("trace_sgd.{}.log", rank));
-      }
-    }
+      local_log_path
+    };
     let local_log_file = match OpenOptions::new()
       .read(true).write(true).create(true).truncate(true)
       .open(&local_log_path)
@@ -161,14 +183,15 @@ impl SgdOpt {
       Err(e) => panic!("SgdOpt: failed to open log file: {:?}", e),
       Ok(file) => file,
     };
-    let (elapsed_iters, init_step_size) = match config.init_t {
+    /*let (elapsed_iters, init_step_size) = match config.init {
       None => {
         (0, config.step_size.at_iter(0))
       }
       Some(t) => {
         (t, config.step_size.at_iter(t))
       }
-    };
+    };*/
+    let (elapsed_iters, init_step_size) = (0, config.step_size.at_iter(0));
     let mut writer = BufWriter::new(local_log_file);
     writeln!(&mut writer, "t,event,loss,error,elapsed").unwrap();
     writer.flush().unwrap();
@@ -203,15 +226,32 @@ impl SgdOpt {
     let minibatch_weight = 1.0 / minibatch_size as f32;
     let epoch_size = train_data.num_shard_samples();
 
-    match self.config.init_t {
-      None => {
+    let mut init_t = 0;
+    match self.config.init {
+      /*None => {
         let shared_seed = operator.shared_seed();
         operator.init_params(shared_seed);
       }
       Some(t) => {
         operator.rollback_params(Some(t), &self.config.checkpoint_dir);
+      }*/
+      InitBehavior::InitOrResume => {
+        if operator.can_rollback(&self.config.checkpoint_dir).is_some() {
+          operator.rollback_params(None, &self.config.checkpoint_dir);
+          init_t = operator.can_rollback(&self.config.checkpoint_dir).unwrap();
+        } else {
+          let shared_seed = operator.shared_seed();
+          operator.init_params(shared_seed);
+        }
+      }
+      InitBehavior::ResumeFrom{t} => {
+        operator.rollback_params(Some(t), &self.config.checkpoint_dir);
+        init_t = t;
       }
     }
+    self.elapsed_checkpoint_iters = init_t;
+    self.chkpt_step_size = self.config.step_size.at_iter(init_t);
+
     operator.reset();
 
     // Do an initial (one-way) sync (necessary for parameter servers).
@@ -226,7 +266,8 @@ impl SgdOpt {
     let mut minibatch_acc_loss = 0.0;
 
     let mut epoch_counter = 0;
-    let mut iter_counter = self.config.init_t.unwrap_or(0);
+    //let mut iter_counter = self.config.init_t.unwrap_or(0);
+    let mut iter_counter = init_t;
     let mut local_counter = 0;
     let mut batch_counter = 0;
 

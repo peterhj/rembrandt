@@ -19,7 +19,7 @@ pub mod new;
 
 #[derive(Clone, RustcDecodable, RustcEncodable, Debug)]
 pub struct SgdOptConfig {
-  pub init_t:         Option<usize>,
+  pub init:           InitBehavior,
   pub minibatch_size: usize,
   pub step_size:      StepSizeSchedule,
   pub step_ref:       StepSizeReference,
@@ -34,6 +34,12 @@ pub struct SgdOptConfig {
   pub checkpoint_dir:     PathBuf,
   pub save_iters:     usize,
   pub valid_iters:    usize,
+}
+
+#[derive(Clone, Copy, RustcDecodable, RustcEncodable, Debug)]
+pub enum InitBehavior {
+  InitOrResume,
+  ResumeFrom{t: usize},
 }
 
 #[derive(Clone, Copy, RustcDecodable, RustcEncodable, Debug)]
@@ -175,7 +181,7 @@ impl OptSharedData {
   }
 }
 
-pub struct SgdOpt {
+/*pub struct SgdOpt {
   config:   SgdOptConfig,
   rank:     Option<usize>,
   shared:   Arc<OptSharedData>,
@@ -622,4 +628,4 @@ impl SgdOpt {
     self.local_accum_loss = 0.0;*/
     self.shared.sync();
   }
-}
+}*/
