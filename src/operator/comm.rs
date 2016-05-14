@@ -25,7 +25,7 @@ pub trait CommWorker {
   fn load(&mut self, offset: usize, data: &mut DeviceArray2d<f32>/*, ctx: &DeviceCtxRef*/);
   fn complete_load(&mut self);
   fn communicate_first(&mut self) { unimplemented!(); }
-  fn communicate(&mut self);
+  fn communicate(&mut self, repeat: bool);
   fn communicate_exact(&mut self) { unimplemented!(); }
   fn allreduce(&mut self, _src_data: &[f32], _dst_data: &mut [f32]) { unimplemented!(); }
   fn store(&mut self, offset: usize, data: &mut DeviceArray2d<f32>/*, ctx: &DeviceCtxRef*/);
@@ -81,7 +81,7 @@ impl CommWorker for NullCommWorker {
   fn next(&mut self) -> bool { false }
   fn load(&mut self, offset: usize, data: &mut DeviceArray2d<f32>/*, ctx: &DeviceCtxRef*/) {}
   fn complete_load(&mut self) {}
-  fn communicate(&mut self/*, ctx: &DeviceCtxRef*/) {}
+  fn communicate(&mut self, _repeat: bool /*, ctx: &DeviceCtxRef*/) {}
   fn store(&mut self, offset: usize, data: &mut DeviceArray2d<f32>/*, ctx: &DeviceCtxRef*/) {}
   fn complete_store(&mut self) {}
 }
@@ -108,7 +108,7 @@ impl CommWorker for DeviceAllReduceCommWorker {
     unimplemented!();
   }
 
-  fn communicate(&mut self/*, ctx: &DeviceCtxRef*/) {
+  fn communicate(&mut self, _repeat: bool /*, ctx: &DeviceCtxRef*/) {
     unimplemented!();
   }
 
@@ -229,7 +229,7 @@ impl CommWorker for DeviceSyncGossipCommWorker {
     //unimplemented!();
   }
 
-  fn communicate(&mut self/*, ctx: &DeviceCtxRef*/) {
+  fn communicate(&mut self, _repeat: bool, /*, ctx: &DeviceCtxRef*/) {
     let num_workers = self.worker_data.num_workers();
     if num_workers <= 1 {
       return;

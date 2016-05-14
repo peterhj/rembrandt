@@ -332,7 +332,7 @@ impl CommWorker for MpiDistSyncGossipCommWorker {
     ctx.sync();
   }
 
-  fn communicate(&mut self/*, ctx: &DeviceCtxRef*/) {
+  fn communicate(&mut self, _repeat: bool /*, ctx: &DeviceCtxRef*/) {
     if self.iter_counter % self.com_interval != 0 {
       return;
     }
@@ -880,7 +880,7 @@ impl CommWorker for MpiDistAsyncPushGossipCommWorker {
     // Do nothing.
   }
 
-  fn communicate(&mut self/*, ctx: &DeviceCtxRef*/) {
+  fn communicate(&mut self, _repeat: bool /*, ctx: &DeviceCtxRef*/) {
     if self.iter_counter % self.com_interval != 0 {
       return;
     }
@@ -1331,7 +1331,7 @@ impl<Comm> OperatorWorker for MpiDistSequentialOperatorWorker<Comm> where Comm: 
     }
   }
 
-  fn sync_grads_v2(&mut self) {
+  fn sync_grads_v2(&mut self, repeat: bool) {
     if self.num_workers() <= 1 {
       return;
     }
@@ -1342,7 +1342,7 @@ impl<Comm> OperatorWorker for MpiDistSequentialOperatorWorker<Comm> where Comm: 
       }
     }
     self.comm_worker.borrow_mut().complete_load();
-    self.comm_worker.borrow_mut().communicate();
+    self.comm_worker.borrow_mut().communicate(repeat);
     {
       let mut offset = 0;
       for op in self.hidden_ops.iter_mut() {
@@ -1363,7 +1363,7 @@ impl<Comm> OperatorWorker for MpiDistSequentialOperatorWorker<Comm> where Comm: 
       }
     }
     self.comm_worker.borrow_mut().complete_load();
-    self.comm_worker.borrow_mut().communicate();
+    self.comm_worker.borrow_mut().communicate(false);
     {
       let mut offset = 0;
       for op in self.hidden_ops.iter_mut() {

@@ -393,7 +393,7 @@ impl SgdOpt {
             SyncOrder::SyncGradsThenStep => {
               // Communicate the gradients.
               if iter_counter > 0 && iter_counter % self.config.comm_interval == 0 {
-                operator.sync_grads_v2();
+                operator.sync_grads_v2(false);
               }
 
               // Compute the update, possibly with momentum.

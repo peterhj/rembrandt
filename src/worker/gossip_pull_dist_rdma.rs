@@ -295,6 +295,7 @@ pub struct MpiDistAsyncPullGossipCommWorker {
   send_reqs:    MpiRequestList,
   recv_count:   Arc<AtomicUsize>,
   bar_signal:   Arc<AtomicBool>,
+  recv_ranks:   Vec<usize>,
 
   avg_reduce:   AverageReduceOperation<f32>,
 
@@ -383,6 +384,7 @@ impl MpiDistAsyncPullGossipCommWorker {
       send_reqs:    MpiRequestList::new(),
       recv_count:   recv_count,
       bar_signal:   bar_signal,
+      recv_ranks:   vec![],
       avg_reduce:   AverageReduceOperation::new(0),
       shared_seed:  shared_seed,
       shared_rng:   Xorshiftplus128Rng::from_seed(shared_seed),
@@ -501,7 +503,7 @@ impl CommWorker for MpiDistAsyncPullGossipCommWorker {
     // Do nothing.
   }
 
-  fn communicate(&mut self/*, ctx: &DeviceCtxRef*/) {
+  fn communicate(&mut self, repeat: bool /*, ctx: &DeviceCtxRef*/) {
     let self_rank = self.worker_data.worker_rank();
 
     let ctx = &(*self.context).as_ref();
@@ -513,8 +515,18 @@ impl CommWorker for MpiDistAsyncPullGossipCommWorker {
       self.src_buf.as_ref(ctx).send(&mut self.dst_buf.as_ref_mut(ctx));
     }
 
+    if !repeat {
+      self.recv_ranks.clear();
+    }
+
     for round in 0 .. self.num_rounds {
-      let recv_rank = self.ranks_range.ind_sample(&mut self.local_rng);
+      let recv_rank = if !repeat {
+        let recv_rank = self.ranks_range.ind_sample(&mut self.local_rng);
+        self.recv_ranks.push(recv_rank);
+        recv_rank
+      } else {
+        self.recv_ranks[round]
+      };
 
       if self_rank != recv_rank {
         self.pull_target_win.lock(recv_rank, MpiWindowLockMode::Shared).unwrap();

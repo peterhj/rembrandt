@@ -63,8 +63,8 @@ pub trait OperatorWorker: Operator {
   fn wait_checkpoint(&mut self) -> bool { unimplemented!(); }
   fn checkpoint_params(&mut self, _t: usize, _prefix: &Path) { unimplemented!(); }
   fn rollback_params(&mut self, _t: Option<usize>, _prefix: &Path) { unimplemented!(); }
-  fn sync_grads_v2(&mut self) { unimplemented!(); }
   fn sync_params_v2(&mut self) { unimplemented!(); }
+  fn sync_grads_v2(&mut self, _repeat: bool) { unimplemented!(); }
   fn first_one_way_sync_params(&mut self) { unimplemented!(); }
   fn exact_sync_params(&mut self) { unimplemented!(); }
   fn allreduce(&mut self, _src_data: &[f32], _dst_data: &mut [f32]) { unimplemented!(); }

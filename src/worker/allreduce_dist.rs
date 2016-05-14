@@ -208,7 +208,7 @@ impl CommWorker for MpiDistSyncAllreduceCommWorker {
     // Do nothing.
   }
 
-  fn communicate(&mut self/*, ctx: &DeviceCtxRef*/) {
+  fn communicate(&mut self, _repeat: bool /*, ctx: &DeviceCtxRef*/) {
     /*if self.iter_counter % self.com_interval != 0 {
       return;
     }*/

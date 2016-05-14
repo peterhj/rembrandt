@@ -648,7 +648,7 @@ impl CommWorker for MpiDistElasticServerCommWorker {
     Mpi::barrier_().unwrap();
   }
 
-  fn communicate(&mut self/*, ctx: &DeviceCtxRef*/) {
+  fn communicate(&mut self, _repeat: bool /*, ctx: &DeviceCtxRef*/) {
     let self_rank = self.worker_data.worker_rank();
     //let send_rank = self.ranks_range.ind_sample(&mut self.local_rng);
 
