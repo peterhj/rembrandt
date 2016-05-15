@@ -1276,12 +1276,42 @@ impl<Comm> OperatorWorker for MpiDistSequentialOperatorWorker<Comm> where Comm: 
     writeln!(checkpoint_file, "{}", t);
   }
 
+  fn checkpoint_state(&mut self, prefix: &Path) {
+    let prefix = PathBuf::from(prefix);
+    match create_dir_all(&prefix) {
+      Ok(_) => {}
+      Err(_) => {}
+    }
+
+    let mut blob = Vec::new();
+    for op in self.hidden_ops.iter_mut() {
+      op.encode_params(&mut blob);
+      op.encode_state(&mut blob);
+    }
+
+    let mut blob_path = prefix.clone();
+    blob_path.push(&format!("state.latest.blob.{}", self.worker_data.worker_rank()));
+    let mut blob_file = match OpenOptions::new()
+      .create(true).truncate(true).write(true)
+      .open(&blob_path)
+    {
+      Ok(file) => file,
+      Err(e) => panic!("checkpoint_state: failed to open blob file: {:?}", e),
+    };
+    match blob_file.write_all(&blob) {
+      Ok(_) => {}
+      Err(e) => panic!("checkpoint_state: failed to write to blob file: {:?}", e),
+    }
+  }
+
   fn can_rollback(&mut self, prefix: &Path) -> Option<usize> {
     let prefix = PathBuf::from(prefix);
 
     let mut checkpoint_path = prefix.clone();
     checkpoint_path.push("checkpoint");
-    //checkpoint_path.exists()
+    if !checkpoint_path.exists() {
+      return None;
+    }
 
     let checkpoint_file = match OpenOptions::new().read(true).open(&checkpoint_path) {
       Ok(file) => file,
@@ -1349,6 +1379,32 @@ impl<Comm> OperatorWorker for MpiDistSequentialOperatorWorker<Comm> where Comm: 
     let mut offset = 0;
     for op in self.hidden_ops.iter_mut() {
       offset += op.decode_params(&blob[offset .. ]);
+    }
+  }
+
+  fn rollback_state(&mut self, prefix: &Path) {
+    let prefix = PathBuf::from(prefix);
+
+    let mut blob_path = prefix.clone();
+    blob_path.push(&format!("state.latest.blob.{}", self.worker_data.worker_rank()));
+
+    let mut blob_file = match OpenOptions::new()
+      .read(true)
+      .open(&blob_path) 
+    {
+        Ok(file) => file,
+        Err(e) => panic!("rollback_state: failed to open blob file"),
+    };
+    let mut blob = Vec::new();
+    match blob_file.read_to_end(&mut blob) {
+      Ok(_) => {}
+      Err(_) => panic!("rollback_state: failed to read blob file"),
+    }
+
+    let mut offset = 0;
+    for op in self.hidden_ops.iter_mut() {
+      offset += op.decode_params(&blob[offset .. ]);
+      offset += op.decode_state(&blob[offset .. ]);
     }
   }
 

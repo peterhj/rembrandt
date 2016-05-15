@@ -237,7 +237,7 @@ impl SgdOpt {
       }*/
       InitBehavior::InitOrResume => {
         if operator.can_rollback(&self.config.checkpoint_dir).is_some() {
-          operator.rollback_params(None, &self.config.checkpoint_dir);
+          operator.rollback_state(&self.config.checkpoint_dir);
           init_t = operator.can_rollback(&self.config.checkpoint_dir).unwrap();
         } else {
           let shared_seed = operator.shared_seed();
@@ -253,6 +253,14 @@ impl SgdOpt {
     self.chkpt_step_size = self.config.step_size.at_iter(init_t);
 
     operator.reset();
+    // If we are using the standard Nesterov update, apply some extra
+    // momentum before the next iteration begins.
+    match self.config.momentum {
+      Momentum::UpdateNesterov{mu} => {
+        operator.update_params(mu);
+      }
+      _ => {}
+    }
 
     // Do an initial (one-way) sync (necessary for parameter servers).
     operator.first_one_way_sync_params();
@@ -543,17 +551,33 @@ impl SgdOpt {
             }
 
             //println!("DEBUG: sgd: rank: {} exact sync...", rank);
-            operator.exact_sync_params();
+            //operator.exact_sync_params();
             //println!("DEBUG: sgd: rank: {} done exact sync", rank);
 
             let mut save_or_valid = false;
+            let mut save_and_valid_elapsed_ms = 0;
+
             let save_and_valid_start_time = get_time();
             if self.elapsed_checkpoint_iters % self.config.save_iters == 0 {
+              save_or_valid = true;
+              operator.checkpoint_state(&self.config.checkpoint_dir);
+            }
+            let save_and_valid_lap_time = get_time();
+            save_and_valid_elapsed_ms += (save_and_valid_lap_time - save_and_valid_start_time).num_milliseconds();
+
+            operator.exact_sync_params();
+
+            let save_and_valid_start_time = get_time();
+            if self.elapsed_checkpoint_iters % self.config.save_iters == 0 {
+              save_or_valid = true;
               if rank == 0 {
-                save_or_valid = true;
                 operator.checkpoint_params(self.elapsed_checkpoint_iters, &self.config.checkpoint_dir);
               }
             }
+            let save_and_valid_lap_time = get_time();
+            save_and_valid_elapsed_ms += (save_and_valid_lap_time - save_and_valid_start_time).num_milliseconds();
+
+            let save_and_valid_start_time = get_time();
             if self.elapsed_checkpoint_iters % self.config.valid_iters == 0 {
               //assert!(valid_data.is_some());
               if let Some(ref mut valid_data) = valid_data {
@@ -562,7 +586,7 @@ impl SgdOpt {
               }
             }
             let save_and_valid_lap_time = get_time();
-            let save_and_valid_elapsed_ms = (save_and_valid_lap_time - save_and_valid_start_time).num_milliseconds();
+            save_and_valid_elapsed_ms += (save_and_valid_lap_time - save_and_valid_start_time).num_milliseconds();
 
             match self.config.checkpoint {
               CheckpointBehavior::Discard => {
