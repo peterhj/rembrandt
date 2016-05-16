@@ -473,7 +473,7 @@ impl CommWorker for MpiDistAsyncPullGossipCommWorker {
     if !self.checkpt_sig {
       false
     } else {
-      //Mpi::barrier_().unwrap();
+      Mpi::barrier_().unwrap();
       self.checkpt_sig = false;
       true
     }
@@ -500,7 +500,12 @@ impl CommWorker for MpiDistAsyncPullGossipCommWorker {
   }
 
   fn communicate_first(&mut self) {
-    // Do nothing.
+    let self_rank = self.worker_data.worker_rank();
+
+    let ctx = &(*self.context).as_ref();
+    self.pull_target_win.lock(self_rank, MpiWindowLockMode::Exclusive).unwrap();
+    self.src_buf.as_ref_mut(ctx).sync_store(self.pull_target_win.as_mut_slice());
+    self.pull_target_win.unlock(self_rank).unwrap();
   }
 
   fn communicate(&mut self, repeat: bool /*, ctx: &DeviceCtxRef*/) {

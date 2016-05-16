@@ -252,7 +252,6 @@ impl SgdOpt {
     self.elapsed_checkpoint_iters = init_t;
     self.chkpt_step_size = self.config.step_size.at_iter(init_t);
 
-    operator.reset();
     // If we are using the standard Nesterov update, apply some extra
     // momentum before the next iteration begins.
     match self.config.momentum {
@@ -264,6 +263,12 @@ impl SgdOpt {
 
     // Do an initial (one-way) sync (necessary for parameter servers).
     operator.first_one_way_sync_params();
+
+    operator.signal_checkpoint();
+    while !operator.wait_checkpoint() {
+    }
+
+    operator.reset();
 
     let mut start_time = get_time();
     let mut minibatch_start_time = start_time;
@@ -591,6 +596,16 @@ impl SgdOpt {
             match self.config.checkpoint {
               CheckpointBehavior::Discard => {
                 operator.restore_params();
+              }
+              CheckpointBehavior::Keep => {}
+            }
+
+            operator.signal_checkpoint();
+            while !operator.wait_checkpoint() {
+            }
+
+            match self.config.checkpoint {
+              CheckpointBehavior::Discard => {
                 start_time = get_time();
                 minibatch_start_time = start_time;
               }
