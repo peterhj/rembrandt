@@ -19,6 +19,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub trait CommWorker {
   fn worker_data(&self) -> &WorkerData;
+  fn hack_set_step_size(&mut self, _step_size: f32) { unimplemented!(); }
   fn next(&mut self) -> bool;
   fn signal_barrier(&mut self) { unimplemented!(); }
   fn wait_barrier(&mut self) -> bool { unimplemented!(); }

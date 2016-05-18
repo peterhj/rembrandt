@@ -299,6 +299,7 @@ pub struct MpiDistAsyncPullGossipCommWorker {
 
   avg_reduce:   AverageReduceOperation<f32>,
 
+  step_size:    f32,
   shared_seed:  [u64; 2],
   shared_rng:   Xorshiftplus128Rng,
   local_rng:    Xorshiftplus128Rng,
@@ -386,6 +387,7 @@ impl MpiDistAsyncPullGossipCommWorker {
       bar_signal:   bar_signal,
       recv_ranks:   vec![],
       avg_reduce:   AverageReduceOperation::new(0),
+      step_size:    0.1,
       shared_seed:  shared_seed,
       shared_rng:   Xorshiftplus128Rng::from_seed(shared_seed),
       local_rng:    Xorshiftplus128Rng::new(&mut thread_rng()),
@@ -406,6 +408,10 @@ impl MpiDistCommWorker for MpiDistAsyncPullGossipCommWorker {
 impl CommWorker for MpiDistAsyncPullGossipCommWorker {
   fn worker_data(&self) -> &WorkerData {
     &self.worker_data
+  }
+
+  fn hack_set_step_size(&mut self, step_size: f32) {
+    self.step_size = step_size;
   }
 
   fn next(&mut self) -> bool {
@@ -551,9 +557,15 @@ impl CommWorker for MpiDistAsyncPullGossipCommWorker {
         if self_rank == recv_rank {
           self.src_buf.as_ref(ctx).send(&mut self.dst_buf.as_ref_mut(ctx));
         } else {
-          self.dst_buf.as_ref_mut(ctx).sync_load(self.pull_origin_buf_h.as_ref());
+          // XXX(20160517): This version has a constantly weighted average.
+          /*self.dst_buf.as_ref_mut(ctx).sync_load(self.pull_origin_buf_h.as_ref());
           self.dst_buf.as_ref_mut(ctx).row_vector_sum(1.0, &self.src_buf.as_ref(ctx));
-          self.dst_buf.as_ref_mut(ctx).row_vector_scale(0.5);
+          self.dst_buf.as_ref_mut(ctx).row_vector_scale(0.5);*/
+
+          // XXX(20160517): This version weights the average with the step size.
+          self.dst_buf.as_ref_mut(ctx).sync_load(self.pull_origin_buf_h.as_ref());
+          self.dst_buf.as_ref_mut(ctx).row_vector_scale(5.0 * self.step_size);
+          self.dst_buf.as_ref_mut(ctx).row_vector_sum(1.0 - 5.0 * self.step_size, &self.src_buf.as_ref(ctx));
         }
         ctx.sync();
       } else if self.num_rounds > 1 {
