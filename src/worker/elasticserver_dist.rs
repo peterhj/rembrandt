@@ -146,6 +146,9 @@ impl MpiDistElasticServerCentralWorker {
         //println!("DEBUG: elastic server: central: signal clients to barrier...");
         self.recv_reqs.clear();
         for r in 0 .. self.num_workers {
+          if r == 0 {
+            continue;
+          }
           let send_req = match MpiComm::world().nonblocking_send(&dummy_buf[ .. 0], r, 0x22) {
             Ok(req) => req,
             Err(e) => panic!(),
@@ -580,18 +583,31 @@ impl CommWorker for MpiDistElasticServerCommWorker {
   }
 
   fn wait_barrier(&mut self) -> bool {
-    if self.rank0_signal {
-      assert_eq!(0, self.worker_data.worker_rank());
-      self.rank0_signal = false;
-      return true;
-    }
-    match MpiComm::world().nonblocking_probe(Some(0), Some(0x22)) {
-      Err(e) => panic!("elastic server: central: failed to do first recv: {:?}", e),
-      Ok(None) => {
+    let mut dummy_buf: Vec<u8> = Vec::with_capacity(64);
+    if self.worker_data.worker_rank() == 0 {
+      if self.rank0_signal {
+        assert_eq!(0, self.worker_data.worker_rank());
+        self.rank0_signal = false;
+        //Mpi::barrier_().unwrap();
+        true
+      } else {
         false
       }
-      Ok(Some(status)) => {
-        true
+    } else {
+      match MpiComm::world().nonblocking_probe(Some(0), Some(0x22)) {
+        Err(e) => panic!("elastic server: central: failed to do first recv: {:?}", e),
+        Ok(None) => {
+          false
+        }
+        Ok(Some(status)) => {
+          let mut recv_req = match MpiComm::world().nonblocking_recv(&mut dummy_buf[ .. 0], Some(0), Some(0x22)) {
+            Ok(req) => req,
+            Err(e) => panic!(),
+          };
+          recv_req.wait().unwrap();
+          //Mpi::barrier_().unwrap();
+          true
+        }
       }
     }
 
@@ -707,11 +723,11 @@ impl CommWorker for MpiDistElasticServerCommWorker {
     let mut dummy_buf: Vec<u8> = Vec::with_capacity(64);
 
     //println!("DEBUG: ");
-    let mut recv_req = match MpiComm::world().nonblocking_recv(&mut dummy_buf[ .. 0], Some(0), Some(0x22)) {
+    /*let mut recv_req = match MpiComm::world().nonblocking_recv(&mut dummy_buf[ .. 0], Some(0), Some(0x22)) {
       Ok(req) => req,
       Err(e) => panic!(),
     };
-    recv_req.wait().unwrap();
+    recv_req.wait().unwrap();*/
 
     if self.worker_data.worker_rank() == 0 {
       self.send_reqs.clear();
