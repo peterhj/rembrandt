@@ -558,14 +558,14 @@ impl CommWorker for MpiDistAsyncPullGossipCommWorker {
           self.src_buf.as_ref(ctx).send(&mut self.dst_buf.as_ref_mut(ctx));
         } else {
           // XXX(20160517): This version has a constantly weighted average.
-          /*self.dst_buf.as_ref_mut(ctx).sync_load(self.pull_origin_buf_h.as_ref());
+          self.dst_buf.as_ref_mut(ctx).sync_load(self.pull_origin_buf_h.as_ref());
           self.dst_buf.as_ref_mut(ctx).row_vector_sum(1.0, &self.src_buf.as_ref(ctx));
-          self.dst_buf.as_ref_mut(ctx).row_vector_scale(0.5);*/
+          self.dst_buf.as_ref_mut(ctx).row_vector_scale(0.5);
 
           // XXX(20160517): This version weights the average with the step size.
-          self.dst_buf.as_ref_mut(ctx).sync_load(self.pull_origin_buf_h.as_ref());
+          /*self.dst_buf.as_ref_mut(ctx).sync_load(self.pull_origin_buf_h.as_ref());
           self.dst_buf.as_ref_mut(ctx).row_vector_scale(5.0 * self.step_size);
-          self.dst_buf.as_ref_mut(ctx).row_vector_sum(1.0 - 5.0 * self.step_size, &self.src_buf.as_ref(ctx));
+          self.dst_buf.as_ref_mut(ctx).row_vector_sum(1.0 - 5.0 * self.step_size, &self.src_buf.as_ref(ctx));*/
         }
         ctx.sync();
       } else if self.num_rounds > 1 {
