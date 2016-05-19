@@ -1206,6 +1206,10 @@ impl<Comm> OperatorWorker for MpiDistSequentialOperatorWorker<Comm> where Comm: 
     &mut *self.loss_op
   }
 
+  fn hack_set_step_size(&mut self, step_size: f32) {
+    self.comm_worker.borrow_mut().hack_set_step_size(step_size);
+  }
+
   fn next(&mut self) {
     self.comm_worker.borrow_mut().next();
   }
