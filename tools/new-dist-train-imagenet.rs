@@ -55,7 +55,15 @@ use rembrandt::operator::worker::{
   SequentialOperatorWorkerBuilder,
 };
 use rembrandt::opt::sgd::{
-  SgdOptConfig, StepSizeSchedule, Momentum, SyncOrder, OptSharedData, //SgdOpt,
+  SgdOptConfig,
+  InitBehavior,
+  StepSizeSchedule,
+  StepSizeReference,
+  Momentum,
+  SyncOrder,
+  CheckpointBehavior,
+  OptSharedData,
+  //SgdOpt,
 };
 use rembrandt::opt::sgd::new::{
   SgdOpt,
@@ -81,6 +89,7 @@ use rembrandt::worker::gossip_pull_dist_rdma::{
 };
 use rembrandt::worker::gossip_dist::{
   MpiDistAsyncPushGossipCommWorker,
+  ExperimentConfig,
   MpiDistSequentialOperatorWorkerBuilder,
   MpiDistSequentialOperatorWorker,
 };
@@ -100,8 +109,8 @@ fn main() {
   env_logger::init().unwrap();
 
   //let num_workers = 1;
-  let batch_size = 16;
-  let minibatch_size = 16;
+  let batch_size = 32;
+  let minibatch_size = 128;
   /*let batch_size = 32;
   let minibatch_size = 32;*/
   /*let batch_size = 64;
@@ -110,29 +119,40 @@ fn main() {
   info!("batch size: {}", batch_size);
 
   let sgd_opt_cfg = SgdOptConfig{
-    init_t:         None,
-    //init_t:         Some(120_000),
+    init:           InitBehavior::InitOrResume,
+    //init_t:         None,
+    //init_t:         Some(150_000),
     minibatch_size: minibatch_size,
     //step_size:      StepSizeSchedule::Constant{step_size: 0.1},
     step_size:      StepSizeSchedule::Anneal2{
       /*step0: 0.1,
       step1: 0.01,  step1_iters: 150_000,
       step2: 0.001, step2_iters: 300_000,*/
-      step0: 0.05,
-      step1: 0.005,  step1_iters: 150_000,
-      step2: 0.0005, step2_iters: 300_000,
+      step0: 0.1,
+      step1: 0.01,  step1_iters: 18_750,
+      step2: 0.001, step2_iters: 37_500,
     },
+    step_ref:       StepSizeReference::Checkpoint,
     //momentum:       MomentumStyle::Zero,
     momentum:       Momentum::UpdateNesterov{mu: 0.9},
     //momentum:       Momentum::GradientNesterov{mu: 0.9},
     l2_reg_coef:    1.0e-4,
-    sync_order:     SyncOrder::StepThenSyncParams,  // XXX: for gossip.
+    //sync_order:     SyncOrder::StepThenSyncParams,  // XXX: for gossip.
     //sync_order:     SyncOrder::SyncParamsThenStep,  // XXX: for elastic averaging.
-    //sync_order:     SyncOrder::SyncGradsThenStep,   // XXX: for allreduce.
+    sync_order:     SyncOrder::SyncGradsThenStep,   // XXX: for allreduce.
+    checkpoint:     CheckpointBehavior::Discard,
     comm_interval:  1,
     display_iters:      25,
+    /*checkpoint_iters:   50,
+    save_iters:         50,
+    valid_iters:        50,*/
     checkpoint_iters:   625,
-    //checkpoint_iters:   1250,
+    save_iters:         625,
+    valid_iters:        625,
+    /*display_iters:      50,
+    checkpoint_iters:   1250,
+    save_iters:         1250,
+    valid_iters:        1250,*/
 
     //checkpoint_dir:     PathBuf::from("models/imagenet_warp256x256-async_push_gossip_x8-run1-step2_120k"),
     //checkpoint_dir:     PathBuf::from("models/imagenet_warp256x256-async_push_gossip_x8-run2"),
@@ -150,10 +170,20 @@ fn main() {
     //checkpoint_dir:     PathBuf::from("models/imagenet_maxscale480-pushgossip_x8_run1"),
     //checkpoint_dir:     PathBuf::from("models/imagenet_maxscale480-pushgossip_x8_run2_lr0.1"),
     //checkpoint_dir:     PathBuf::from("models/imagenet_maxscale480-pushgossip_x8_test"),
-    checkpoint_dir:     PathBuf::from("models/imagenet_maxscale480-pushgossip_x16_run1"),
+    //checkpoint_dir:     PathBuf::from("models/imagenet_maxscale480-pushgossip_x16_run1"),
+    //checkpoint_dir:     PathBuf::from("models/imagenet_maxscale480-pushgossip_x16_run2_minibatch128"),
     //checkpoint_dir:     PathBuf::from("models/imagenet_maxscale480-pullgossip_x8_run1"),
     //checkpoint_dir:     PathBuf::from("models/imagenet_maxscale480-sync_x8_run1"),
+    //checkpoint_dir:     PathBuf::from("models/imagenet_maxscale480-sync_x8_run2"),
+    //checkpoint_dir:     PathBuf::from("models/imagenet_maxscale480-sync_x16_run1"),
+    checkpoint_dir:     PathBuf::from("models/imagenet_maxscale480-sync_x16_run2_minibatch128"),
+    //checkpoint_dir:     PathBuf::from("models/imagenet_maxscale480-elastic_x8_run1"),
+    //checkpoint_dir:     PathBuf::from("models/imagenet_maxscale480-elastic_x8_run1_pt2"),
+    //checkpoint_dir:     PathBuf::from("models/imagenet_maxscale480-elastic_x8_run2"),
+    //checkpoint_dir:     PathBuf::from("models/imagenet_maxscale480-elastic_x16_run1"),
+    //checkpoint_dir:     PathBuf::from("models/imagenet_maxscale480-elastic_x16_run2_minibatch128"),
     //checkpoint_dir:     PathBuf::from("models/imagenet_maxscale480-test"),
+    //checkpoint_dir:     PathBuf::from("models/imagenet_maxscale480-x1_run1"),
   };
   info!("sgd: {:?}", sgd_opt_cfg);
 
@@ -170,10 +200,15 @@ fn main() {
 
   info!("operator: {:?}", worker_cfg);
 
+  let exp_cfg = ExperimentConfig{
+    straggler_ranks:        vec![],
+    straggler_max_delay_ms: 300,
+  };
+
   // FIXME(20160331)
   //let comm_worker_builder = DeviceSyncGossipCommWorkerBuilder::new(num_workers, 1, worker_cfg.params_len());
   //let worker_builder = SequentialOperatorWorkerBuilder::new(num_workers, batch_size, worker_cfg, OpCapability::Backward);
-  let worker_builder = MpiDistSequentialOperatorWorkerBuilder::new(batch_size, worker_cfg.clone(), OpCapability::Backward);
+  let worker_builder = MpiDistSequentialOperatorWorkerBuilder::new(batch_size, worker_cfg.clone(), OpCapability::Backward, exp_cfg);
   let opt_shared = Arc::new(OptSharedData::new(1));
 
   let context = Rc::new(DeviceContext::new(0));
@@ -187,10 +222,10 @@ fn main() {
   };
 
   let msg_len = 32 * 1024;
-  let comm_worker = Rc::new(RefCell::new(MpiDistAsyncPushGossipCommWorker::new(gossip_cfg, context.clone())));
+  //let comm_worker = Rc::new(RefCell::new(MpiDistAsyncPushGossipCommWorker::new(gossip_cfg, context.clone())));
   //let comm_worker = Rc::new(RefCell::new(MpiDistAsyncPullGossipCommWorker::new(msg_len, gossip_cfg, context.clone())));
   //let comm_worker = Rc::new(RefCell::new(MpiDistElasticServerCommWorker::new(paramserver_cfg, context.clone())));
-  //let comm_worker = Rc::new(RefCell::new(MpiDistSyncAllreduceCommWorker::new(paramserver_cfg, context.clone())));
+  let comm_worker = Rc::new(RefCell::new(MpiDistSyncAllreduceCommWorker::new(paramserver_cfg, context.clone())));
   let mut worker = worker_builder.into_worker(context, comm_worker);
 
   /*let dataset_cfg = DatasetConfig::open(&PathBuf::from("examples/imagenet.data"));
