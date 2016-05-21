@@ -58,6 +58,7 @@ pub trait OperatorWorker: Operator {
   fn loss_operator(&mut self, rank: usize) -> &mut LossOperator;
 
   //fn wait_barrier(&self) { unimplemented!(); }
+  fn hack_set_step_size(&mut self, _step_size: f32) { unimplemented!(); }
   fn next(&mut self) {}
   fn signal_checkpoint(&mut self) { unimplemented!(); }
   fn wait_checkpoint(&mut self) -> bool { unimplemented!(); }

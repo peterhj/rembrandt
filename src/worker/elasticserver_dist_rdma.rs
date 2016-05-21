@@ -122,15 +122,20 @@ struct MpiDistElasticServerPassiveWorker {
   center_origin:    MpiMemory<f32>,
   //center_buf:       Arc<Mutex<DeviceBuffer<f32>>>,
   center_buf:       Arc<Mutex<RawDeviceBuffer<f32>>>,
-  local_target: MpiOwnedWindow<f32, MpiMemory<f32>>,
+  //local_target: MpiOwnedWindow<f32, MpiMemory<f32>>,
+  local_target: Arc<Mutex<MpiOwnedWindow<f32, MpiMemory<f32>>>>,
   local_origin: MpiMemory<f32>,
+  //dst_target:       Arc<Mutex<MpiOwnedWindow<f32, MpiMemory<f32>>>>,
   //local_buf:    DeviceBuffer<f32>,
   local_buf:    RawDeviceBuffer<f32>,
 }
 
 impl MpiDistElasticServerPassiveWorker {
   pub fn run(mut self) {
-    let sleep_duration = Duration::new(0, 50_000);
+    //let sleep_duration = Duration::new(0, 50_000);
+    let sleep_duration = Duration::new(0, 100_000);
+    //let sleep_duration = Duration::new(0, 200_000);
+    //let sleep_duration = Duration::new(0, 1_000_000);
     //let mut poll_ranks: Vec<_> = (0 .. self.num_workers).collect();
 
     'poll_loop: loop {
@@ -148,35 +153,38 @@ impl MpiDistElasticServerPassiveWorker {
       let state = ElasticServerPassiveState::from_raw(self.state_origin.as_ref()[0]);
 
       match state {
-        ElasticServerPassiveState::Ready => {}
+        ElasticServerPassiveState::Ready => {
+          sleep(sleep_duration);
+        }
 
-        ElasticServerPassiveState::Receiving{target_rank} => {}
+        ElasticServerPassiveState::Receiving{target_rank} => {
+          sleep(sleep_duration);
+        }
 
         ElasticServerPassiveState::DoneReceiving{target_rank} => {
           let ctx = &self.context.as_ref();
 
-          /*{
-            let mut dst_target = self.dst_target.lock().unwrap();
-            dst_target.lock(target_rank, MpiWindowLockMode::Exclusive).unwrap();
-            for msg in 0 .. self.num_msgs {
-              dst_target.put_(
-                  self.center_origin.as_ref().as_ptr(),
-                  min(self.msg_len, self.buf_len - msg * self.msg_len),
-                  target_rank,
-                  msg * self.msg_len,
-              ).unwrap();
-            }
-            dst_target.unlock(target_rank);
-          }*/
+          {
+            let mut local_target = self.local_target.lock().unwrap();
+            local_target.lock(0, MpiWindowLockMode::Shared).unwrap();
+            /*unsafe { local_target.get_(
+                self.local_origin.as_mut().as_mut_ptr(),
+                self.buf_len, 0, 0,
+            ).unwrap() };*/
+            self.local_buf.sync_load(local_target.as_slice(), ctx);
+            ctx.blocking_sync();
+            local_target.unlock(0).unwrap();
+          }
+
+          //self.local_buf.as_ref_mut(ctx).sync_load(self.local_origin.as_ref());
+          //self.local_buf.sync_load(self.local_origin.as_ref(), ctx);
 
           {
             let mut center_buf = self.center_buf.lock().unwrap();
             //center_buf.as_ref_mut(ctx).sync_load(self.center_origin.as_ref());
-            //self.local_buf.as_ref_mut(ctx).sync_load(self.local_origin.as_ref());
-            center_buf.sync_load(self.center_origin.as_ref(), ctx);
-            self.local_buf.sync_load(self.local_origin.as_ref(), ctx);
             //center_buf.as_ref_mut(ctx).row_vector_scale(1.0 - 0.8 / self.num_workers as f32);
             //center_buf.as_ref_mut(ctx).row_vector_sum(0.8 / self.num_workers as f32, &self.local_buf.as_ref(ctx));
+            center_buf.sync_load(self.center_origin.as_ref(), ctx);
             center_buf.as_ref().async_vector_scale(1.0 - 0.8 / self.num_workers as f32, ctx);
             center_buf.as_ref().async_vector_add(0.8 / self.num_workers as f32, &self.local_buf.as_ref(), ctx);
             ctx.blocking_sync();
@@ -192,8 +200,6 @@ impl MpiDistElasticServerPassiveWorker {
           state_target.unlock(0).unwrap();
         }
       }
-
-      sleep(sleep_duration);
     }
   }
 }
@@ -277,7 +283,8 @@ impl MpiDistElasticServerCommWorker {
     let rdma_buf_len = gossip_cfg.buf_size + 1; //num_rdma_buf_msgs * msg_len;
     assert!(gossip_cfg.num_rounds >= 1);*/
 
-    let mpi = Mpi::new_serialized();
+    //let mpi = Mpi::new_serialized();
+    let mpi = Mpi::new();
     let worker_rank = mpi.rank();
     let num_workers = mpi.size();
 
@@ -343,41 +350,19 @@ impl MpiDistElasticServerCommWorker {
     let center_thr = if worker_rank == 0 {
       let center_target = center_target.clone();
       let center_buf = center_buf.clone().unwrap();
+      let local_target = local_target.clone();
       let state_target = state_target.clone();
       Some(spawn(move || {
         let context = DeviceContext::new(dev_idx);
 
         let center_origin = MpiMemory::alloc_(buf_len).unwrap();
-        //let center_buf = DeviceBuffer::zeros(buf_len, &context.as_ref());
 
-        let local_target_buf_h = MpiMemory::<f32>::alloc_(buf_len).unwrap();
-        let local_target = MpiOwnedWindow::create_(local_target_buf_h).unwrap();
         let local_origin = MpiMemory::alloc_(buf_len).unwrap();
-        //let local_buf = DeviceBuffer::zeros(buf_len, &context.as_ref());
         let local_buf = unsafe { RawDeviceBuffer::new(buf_len, &context.as_ref()) };
 
         //let pull_target_win = pull_target_win.clone();
 
         MpiDistElasticServerPassiveWorker{
-  /*worker_rank:  usize,
-  num_workers:  usize,
-  buf_len:      usize,
-  msg_len:      usize,
-  num_msgs:     usize,
-  //num_buf_msgs: usize,
-  //rdma_buf_len: usize,
-  //state:        ElasticServerPassiveState,
-  context:      DeviceContext,
-  req_list:     MpiRequestList,
-  state_target: MpiOwnedWindow<u64, MpiMemory<u64>>,
-  state_origin: MpiMemory<u64>,
-  //center_target:    MpiOwnedWindow<f32, MpiMemory<f32>>,
-  //dst_target:       Arc<Mutex<MpiOwnedWindow<f32, MpiMemory<f32>>>>,
-  center_origin:    MpiMemory<f32>,
-  center_buf:       Arc<Mutex<DeviceBuffer<f32>>>,
-  local_target: MpiOwnedWindow<f32, MpiMemory<f32>>,
-  local_origin: MpiMemory<f32>,
-  local_buf:    DeviceBuffer<f32>,*/
           worker_rank:  worker_rank,
           num_workers:  num_workers,
           buf_len:      buf_len,
@@ -563,20 +548,36 @@ impl CommWorker for MpiDistElasticServerCommWorker {
     let self_rank = self.worker_data.worker_rank();
 
     let ctx = &(*self.context).as_ref();
-    self.pull_target_win.lock(self_rank, MpiWindowLockMode::Exclusive).unwrap();
+
+    if self_rank == 0 {
+      let mut center_buf = self.center_buf.as_mut().unwrap().lock().unwrap();
+      //center_buf.lock(0, MpiWindowLockMode::Exclusive).unwrap();
+      self.src_buf.as_ref(ctx).raw_send(&center_buf.as_ref());
+      //center_buf.unlock(0).unwrap();
+      ctx.blocking_sync();
+    }
+
+    /*self.pull_target_win.lock(self_rank, MpiWindowLockMode::Exclusive).unwrap();
     self.src_buf.as_ref_mut(ctx).sync_store(self.pull_target_win.as_mut_slice());
-    self.pull_target_win.unlock(self_rank).unwrap();
+    self.pull_target_win.unlock(self_rank).unwrap();*/
   }
 
   fn communicate(&mut self, _repeat: bool /*, ctx: &DeviceCtxRef*/) {
-    let sleep_duration = Duration::new(0, 50_000);
+    //let sleep_duration = Duration::new(0, 50_000);
+    //let sleep_duration = Duration::new(0, 100_000);
+    //let sleep_duration = Duration::new(0, 200_000);
+    //let sleep_duration = Duration::new(0, 1_000_000);
+    let sleep_duration = Duration::new(0, 2_000_000);
     let self_rank = self.worker_data.worker_rank();
     let num_workers = self.worker_data.num_workers();
 
     let ctx = &(*self.context).as_ref();
-    self.pull_target_win.lock(self_rank, MpiWindowLockMode::Exclusive).unwrap();
+
+    /*self.pull_target_win.lock(self_rank, MpiWindowLockMode::Exclusive).unwrap();
     self.src_buf.as_ref_mut(ctx).sync_store(self.pull_target_win.as_mut_slice());
-    self.pull_target_win.unlock(self_rank).unwrap();
+    self.pull_target_win.unlock(self_rank).unwrap();*/
+
+    self.src_buf.as_ref(ctx).sync_store(self.local_origin.as_mut());
 
     let ready_rawstate = ElasticServerPassiveState::Ready.into_raw();
     let recv_rawstate = ElasticServerPassiveState::Receiving{target_rank: self_rank}.into_raw();
@@ -648,6 +649,7 @@ impl CommWorker for MpiDistElasticServerCommWorker {
     assert_eq!(self.state_result.as_ref()[0], recv_rawstate);
 
     self.active_center_buf.as_ref_mut(ctx).sync_load(self.center_origin.as_ref());
+    self.src_buf.as_ref(ctx).send(&mut self.dst_buf.as_ref_mut(ctx));
     self.dst_buf.as_ref_mut(ctx).row_vector_scale(1.0 - 0.8 / num_workers as f32);
     self.dst_buf.as_ref_mut(ctx).row_vector_sum(0.8 / num_workers as f32, &self.active_center_buf.as_ref(ctx));
 
@@ -683,7 +685,7 @@ impl CommWorker for MpiDistElasticServerCommWorker {
       let mut center_buf = self.center_buf.as_mut().unwrap().lock().unwrap();
       center_buf.sync_store(self.center_origin.as_mut(), ctx);
     }
-    //ctx.sync();
+    ctx.blocking_sync();
     self.send_reqs.clear();
     for msg in 0 .. self.num_buf_msgs {
       let req = MpiComm::world().nonblocking_broadcast_(
@@ -709,7 +711,7 @@ impl CommWorker for MpiDistElasticServerCommWorker {
           MpiSumOp,
       ).unwrap();
     }
-    Mpi::barrier_().unwrap();
+    //Mpi::barrier_().unwrap();
   }
 
   fn store(&mut self, offset: usize, data: &mut DeviceArray2d<f32>/*, ctx: &DeviceCtxRef*/) {
