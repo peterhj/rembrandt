@@ -1,5 +1,7 @@
 use operator::{
-  Operator, InputOperator,
+  Operator,
+  InputOperator,
+  LossOperator,
   OperatorNode, OperatorConfig,
   OpCapability, OpPhase,
   Regularization,
@@ -15,7 +17,6 @@ use operator::comm::{
   GossipConfig,
 };
 use operator::loss::{
-  LossOperator,
   CategoricalLossConfig,
 };
 use operator::worker::{

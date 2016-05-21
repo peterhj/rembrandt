@@ -1,5 +1,7 @@
 use operator::{
-  Operator, InputOperator,
+  Operator,
+  InputOperator,
+  LossOperator,
   OperatorNode, OperatorConfig,
   OpCapability, OpPhase,
   Regularization,
@@ -15,7 +17,6 @@ use operator::comm::{
   GossipConfig,
 };
 use operator::loss::{
-  LossOperator,
   CategoricalLossConfig,
 };
 use operator::worker::{
@@ -1097,7 +1098,7 @@ impl MpiDistSequentialOperatorWorkerBuilder {
     //let input_op = config.input_op.unwrap().build_input_operator::<MpiDistSyncAllreduceCommWorker>(self.batch_size, context.clone());
     //let input_op = config.input_op.unwrap().build_input_operator::<MpiDistSyncGossipCommWorker>(self.batch_size, context.clone());
     //let input_op = config.input_op.unwrap().build_input_operator::<MpiDistAsyncPushGossipCommWorker>(self.batch_size, context.clone());
-    let input_op = config.input_op.unwrap().build_input_operator::<Comm>(self.batch_size, context.clone());
+    let input_op = config.input_op.unwrap().build_input_operator(self.batch_size, context.clone());
     let mut hidden_ops: Vec<Box<Operator>> = vec![];
     let mut params_off = 0;
     for r in 0 .. config.hidden_ops.len() {
@@ -1110,7 +1111,7 @@ impl MpiDistSequentialOperatorWorkerBuilder {
         //config.hidden_ops[r].build_operator::<MpiDistSyncAllreduceCommWorker>(self.batch_size, self.capability, params_off, Some(prev_op), Some(comm_worker.clone()), context.clone())
         //config.hidden_ops[r].build_operator::<MpiDistSyncGossipCommWorker>(self.batch_size, self.capability, params_off, Some(prev_op), Some(comm_worker.clone()), context.clone())
         //config.hidden_ops[r].build_operator::<MpiDistAsyncPushGossipCommWorker>(self.batch_size, self.capability, params_off, Some(prev_op), Some(comm_worker.clone()), context.clone())
-        config.hidden_ops[r].build_operator::<Comm>(self.batch_size, self.capability, params_off, Some(prev_op), Some(comm_worker.clone()), context.clone())
+        config.hidden_ops[r].build_operator(self.batch_size, self.capability, params_off, Some(prev_op), /*Some(comm_worker.clone()),*/ context.clone())
       };
       hidden_ops.push(hidden_op);
       params_off += config.hidden_ops[r].params_len();
@@ -1125,7 +1126,7 @@ impl MpiDistSequentialOperatorWorkerBuilder {
       //config.loss_op.unwrap().build_loss_operator::<MpiDistSyncAllreduceCommWorker>(self.batch_size, Some(prev_op), context.clone())
       //config.loss_op.unwrap().build_loss_operator::<MpiDistSyncGossipCommWorker>(self.batch_size, Some(prev_op), context.clone())
       //config.loss_op.unwrap().build_loss_operator::<MpiDistAsyncPushGossipCommWorker>(self.batch_size, Some(prev_op), context.clone())
-      config.loss_op.unwrap().build_loss_operator::<Comm>(self.batch_size, Some(prev_op), context.clone())
+      config.loss_op.unwrap().build_loss_operator(self.batch_size, Some(prev_op), context.clone())
     };
 
     let mut exp_is_straggler = false;
@@ -1412,14 +1413,14 @@ impl<Comm> OperatorWorker for MpiDistSequentialOperatorWorker<Comm> where Comm: 
     }
   }
 
-  fn sync_grads_v2(&mut self, repeat: bool) {
+  fn sync_grads(&mut self, repeat: bool) {
     if self.num_workers() <= 1 {
       return;
     }
     {
       let mut offset = 0;
       for op in self.hidden_ops.iter_mut() {
-        offset += op.stage_grads_v2(offset, &mut *self.comm_worker.borrow_mut());
+        offset += op.stage_grads(offset, &mut *self.comm_worker.borrow_mut());
       }
     }
     self.comm_worker.borrow_mut().complete_load();
@@ -1427,20 +1428,20 @@ impl<Comm> OperatorWorker for MpiDistSequentialOperatorWorker<Comm> where Comm: 
     {
       let mut offset = 0;
       for op in self.hidden_ops.iter_mut() {
-        offset += op.merge_grads_v2(offset, &mut *self.comm_worker.borrow_mut());
+        offset += op.merge_grads(offset, &mut *self.comm_worker.borrow_mut());
       }
     }
     self.comm_worker.borrow_mut().complete_store();
   }
 
-  fn sync_params_v2(&mut self) {
+  fn sync_params(&mut self) {
     if self.num_workers() <= 1 {
       return;
     }
     {
       let mut offset = 0;
       for op in self.hidden_ops.iter_mut() {
-        offset += op.stage_params_v2(offset, &mut *self.comm_worker.borrow_mut());
+        offset += op.stage_params(offset, &mut *self.comm_worker.borrow_mut());
       }
     }
     self.comm_worker.borrow_mut().complete_load();
@@ -1448,23 +1449,23 @@ impl<Comm> OperatorWorker for MpiDistSequentialOperatorWorker<Comm> where Comm: 
     {
       let mut offset = 0;
       for op in self.hidden_ops.iter_mut() {
-        offset += op.merge_params_v2(offset, &mut *self.comm_worker.borrow_mut());
+        offset += op.merge_params(offset, &mut *self.comm_worker.borrow_mut());
       }
     }
     self.comm_worker.borrow_mut().complete_store();
   }
 
-  fn sync_params_and_grads_v2(&mut self) {
+  fn sync_params_and_grads(&mut self) {
     if self.num_workers() <= 1 {
       return;
     }
     {
       let mut offset = 0;
       for op in self.hidden_ops.iter_mut() {
-        offset += op.stage_params_v2(offset, &mut *self.comm_worker.borrow_mut());
+        offset += op.stage_params(offset, &mut *self.comm_worker.borrow_mut());
       }
       for op in self.hidden_ops.iter_mut() {
-        offset += op.stage_grads_v2(offset, &mut *self.comm_worker.borrow_mut());
+        offset += op.stage_grads(offset, &mut *self.comm_worker.borrow_mut());
       }
     }
     self.comm_worker.borrow_mut().complete_load();
@@ -1472,10 +1473,10 @@ impl<Comm> OperatorWorker for MpiDistSequentialOperatorWorker<Comm> where Comm: 
     {
       let mut offset = 0;
       for op in self.hidden_ops.iter_mut() {
-        offset += op.merge_params_v2(offset, &mut *self.comm_worker.borrow_mut());
+        offset += op.merge_params(offset, &mut *self.comm_worker.borrow_mut());
       }
       for op in self.hidden_ops.iter_mut() {
-        offset += op.merge_grads_v2(offset, &mut *self.comm_worker.borrow_mut());
+        offset += op.merge_grads(offset, &mut *self.comm_worker.borrow_mut());
       }
     }
     self.comm_worker.borrow_mut().complete_store();
@@ -1489,7 +1490,7 @@ impl<Comm> OperatorWorker for MpiDistSequentialOperatorWorker<Comm> where Comm: 
     {
       let mut offset = 0;
       for op in self.hidden_ops.iter_mut() {
-        offset += op.stage_params_v2(offset, &mut *self.comm_worker.borrow_mut());
+        offset += op.stage_params(offset, &mut *self.comm_worker.borrow_mut());
       }
     }
     //println!("DEBUG: first one way sync: rank: {} loading...", self.worker_rank());
@@ -1502,7 +1503,7 @@ impl<Comm> OperatorWorker for MpiDistSequentialOperatorWorker<Comm> where Comm: 
     /*{
       let mut offset = 0;
       for op in self.hidden_ops.iter_mut() {
-        offset += op.merge_params_v2(offset, &mut *self.comm_worker.borrow_mut());
+        offset += op.merge_params(offset, &mut *self.comm_worker.borrow_mut());
       }
     }
     self.comm_worker.borrow_mut().complete_store();*/
@@ -1515,7 +1516,7 @@ impl<Comm> OperatorWorker for MpiDistSequentialOperatorWorker<Comm> where Comm: 
     {
       let mut offset = 0;
       for op in self.hidden_ops.iter_mut() {
-        offset += op.stage_params_v2(offset, &mut *self.comm_worker.borrow_mut());
+        offset += op.stage_params(offset, &mut *self.comm_worker.borrow_mut());
       }
     }
     self.comm_worker.borrow_mut().complete_load();
@@ -1523,7 +1524,7 @@ impl<Comm> OperatorWorker for MpiDistSequentialOperatorWorker<Comm> where Comm: 
     {
       let mut offset = 0;
       for op in self.hidden_ops.iter_mut() {
-        offset += op.merge_params_v2(offset, &mut *self.comm_worker.borrow_mut());
+        offset += op.merge_params(offset, &mut *self.comm_worker.borrow_mut());
       }
     }
     self.comm_worker.borrow_mut().complete_store();
@@ -1618,14 +1619,14 @@ impl<Comm> Operator for MpiDistSequentialOperatorWorker<Comm> where Comm: CommWo
     }
   }
 
-  fn set_grads_with_params_diff(&mut self) {
+  /*fn set_grads_with_params_diff(&mut self) {
     // XXX(20160425): deprecated.
     unimplemented!();
 
     for op in self.hidden_ops.iter_mut() {
       op.set_grads_with_params_diff();
     }
-  }
+  }*/
 
   /*fn sync_grads(&mut self) {
     unimplemented!();

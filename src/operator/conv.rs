@@ -12,11 +12,6 @@ use operator::{
   Conv2dOperatorConfig,
 };
 use operator::comm::{CommWorker};
-use operator::loss::{
-  LossOperator,
-  CategoricalLossConfig,
-  SoftmaxKLLossOperator,
-};
 
 use array_cuda::device::array::{DeviceArray2d};
 use array_cuda::device::context::{DeviceContext, DeviceCtxRef};
@@ -103,7 +98,7 @@ impl BNormConv2dOperatorConfig {
   }
 }
 
-pub struct BNormConv2dOperator<Comm> {
+pub struct BNormConv2dOperator {
   batch_cap:    usize,
   _capability:  OpCapability,
   params_off:   usize,
@@ -140,11 +135,11 @@ pub struct BNormConv2dOperator<Comm> {
   bn_cached_ivar1:      DeviceArray2d<f32>,
   batchnorm1:           CudnnBatchNormOp,
 
-  backward:     Option<BNormConv2dBwdOperator<Comm>>,
+  backward:     Option<BNormConv2dBwdOperator>,
   hv_backward:  Option<BNormConv2dHvBwdOperator>,
 }
 
-struct BNormConv2dBwdOperator<Comm> {
+struct BNormConv2dBwdOperator {
   grad_weights: DeviceArray2d<f32>,
   acc_grad_weights: DeviceArray2d<f32>,
   save_weights: DeviceArray2d<f32>,
@@ -154,15 +149,15 @@ struct BNormConv2dBwdOperator<Comm> {
 
   first_batch1: bool,
 
-  comm_worker:  Rc<RefCell<Comm>>,
+  //comm_worker:  Rc<RefCell<Comm>>,
 }
 
 struct BNormConv2dHvBwdOperator {
   dir_weights:  DeviceArray2d<f32>,
 }
 
-impl<Comm> BNormConv2dOperator<Comm> where Comm: CommWorker {
-  pub fn new(batch_size: usize, capability: OpCapability, params_offset: usize, config: BNormConv2dOperatorConfig, prev_op: Option<&Operator>, comm_worker: Option<Rc<RefCell<Comm>>>, context: Rc<DeviceContext>) -> BNormConv2dOperator<Comm> {
+impl BNormConv2dOperator {
+  pub fn new(batch_size: usize, capability: OpCapability, params_offset: usize, config: BNormConv2dOperatorConfig, prev_op: Option<&Operator>, /*comm_worker: Option<Rc<RefCell<Comm>>>,*/ context: Rc<DeviceContext>) -> BNormConv2dOperator {
     let BNormConv2dOperatorConfig{
       in_dims, conv_size, conv_stride, conv_pad,
       .. } = config;
@@ -216,7 +211,7 @@ impl<Comm> BNormConv2dOperator<Comm> where Comm: CommWorker {
         conv_bwd_w:   conv_bwd_w,
         conv_bwd_d:   conv_bwd_d,
         first_batch1: true,
-        comm_worker:  comm_worker.unwrap(),
+        //comm_worker:  comm_worker.unwrap(),
       })
     } else {
       None
@@ -276,7 +271,7 @@ impl<Comm> BNormConv2dOperator<Comm> where Comm: CommWorker {
   }
 }
 
-impl<Comm> Operator for BNormConv2dOperator<Comm> where Comm: CommWorker {
+impl Operator for BNormConv2dOperator {
   fn batch_size(&self) -> usize {
     self.batch_cap
   }
@@ -774,7 +769,7 @@ impl<Comm> Operator for BNormConv2dOperator<Comm> where Comm: CommWorker {
       .send(&mut self.bn_running_ivar1.as_view_mut(ctx));
   }
 
-  fn set_grads_with_params_diff(&mut self) {
+  /*fn set_grads_with_params_diff(&mut self) {
     /*assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
     let mut backward = self.backward.as_mut().unwrap();
@@ -787,7 +782,7 @@ impl<Comm> Operator for BNormConv2dOperator<Comm> where Comm: CommWorker {
     backward.acc_grad_bias.as_view_mut(ctx)
       .row_vector_sum(-1.0, &backward.save_bias.as_view(ctx));*/
     unimplemented!();
-  }
+  }*/
 
   /*fn sync_grads(&mut self) {
     unimplemented!();
@@ -811,7 +806,7 @@ impl<Comm> Operator for BNormConv2dOperator<Comm> where Comm: CommWorker {
     unimplemented!();
   }*/
 
-  fn stage_grads_v2(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
+  fn stage_grads(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
     assert!(self.backward.is_some());
     let mut backward = self.backward.as_mut().unwrap();
 
@@ -830,7 +825,7 @@ impl<Comm> Operator for BNormConv2dOperator<Comm> where Comm: CommWorker {
     self.config.params_len()
   }
 
-  fn merge_grads_v2(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
+  fn merge_grads(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
     assert!(self.backward.is_some());
     let mut backward = self.backward.as_mut().unwrap();
 
@@ -849,7 +844,7 @@ impl<Comm> Operator for BNormConv2dOperator<Comm> where Comm: CommWorker {
     self.config.params_len()
   }
 
-  fn stage_params_v2(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
+  fn stage_params(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
     let mut offset = offset;
 
     comm_worker.load(offset, &mut self.weights);
@@ -867,7 +862,7 @@ impl<Comm> Operator for BNormConv2dOperator<Comm> where Comm: CommWorker {
     self.config.params_len()
   }
 
-  fn merge_params_v2(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
+  fn merge_params(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
     let mut offset = offset;
 
     comm_worker.store(offset, &mut self.weights);
@@ -934,7 +929,7 @@ impl StackResConv2dOperatorConfig {
   }
 }
 
-pub struct StackResConv2dOperator<Comm> {
+pub struct StackResConv2dOperator {
   batch_cap:    usize,
   _capability:  OpCapability,
   params_off:   usize,
@@ -993,11 +988,11 @@ pub struct StackResConv2dOperator<Comm> {
   conv1_fwd:    CudnnConvFwdOp,
   conv2_fwd:    CudnnConvFwdOp,
 
-  backward:     Option<StackResConv2dBwdOperator<Comm>>,
+  backward:     Option<StackResConv2dBwdOperator>,
   //hv_backward:  Option<BotResConv2dHvBwdOperator>,
 }
 
-struct StackResConv2dBwdOperator<Comm> {
+struct StackResConv2dBwdOperator {
   grad_weights1:      DeviceArray2d<f32>,
   acc_grad_weights1:  DeviceArray2d<f32>,
   save_weights1:    DeviceArray2d<f32>,
@@ -1014,11 +1009,11 @@ struct StackResConv2dBwdOperator<Comm> {
 
   first_batch2: bool,
 
-  comm_worker:  Rc<RefCell<Comm>>,
+  //comm_worker:  Rc<RefCell<Comm>>,
 }
 
-impl<Comm> StackResConv2dOperator<Comm> where Comm: CommWorker {
-  pub fn new(batch_size: usize, capability: OpCapability, params_offset: usize, config: StackResConv2dOperatorConfig, prev_op: Option<&Operator>, comm_worker: Option<Rc<RefCell<Comm>>>, context: Rc<DeviceContext>) -> StackResConv2dOperator<Comm> {
+impl StackResConv2dOperator {
+  pub fn new(batch_size: usize, capability: OpCapability, params_offset: usize, config: StackResConv2dOperatorConfig, prev_op: Option<&Operator>, /*comm_worker: Option<Rc<RefCell<Comm>>>,*/ context: Rc<DeviceContext>) -> StackResConv2dOperator {
     let StackResConv2dOperatorConfig{
       in_dims,
       .. } = config;
@@ -1127,7 +1122,7 @@ impl<Comm> StackResConv2dOperator<Comm> where Comm: CommWorker {
 
         first_batch2: true,
 
-        comm_worker:  comm_worker.unwrap(),
+        //comm_worker:  comm_worker.unwrap(),
       })
     } else {
       None
@@ -1205,7 +1200,7 @@ impl<Comm> StackResConv2dOperator<Comm> where Comm: CommWorker {
   }
 }
 
-impl<Comm> Operator for StackResConv2dOperator<Comm> where Comm: CommWorker {
+impl Operator for StackResConv2dOperator {
   fn batch_size(&self) -> usize {
     self.batch_cap
   }
@@ -2008,9 +2003,9 @@ impl<Comm> Operator for StackResConv2dOperator<Comm> where Comm: CommWorker {
       .send(&mut self.bn_running_ivar2.as_view_mut(ctx));
   }
 
-  fn set_grads_with_params_diff(&mut self) {
+  /*fn set_grads_with_params_diff(&mut self) {
     unimplemented!();
-  }
+  }*/
 
   /*fn sync_grads(&mut self) {
     unimplemented!();
@@ -2036,7 +2031,7 @@ impl<Comm> Operator for StackResConv2dOperator<Comm> where Comm: CommWorker {
     unimplemented!();
   }*/
 
-  fn stage_grads_v2(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
+  fn stage_grads(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
     assert!(self.backward.is_some());
     let mut backward = self.backward.as_mut().unwrap();
 
@@ -2065,7 +2060,7 @@ impl<Comm> Operator for StackResConv2dOperator<Comm> where Comm: CommWorker {
     self.config.params_len()
   }
 
-  fn merge_grads_v2(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
+  fn merge_grads(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
     assert!(self.backward.is_some());
     let mut backward = self.backward.as_mut().unwrap();
 
@@ -2094,7 +2089,7 @@ impl<Comm> Operator for StackResConv2dOperator<Comm> where Comm: CommWorker {
     self.config.params_len()
   }
 
-  fn stage_params_v2(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
+  fn stage_params(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
     let mut offset = offset;
 
     comm_worker.load(offset, &mut self.weights1);
@@ -2124,7 +2119,7 @@ impl<Comm> Operator for StackResConv2dOperator<Comm> where Comm: CommWorker {
     self.config.params_len()
   }
 
-  fn merge_params_v2(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
+  fn merge_params(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
     let mut offset = offset;
 
     comm_worker.store(offset, &mut self.weights1);
@@ -2207,7 +2202,7 @@ impl ProjStackResConv2dOperatorConfig {
   }
 }
 
-pub struct ProjStackResConv2dOperator<Comm> {
+pub struct ProjStackResConv2dOperator {
   batch_cap:    usize,
   _capability:  OpCapability,
   params_off:   usize,
@@ -2288,11 +2283,11 @@ pub struct ProjStackResConv2dOperator<Comm> {
   bn_cached_ivar3:      DeviceArray2d<f32>,
   batchnorm3:           CudnnBatchNormOp,
 
-  backward:     Option<ProjStackResConv2dBwdOperator<Comm>>,
+  backward:     Option<ProjStackResConv2dBwdOperator>,
   //hv_backward:  Option<BotResConv2dHvBwdOperator>,
 }
 
-struct ProjStackResConv2dBwdOperator<Comm> {
+struct ProjStackResConv2dBwdOperator {
   grad_weights1:      DeviceArray2d<f32>,
   acc_grad_weights1:  DeviceArray2d<f32>,
   save_weights1:      DeviceArray2d<f32>,
@@ -2317,11 +2312,11 @@ struct ProjStackResConv2dBwdOperator<Comm> {
 
   first_batch3:    bool,
 
-  comm_worker:  Rc<RefCell<Comm>>,
+  //comm_worker:  Rc<RefCell<Comm>>,
 }
 
-impl<Comm> ProjStackResConv2dOperator<Comm> where Comm: CommWorker {
-  pub fn new(batch_size: usize, capability: OpCapability, params_offset: usize, config: ProjStackResConv2dOperatorConfig, prev_op: Option<&Operator>, comm_worker: Option<Rc<RefCell<Comm>>>, context: Rc<DeviceContext>) -> ProjStackResConv2dOperator<Comm> {
+impl ProjStackResConv2dOperator {
+  pub fn new(batch_size: usize, capability: OpCapability, params_offset: usize, config: ProjStackResConv2dOperatorConfig, prev_op: Option<&Operator>, /*comm_worker: Option<Rc<RefCell<Comm>>>,*/ context: Rc<DeviceContext>) -> ProjStackResConv2dOperator {
     let ProjStackResConv2dOperatorConfig{
       in_dims, out_dims,
       .. } = config;
@@ -2483,7 +2478,7 @@ impl<Comm> ProjStackResConv2dOperator<Comm> where Comm: CommWorker {
         first_batch2:  true,
         first_batch3:  true,
 
-        comm_worker:  comm_worker.unwrap(),
+        //comm_worker:  comm_worker.unwrap(),
       })
     } else {
       None
@@ -2587,7 +2582,7 @@ impl<Comm> ProjStackResConv2dOperator<Comm> where Comm: CommWorker {
   }
 }
 
-impl<Comm> Operator for ProjStackResConv2dOperator<Comm> where Comm: CommWorker {
+impl Operator for ProjStackResConv2dOperator {
   fn batch_size(&self) -> usize {
     self.batch_cap
   }
@@ -3624,9 +3619,9 @@ impl<Comm> Operator for ProjStackResConv2dOperator<Comm> where Comm: CommWorker 
       .send(&mut self.bn_running_ivar3.as_view_mut(ctx));
   }
 
-  fn set_grads_with_params_diff(&mut self) {
+  /*fn set_grads_with_params_diff(&mut self) {
     unimplemented!();
-  }
+  }*/
 
   /*fn sync_grads(&mut self) {
     unimplemented!();
@@ -3654,7 +3649,7 @@ impl<Comm> Operator for ProjStackResConv2dOperator<Comm> where Comm: CommWorker 
     unimplemented!();
   }*/
 
-  fn stage_grads_v2(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
+  fn stage_grads(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
     assert!(self.backward.is_some());
     let mut backward = self.backward.as_mut().unwrap();
 
@@ -3693,7 +3688,7 @@ impl<Comm> Operator for ProjStackResConv2dOperator<Comm> where Comm: CommWorker 
     self.config.params_len()
   }
 
-  fn merge_grads_v2(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
+  fn merge_grads(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
     assert!(self.backward.is_some());
     let mut backward = self.backward.as_mut().unwrap();
 
@@ -3732,7 +3727,7 @@ impl<Comm> Operator for ProjStackResConv2dOperator<Comm> where Comm: CommWorker 
     self.config.params_len()
   }
 
-  fn stage_params_v2(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
+  fn stage_params(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
     let mut offset = offset;
 
     comm_worker.load(offset, &mut self.weights1);
@@ -3774,7 +3769,7 @@ impl<Comm> Operator for ProjStackResConv2dOperator<Comm> where Comm: CommWorker 
     self.config.params_len()
   }
 
-  fn merge_params_v2(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
+  fn merge_params(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
     let mut offset = offset;
 
     comm_worker.store(offset, &mut self.weights1);

@@ -1,5 +1,7 @@
 use operator::{
-  Operator, InputOperator,
+  Operator,
+  InputOperator,
+  LossOperator,
   OperatorNode, OperatorConfig,
   OpCapability, OpPhase,
   Regularization,
@@ -24,7 +26,6 @@ use operator::input::{
   VarData3dOperatorConfig,
 };
 use operator::loss::{
-  LossOperator,
   CategoricalLossConfig,
 };
 
@@ -67,9 +68,9 @@ pub trait OperatorWorker: Operator {
   fn can_rollback(&mut self, _prefix: &Path) -> Option<usize> { unimplemented!(); }
   fn rollback_params(&mut self, _t: Option<usize>, _prefix: &Path) { unimplemented!(); }
   fn rollback_state(&mut self, _prefix: &Path) { unimplemented!(); }
-  fn sync_params_v2(&mut self) { unimplemented!(); }
-  fn sync_grads_v2(&mut self, _repeat: bool) { unimplemented!(); }
-  fn sync_params_and_grads_v2(&mut self) { unimplemented!(); }
+  fn sync_params(&mut self) { unimplemented!(); }
+  fn sync_grads(&mut self, _repeat: bool) { unimplemented!(); }
+  fn sync_params_and_grads(&mut self) { unimplemented!(); }
   fn first_one_way_sync_params(&mut self) { unimplemented!(); }
   fn exact_sync_params(&mut self) { unimplemented!(); }
   fn allreduce(&mut self, _src_data: &[f32], _dst_data: &mut [f32]) { unimplemented!(); }
@@ -272,7 +273,7 @@ impl<Comm> OperatorWorkerBuilder<Comm> for SequentialOperatorWorkerBuilder<Comm>
   fn into_worker(self, tid: usize, context: Rc<DeviceContext>, comm_worker: Rc<RefCell<Comm>>) -> SequentialOperatorWorker<Comm> {
     let config = self.config.clone();
     let total_params_len = config.params_len();
-    let input_op = config.input_op.unwrap().build_input_operator::<Comm>(self.batch_size, context.clone());
+    let input_op = config.input_op.unwrap().build_input_operator(self.batch_size, context.clone());
     let mut hidden_ops: Vec<Box<Operator>> = vec![];
     let mut params_off = 0;
     for r in 0 .. config.hidden_ops.len() {
@@ -281,7 +282,7 @@ impl<Comm> OperatorWorkerBuilder<Comm> for SequentialOperatorWorkerBuilder<Comm>
           0 => input_op.downcast(),
           _ => &*hidden_ops[r-1],
         };
-        config.hidden_ops[r].build_operator(self.batch_size, self.capability, params_off, Some(prev_op), Some(comm_worker.clone()), context.clone())
+        config.hidden_ops[r].build_operator(self.batch_size, self.capability, params_off, Some(prev_op), /*Some(comm_worker.clone()),*/ context.clone())
       };
       hidden_ops.push(hidden_op);
       params_off += config.hidden_ops[r].params_len();
@@ -293,7 +294,7 @@ impl<Comm> OperatorWorkerBuilder<Comm> for SequentialOperatorWorkerBuilder<Comm>
         0 => input_op.downcast(),
         _ => &*hidden_ops[num_hidden_ops-1],
       };
-      config.loss_op.unwrap().build_loss_operator::<Comm>(self.batch_size, Some(prev_op), context.clone())
+      config.loss_op.unwrap().build_loss_operator(self.batch_size, Some(prev_op), context.clone())
     };
     SequentialOperatorWorker{
       worker_data:  WorkerData::new(tid, self.num_workers),
@@ -431,11 +432,11 @@ impl<Comm> Operator for SequentialOperatorWorker<Comm> where Comm: 'static + Com
     }
   }
 
-  fn set_grads_with_params_diff(&mut self) {
+  /*fn set_grads_with_params_diff(&mut self) {
     for op in self.hidden_ops.iter_mut() {
       op.set_grads_with_params_diff();
     }
-  }
+  }*/
 
   /*fn sync_grads(&mut self) {
     unimplemented!();

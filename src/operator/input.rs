@@ -9,11 +9,6 @@ use operator::conv::{
   ProjStackResConv2dOperatorConfig,
   ProjStackResConv2dOperator,
 };
-use operator::loss::{
-  LossOperator,
-  CategoricalLossConfig,
-  SoftmaxKLLossOperator,
-};
 
 use array_cuda::device::array::{DeviceArray2d};
 use array_cuda::device::context::{DeviceContext, DeviceCtxRef};

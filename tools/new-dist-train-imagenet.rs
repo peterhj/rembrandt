@@ -62,12 +62,12 @@ use rembrandt::opt::sgd::{
   Momentum,
   SyncOrder,
   CheckpointBehavior,
-  OptSharedData,
-  //SgdOpt,
-};
-use rembrandt::opt::sgd::new::{
+  //OptSharedData,
   SgdOpt,
 };
+/*use rembrandt::opt::sgd::new::{
+  SgdOpt,
+};*/
 use rembrandt::templates::resnet_new::{
   build_resnet18_var224x224,
 };
@@ -209,7 +209,7 @@ fn main() {
   //let comm_worker_builder = DeviceSyncGossipCommWorkerBuilder::new(num_workers, 1, worker_cfg.params_len());
   //let worker_builder = SequentialOperatorWorkerBuilder::new(num_workers, batch_size, worker_cfg, OpCapability::Backward);
   let worker_builder = MpiDistSequentialOperatorWorkerBuilder::new(batch_size, worker_cfg.clone(), OpCapability::Backward, exp_cfg);
-  let opt_shared = Arc::new(OptSharedData::new(1));
+  //let opt_shared = Arc::new(OptSharedData::new(1));
 
   let context = Rc::new(DeviceContext::new(0));
   let gossip_cfg = GossipConfig{
@@ -255,6 +255,6 @@ fn main() {
       ));
 
 
-  let mut sgd_opt = SgdOpt::new(sgd_opt_cfg, Some(worker.worker_rank()), opt_shared);
+  let mut sgd_opt = SgdOpt::new(sgd_opt_cfg, Some(worker.worker_rank())/*, opt_shared*/);
   sgd_opt.train(datum_cfg, label_cfg, &mut train_data, Some(&mut valid_data), &mut worker);
 }
