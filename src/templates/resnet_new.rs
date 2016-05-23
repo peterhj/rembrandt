@@ -7,14 +7,15 @@ use data_new::{
 use operator::{
   OpCapability,
   ActivationFunction, ParamsInit,
-  Data3dPreproc, AffineBackend, Conv2dFwdBackend, Conv2dBwdBackend, PoolOperation,
-  Data3dOperatorConfig,
+  AffineBackend, Conv2dFwdBackend, Conv2dBwdBackend, PoolOperation,
   AffineOperatorConfig,
   Conv2dOperatorConfig,
   Pool2dOperatorConfig,
   DropoutOperatorConfig,
 };
 use operator::input::{
+  Data3dPreproc,
+  Data3dOperatorConfig,
   VarData3dPreprocConfig,
   VarData3dOperatorConfig,
 };

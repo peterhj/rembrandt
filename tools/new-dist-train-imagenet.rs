@@ -27,8 +27,7 @@ use rembrandt::data_new::{
 use rembrandt::operator::{
   OpCapability,
   ActivationFunction, ParamsInit,
-  Data3dPreproc, AffineBackend, Conv2dFwdBackend, Conv2dBwdBackend, PoolOperation,
-  Data3dOperatorConfig,
+  AffineBackend, Conv2dFwdBackend, Conv2dBwdBackend, PoolOperation,
   AffineOperatorConfig,
   Conv2dOperatorConfig,
   Pool2dOperatorConfig,

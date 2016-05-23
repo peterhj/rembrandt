@@ -5,7 +5,6 @@ use operator::{
   OperatorNode, OperatorConfig,
   OpCapability, OpPhase,
   Regularization,
-  Data3dOperatorConfig,
   AffineOperatorConfig,
   Conv2dOperatorConfig,
   Pool2dOperatorConfig,

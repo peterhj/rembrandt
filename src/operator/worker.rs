@@ -5,7 +5,6 @@ use operator::{
   OperatorNode, OperatorConfig,
   OpCapability, OpPhase,
   Regularization,
-  Data3dOperatorConfig,
   AffineOperatorConfig,
   Conv2dOperatorConfig,
   Pool2dOperatorConfig,
@@ -23,6 +22,7 @@ use operator::conv::{
   ProjBotResConv2dOperatorConfig,
 };
 use operator::input::{
+  Data3dOperatorConfig,
   VarData3dOperatorConfig,
 };
 use operator::loss::{
