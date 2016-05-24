@@ -278,6 +278,9 @@ impl SgdOpt {
     let mut minibatch_acc_total_count = 0;
     let mut minibatch_acc_loss = 0.0;
 
+    let mut display_acc_correct_count = 0;
+    let mut display_acc_total_count = 0;
+
     let mut epoch_counter = 0;
     //let mut iter_counter = self.config.init_t.unwrap_or(0);
     let mut iter_counter = init_t;
@@ -335,6 +338,8 @@ impl SgdOpt {
           let local_correct_count = operator.loss_operator(0).accuracy_count(batch_size);
           //self.shared.acc_correct_count.fetch_add(local_correct_count, Ordering::AcqRel);
           //self.shared.acc_total_count.fetch_add(batch_size, Ordering::AcqRel);
+          display_acc_correct_count += local_correct_count;
+          display_acc_total_count += batch_size;
           self.local_accum_loss += local_loss;
           minibatch_acc_correct_count += local_correct_count;
           minibatch_acc_total_count += batch_size;
@@ -514,8 +519,8 @@ impl SgdOpt {
               // FIXME(20160523)
               //let acc_correct_count = self.shared.acc_correct_count.load(Ordering::Acquire);
               //let acc_total_count = self.shared.acc_total_count.load(Ordering::Acquire);
-              let acc_correct_count = 0;
-              let acc_total_count = 0;
+              let acc_correct_count = display_acc_correct_count;
+              let acc_total_count = display_acc_total_count;
               let accuracy = acc_correct_count as f32 / acc_total_count as f32;
               let avg_loss = self.local_accum_loss / self.config.display_iters as f32;
               info!("SgdOpt: train: iter: {} epoch: {} sample: {}/{} step: {} loss: {:.06} accuracy: {:.03} elapsed: {:.03} s",
@@ -528,6 +533,8 @@ impl SgdOpt {
               );
               //self.shared.acc_correct_count.store(0, Ordering::Release);
               //self.shared.acc_total_count.store(0, Ordering::Release);
+              display_acc_correct_count = 0;
+              display_acc_total_count = 0;
               self.local_accum_loss = 0.0;
             }
             self.local_log_file.flush().unwrap();
