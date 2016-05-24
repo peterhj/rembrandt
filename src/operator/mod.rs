@@ -110,7 +110,7 @@ pub trait Operator {
 
   // Requires `Backward` capability.
   fn read_grads(&mut self, _offset: usize, _reader: &mut OpRead) -> usize { 0 }
-  fn write_grads(&mut self, _offset: usize, _writer: &mut OpWriter) -> usize { 0 }
+  fn write_grads(&mut self, _offset: usize, _writer: &mut OpWrite) -> usize { 0 }
   fn backward(&mut self, batch_size: usize);
   fn regularize(&mut self, _reg: Regularization) {}
   fn accumulate_grads(&mut self, _scale: f32, _momentum: f32) {}

@@ -13,7 +13,7 @@ use opt::sgd::{
   Momentum,
   SyncOrder,
   CheckpointBehavior,
-  OptSharedData,
+  //OptSharedData,
 };
 
 //use array_cuda::device::context::{DeviceCtxRef};
@@ -135,7 +135,7 @@ impl OptSharedData {
 pub struct SgdOpt {
   config:   SgdOptConfig,
   rank:     Option<usize>,
-  shared:   Arc<OptSharedData>,
+  //shared:   Arc<OptSharedData>,
 
   elapsed_checkpoint_iters: usize,
   chkpt_step_size:  f32,
@@ -144,7 +144,7 @@ pub struct SgdOpt {
 }
 
 impl SgdOpt {
-  pub fn new(config: SgdOptConfig, rank: Option<usize>, shared: Arc<OptSharedData>) -> SgdOpt {
+  pub fn new(config: SgdOptConfig, rank: Option<usize>, /*shared: Arc<OptSharedData>*/) -> SgdOpt {
     create_dir_all(&config.checkpoint_dir).ok();
     let local_log_path = {
       let mut local_log_path = config.checkpoint_dir.clone();
@@ -198,7 +198,7 @@ impl SgdOpt {
     SgdOpt{
       config:   config,
       rank:     rank,
-      shared:   shared,
+      //shared:   shared,
       elapsed_checkpoint_iters: elapsed_iters,
       chkpt_step_size:  init_step_size,
       local_accum_loss: 0.0,
@@ -333,8 +333,8 @@ impl SgdOpt {
           let local_loss = operator.loss_operator(0).store_loss(batch_size);
           operator.backward(batch_size);
           let local_correct_count = operator.loss_operator(0).accuracy_count(batch_size);
-          self.shared.acc_correct_count.fetch_add(local_correct_count, Ordering::AcqRel);
-          self.shared.acc_total_count.fetch_add(batch_size, Ordering::AcqRel);
+          //self.shared.acc_correct_count.fetch_add(local_correct_count, Ordering::AcqRel);
+          //self.shared.acc_total_count.fetch_add(batch_size, Ordering::AcqRel);
           self.local_accum_loss += local_loss;
           minibatch_acc_correct_count += local_correct_count;
           minibatch_acc_total_count += batch_size;
@@ -400,7 +400,7 @@ impl SgdOpt {
 
               // Communicate the parameters.
               if iter_counter % self.config.comm_interval == 0 {
-                operator.sync_params_v2();
+                operator.sync_params();
               }
             }
 
@@ -418,7 +418,7 @@ impl SgdOpt {
 
               // Communicate the parameters.
               if iter_counter % self.config.comm_interval == 0 {
-                operator.sync_params_v2();
+                operator.sync_params();
               }
 
               // Apply the update, possibly with momentum.
@@ -436,7 +436,7 @@ impl SgdOpt {
             SyncOrder::SyncGradsThenStep => {
               // Communicate the gradients.
               if iter_counter % self.config.comm_interval == 0 {
-                operator.sync_grads_v2(false);
+                operator.sync_grads(false);
               }
 
               // Compute the update, possibly with momentum.
@@ -465,7 +465,7 @@ impl SgdOpt {
             SyncOrder::SyncParamsAndGradsThenStep => {
               // Communicate the parameters and the gradients.
               if iter_counter % self.config.comm_interval == 0 {
-                operator.sync_params_and_grads_v2();
+                operator.sync_params_and_grads();
               }
 
               // Compute the update, possibly with momentum.
@@ -507,12 +507,15 @@ impl SgdOpt {
           minibatch_acc_loss = 0.0;
 
           if iter_counter % self.config.display_iters == 0 {
-            self.shared.sync();
+            //self.shared.sync();
             let lap_time = minibatch_lap_time;
             if rank == 0 {
               let elapsed_ms = (lap_time - start_time).num_milliseconds();
-              let acc_correct_count = self.shared.acc_correct_count.load(Ordering::Acquire);
-              let acc_total_count = self.shared.acc_total_count.load(Ordering::Acquire);
+              // FIXME(20160523)
+              //let acc_correct_count = self.shared.acc_correct_count.load(Ordering::Acquire);
+              //let acc_total_count = self.shared.acc_total_count.load(Ordering::Acquire);
+              let acc_correct_count = 0;
+              let acc_total_count = 0;
               let accuracy = acc_correct_count as f32 / acc_total_count as f32;
               let avg_loss = self.local_accum_loss / self.config.display_iters as f32;
               info!("SgdOpt: train: iter: {} epoch: {} sample: {}/{} step: {} loss: {:.06} accuracy: {:.03} elapsed: {:.03} s",
@@ -523,12 +526,12 @@ impl SgdOpt {
                   accuracy,
                   elapsed_ms as f32 * 0.001,
               );
-              self.shared.acc_correct_count.store(0, Ordering::Release);
-              self.shared.acc_total_count.store(0, Ordering::Release);
+              //self.shared.acc_correct_count.store(0, Ordering::Release);
+              //self.shared.acc_total_count.store(0, Ordering::Release);
               self.local_accum_loss = 0.0;
             }
             self.local_log_file.flush().unwrap();
-            self.shared.sync();
+            //self.shared.sync();
             start_time = get_time();
             minibatch_start_time = start_time;
           }
@@ -729,7 +732,7 @@ impl SgdOpt {
     assert_eq!(local_counter, num_shard_samples);
     assert_eq!(local_acc_total_count, num_shard_samples);
 
-    self.shared.sync();
+    //self.shared.sync();
     /*let acc_correct_count = self.shared.acc_correct_count.load(Ordering::Acquire);
     let acc_total_count = self.shared.acc_total_count.load(Ordering::Acquire);
     //let accuracy = acc_correct_count as f32 / acc_total_count as f32;
@@ -761,6 +764,6 @@ impl SgdOpt {
     /*self.shared.acc_correct_count.store(0, Ordering::Release);
     self.shared.acc_total_count.store(0, Ordering::Release);
     self.local_accum_loss = 0.0;*/
-    self.shared.sync();
+    //self.shared.sync();
   }
 }

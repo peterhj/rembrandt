@@ -1,3 +1,4 @@
+use data_new::{SampleDatum, SampleLabel};
 use operator::{
   Operator, InputOperator, LossOperator, FullOperator,
   OperatorNode, OperatorConfig,
@@ -24,6 +25,7 @@ use operator::loss::{
 };
 
 use array_cuda::device::context::{DeviceContext, DeviceCtxRef};
+use array_new::{Array2d};
 use rng::xorshift::{Xorshiftplus128Rng};
 
 use rand::{Rng, SeedableRng, thread_rng};
@@ -270,23 +272,23 @@ impl InputOperator for SequentialOperator {
   }
 
   fn stage_shape(&mut self, batch_idx: usize, shape: (usize, usize, usize)) {
-    self.input_op.as_mut().unwrap().stage_shape(batch_idx, shape);
+    self.input_op.stage_shape(batch_idx, shape);
   }
 
   fn expose_host_frame_buf(&mut self, batch_idx: usize) -> &mut [u8] {
-    self.input_op.as_mut().unwrap().expose_host_frame_buf(batch_idx)
+    self.input_op.expose_host_frame_buf(batch_idx)
   }
 
   fn load_frames(&mut self, batch_size: usize) {
-    self.input_op.as_mut().unwrap().load_frames(batch_size);
+    self.input_op.load_frames(batch_size);
   }
 
   fn preload_frame(&mut self, batch_idx: usize) {
-    self.input_op.as_mut().unwrap().preload_frame(batch_idx);
+    self.input_op.preload_frame(batch_idx);
   }
 
   fn wait_preload_frames(&mut self, batch_size: usize) {
-    self.input_op.as_mut().unwrap().wait_preload_frames(batch_size);
+    self.input_op.wait_preload_frames(batch_size);
   }
 }
 
@@ -296,19 +298,19 @@ impl LossOperator for SequentialOperator {
   }
 
   fn stage_label(&mut self, batch_idx: usize, label: &SampleLabel) {
-    self.loss_op.as_mut().unwrap().stage_label(batch_idx, label);
+    self.loss_op.stage_label(batch_idx, label);
   }
 
   fn load_labels(&mut self, batch_size: usize) {
-    self.loss_op.as_mut().unwrap().load_labels(batch_size);
+    self.loss_op.load_labels(batch_size);
   }
 
   fn stage_weight(&mut self, batch_idx: usize, weight: f32) {
-    self.loss_op.as_mut().unwrap().stage_weight(batch_idx, weight);
+    self.loss_op.stage_weight(batch_idx, weight);
   }
 
   fn load_weights(&mut self, batch_size: usize) {
-    self.loss_op.as_mut().unwrap().load_weights(batch_size);
+    self.loss_op.load_weights(batch_size);
   }
 
   //fn stage_category_weight(&mut self, _batch_idx: usize, _category: i32, _cat_weight: f32) {}
@@ -318,27 +320,27 @@ impl LossOperator for SequentialOperator {
   //fn reset_target_factors(&mut self, _batch_size: usize) { unimplemented!(); }
 
   fn store_loss(&mut self, batch_size: usize) -> f32 {
-    self.loss_op.as_mut().unwrap().store_loss(batch_size)
+    self.loss_op.store_loss(batch_size)
   }
 
   fn store_output_values(&mut self, batch_size: usize) {
-    self.loss_op.as_mut().unwrap().store_output_values(batch_size);
+    self.loss_op.store_output_values(batch_size);
   }
 
   fn get_output_values(&self, batch_size: usize) -> &Array2d<f32> {
-    self.loss_op.as_mut().unwrap().get_output_values(batch_size)
+    self.loss_op.get_output_values(batch_size)
   }
 
   fn store_output_categories(&mut self, batch_size: usize) {
-    self.loss_op.as_mut().unwrap().store_output_categories(batch_size);
+    self.loss_op.store_output_categories(batch_size);
   }
 
   fn get_output_categories(&self, batch_size: usize) -> &Array2d<i32> {
-    self.loss_op.as_mut().unwrap().get_output_categories(batch_size)
+    self.loss_op.get_output_categories(batch_size)
   }
 
   fn accuracy_count(&self, batch_size: usize) -> usize {
-    self.loss_op.as_mut().unwrap().accuracy_count(batch_size)
+    self.loss_op.accuracy_count(batch_size)
   }
 }
 
