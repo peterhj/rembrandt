@@ -1,5 +1,5 @@
 use operator::{
-  Operator, InputOperator, LossOperator,
+  Operator, InputOperator, LossOperator, FullOperator,
   OperatorNode, OperatorConfig,
   OpCapability, OpPhase,
   Regularization,
@@ -250,4 +250,97 @@ impl Operator for SequentialOperator {
       op.reset();
     }
   }
+
+  fn r_forward(&mut self, batch_size: usize) {
+    for op in self.hidden_ops.iter_mut() {
+      op.r_forward(batch_size);
+    }
+  }
+
+  fn r_backward(&mut self, batch_size: usize) {
+    for op in self.hidden_ops.iter_mut() {
+      op.r_backward(batch_size);
+    }
+  }
+}
+
+impl InputOperator for SequentialOperator {
+  fn downcast(&self) -> &Operator {
+    self
+  }
+
+  fn stage_shape(&mut self, batch_idx: usize, shape: (usize, usize, usize)) {
+    self.input_op.as_mut().unwrap().stage_shape(batch_idx, shape);
+  }
+
+  fn expose_host_frame_buf(&mut self, batch_idx: usize) -> &mut [u8] {
+    self.input_op.as_mut().unwrap().expose_host_frame_buf(batch_idx)
+  }
+
+  fn load_frames(&mut self, batch_size: usize) {
+    self.input_op.as_mut().unwrap().load_frames(batch_size);
+  }
+
+  fn preload_frame(&mut self, batch_idx: usize) {
+    self.input_op.as_mut().unwrap().preload_frame(batch_idx);
+  }
+
+  fn wait_preload_frames(&mut self, batch_size: usize) {
+    self.input_op.as_mut().unwrap().wait_preload_frames(batch_size);
+  }
+}
+
+impl LossOperator for SequentialOperator {
+  fn downcast(&self) -> &Operator {
+    self
+  }
+
+  fn stage_label(&mut self, batch_idx: usize, label: &SampleLabel) {
+    self.loss_op.as_mut().unwrap().stage_label(batch_idx, label);
+  }
+
+  fn load_labels(&mut self, batch_size: usize) {
+    self.loss_op.as_mut().unwrap().load_labels(batch_size);
+  }
+
+  fn stage_weight(&mut self, batch_idx: usize, weight: f32) {
+    self.loss_op.as_mut().unwrap().stage_weight(batch_idx, weight);
+  }
+
+  fn load_weights(&mut self, batch_size: usize) {
+    self.loss_op.as_mut().unwrap().load_weights(batch_size);
+  }
+
+  //fn stage_category_weight(&mut self, _batch_idx: usize, _category: i32, _cat_weight: f32) {}
+  //fn load_category_weights(&mut self, _batch_size: usize) {}
+
+  //fn set_target_factors_with_rfwd_targets(&mut self, _batch_size: usize) { unimplemented!(); }
+  //fn reset_target_factors(&mut self, _batch_size: usize) { unimplemented!(); }
+
+  fn store_loss(&mut self, batch_size: usize) -> f32 {
+    self.loss_op.as_mut().unwrap().store_loss(batch_size)
+  }
+
+  fn store_output_values(&mut self, batch_size: usize) {
+    self.loss_op.as_mut().unwrap().store_output_values(batch_size);
+  }
+
+  fn get_output_values(&self, batch_size: usize) -> &Array2d<f32> {
+    self.loss_op.as_mut().unwrap().get_output_values(batch_size)
+  }
+
+  fn store_output_categories(&mut self, batch_size: usize) {
+    self.loss_op.as_mut().unwrap().store_output_categories(batch_size);
+  }
+
+  fn get_output_categories(&self, batch_size: usize) -> &Array2d<i32> {
+    self.loss_op.as_mut().unwrap().get_output_categories(batch_size)
+  }
+
+  fn accuracy_count(&self, batch_size: usize) -> usize {
+    self.loss_op.as_mut().unwrap().accuracy_count(batch_size)
+  }
+}
+
+impl FullOperator for SequentialOperator {
 }

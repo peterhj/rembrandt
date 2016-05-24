@@ -16,8 +16,8 @@ use std::sync::{Arc, Barrier};
 use std::sync::atomic::{AtomicUsize, Ordering, fence};
 use time::{get_time};
 
-//pub mod async;
-//pub mod new;
+pub mod new;
+//pub mod seq;
 
 #[derive(Clone, RustcDecodable, RustcEncodable, Debug)]
 pub struct SgdOptConfig {

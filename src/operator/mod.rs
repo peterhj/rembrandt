@@ -104,14 +104,13 @@ pub trait Operator {
   fn encode_params(&mut self, _blob: &mut Vec<u8>) {}
   fn decode_state(&mut self, _blob: &[u8]) -> usize { 0 }
   fn encode_state(&mut self, _blob: &mut Vec<u8>) {}
-  fn read_params(&mut self, _offset: usize, _reader: ()) -> usize { 0 }
-  fn write_params(&mut self, _offset: usize, _writer: ()) -> usize { 0 }
+  fn read_params(&mut self, _offset: usize, _reader: &mut OpRead) -> usize { 0 }
+  fn write_params(&mut self, _offset: usize, _writer: &mut OpWrite) -> usize { 0 }
   fn forward(&mut self, batch_size: usize, phase: OpPhase);
 
   // Requires `Backward` capability.
-  fn reset(&mut self) {}
-  fn read_grads(&mut self, _offset: usize, _reader: ()) -> usize { 0 }
-  fn write_grads(&mut self, _offset: usize, _writer: ()) -> usize { 0 }
+  fn read_grads(&mut self, _offset: usize, _reader: &mut OpRead) -> usize { 0 }
+  fn write_grads(&mut self, _offset: usize, _writer: &mut OpWriter) -> usize { 0 }
   fn backward(&mut self, batch_size: usize);
   fn regularize(&mut self, _reg: Regularization) {}
   fn accumulate_grads(&mut self, _scale: f32, _momentum: f32) {}
@@ -124,11 +123,14 @@ pub trait Operator {
   fn merge_grads(&mut self, _offset: usize, _comm_worker: &mut CommWorker) -> usize { 0 }
   fn stage_params(&mut self, _offset: usize, _comm_worker: &mut CommWorker) -> usize { 0 }
   fn merge_params(&mut self, _offset: usize, _comm_worker: &mut CommWorker) -> usize { 0 }
+  fn reset(&mut self) {}
 
-  // Requires `RFwdBwd` capability.
-  fn read_direction(&mut self, _offset: usize, _reader: ()) -> usize { 0 }
-  fn write_direction(&mut self, _offset: usize, _writer: ()) -> usize { 0 }
+  // Requires `RForward` capability.
+  fn read_direction(&mut self, _offset: usize, _reader: &mut OpRead) -> usize { 0 }
+  fn write_direction(&mut self, _offset: usize, _writer: &mut OpWrite) -> usize { 0 }
   fn r_forward(&mut self, _batch_size: usize) { unimplemented!(); }
+
+  // Requires `RBackward` capability.
   fn r_backward(&mut self, _batch_size: usize) { unimplemented!(); }
 
   fn hv_reset_direction(&mut self, _init: HvDirectionInit) { unimplemented!(); }
