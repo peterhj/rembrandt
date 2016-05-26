@@ -5,18 +5,11 @@ use operator::{
   OperatorNode, OperatorConfig,
   OpCapability, OpPhase,
   Regularization,
-  AffineOperatorConfig,
-  Conv2dOperatorConfig,
-  Pool2dOperatorConfig,
-  DropoutOperatorConfig,
 };
 use operator::comm::{
   //CommWorkerBuilder,
   CommWorker,
   GossipConfig,
-};
-use operator::loss::{
-  CategoricalLossConfig,
 };
 use operator::worker::{
   OperatorWorkerBuilder,
@@ -26,13 +19,13 @@ use operator::worker::{
 use worker::{MpiDistCommWorker};
 //use worker::allreduce_dist::{MpiDistSyncAllreduceCommWorker};
 
+use array::{AsyncArray};
 use array_cuda::device::array::{DeviceArray2d};
 use array_cuda::device::comm::{ReduceOperation, AverageReduceOperation, for_all_devices};
 use array_cuda::device::context::{DeviceContext, DeviceCtxRef};
 use array_cuda::device::ext::{DeviceAsyncNumExt};
 use array_cuda::device::linalg::{AsyncBlasVectorExt};
 use array_cuda::device::memory::{RawDeviceBuffer};
-use array_new::{AsyncArray};
 use rng::xorshift::{Xorshiftplus128Rng};
 use worker_::{WorkerData};
 

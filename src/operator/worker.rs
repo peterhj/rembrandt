@@ -5,8 +5,6 @@ use operator::{
   OperatorNode, OperatorConfig,
   OpCapability, OpPhase,
   Regularization,
-  AffineOperatorConfig,
-  Conv2dOperatorConfig,
   Pool2dOperatorConfig,
   DropoutOperatorConfig,
 };
@@ -14,19 +12,23 @@ use operator::comm::{
   //CommWorkerBuilder,
   CommWorker,
 };
-use operator::conv::{
-  BNormConv2dOperatorConfig,
-  StackResConv2dOperatorConfig,
-  ProjStackResConv2dOperatorConfig,
-  BotResConv2dOperatorConfig,
-  ProjBotResConv2dOperatorConfig,
-};
 use operator::input::{
   Data3dOperatorConfig,
   VarData3dOperatorConfig,
 };
 use operator::loss::{
   CategoricalLossConfig,
+};
+use operator::affine::{
+  AffineOperatorConfig,
+};
+use operator::conv::{
+  Conv2dOperatorConfig,
+  BNormConv2dOperatorConfig,
+  StackResConv2dOperatorConfig,
+  ProjStackResConv2dOperatorConfig,
+  BotResConv2dOperatorConfig,
+  ProjBotResConv2dOperatorConfig,
 };
 
 use array_cuda::device::context::{DeviceContext, DeviceCtxRef};

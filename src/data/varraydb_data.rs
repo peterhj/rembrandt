@@ -3,7 +3,7 @@ use data::codec::{DataCodec};
 use data_new::{SampleDatum, SampleLabel};
 use util::{partition_range};
 
-use array_new::{Array3d};
+use array::{Array3d};
 use byteorder::{ReadBytesExt, LittleEndian};
 use rng::xorshift::{Xorshiftplus128Rng};
 use varraydb::{VarrayDb};

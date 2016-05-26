@@ -9,6 +9,7 @@ use layer_new::{
   MultiCategoricalLossLayerConfig,
 };
 
+use array::{NdArraySerialize, ArrayZeroExt, Array2d};
 use array_cuda::device::{
   DeviceContext, DeviceCtxRef,
 };
@@ -18,7 +19,6 @@ use array_cuda::device::comm::{
 use array_cuda::device::comm::allreduce::{
   DeviceAllReduceSharedData, DeviceAllReduceWorker,
 };
-use array_new::{NdArraySerialize, ArrayZeroExt, Array2d};
 use byteorder::{ReadBytesExt, WriteBytesExt, LittleEndian};
 use rng::xorshift::{Xorshiftplus128Rng};
 

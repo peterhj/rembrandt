@@ -4,17 +4,8 @@ use operator::{
   OperatorNode, OperatorConfig,
   OpCapability, OpPhase,
   Regularization,
-  AffineOperatorConfig,
-  Conv2dOperatorConfig,
   Pool2dOperatorConfig,
   DropoutOperatorConfig,
-};
-use operator::conv::{
-  BNormConv2dOperatorConfig,
-  StackResConv2dOperatorConfig,
-  ProjStackResConv2dOperatorConfig,
-  BotResConv2dOperatorConfig,
-  ProjBotResConv2dOperatorConfig,
 };
 use operator::input::{
   Data3dOperatorConfig,
@@ -23,9 +14,20 @@ use operator::input::{
 use operator::loss::{
   CategoricalLossConfig,
 };
+use operator::affine::{
+  AffineOperatorConfig,
+};
+use operator::conv::{
+  Conv2dOperatorConfig,
+  BNormConv2dOperatorConfig,
+  StackResConv2dOperatorConfig,
+  ProjStackResConv2dOperatorConfig,
+  BotResConv2dOperatorConfig,
+  ProjBotResConv2dOperatorConfig,
+};
 
+use array::{Array2d};
 use array_cuda::device::context::{DeviceContext, DeviceCtxRef};
-use array_new::{Array2d};
 use rng::xorshift::{Xorshiftplus128Rng};
 
 use rand::{Rng, SeedableRng, thread_rng};

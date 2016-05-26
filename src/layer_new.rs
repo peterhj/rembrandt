@@ -1,6 +1,6 @@
 use data_new::{SampleDatum, SampleLabel};
 
-use array_new::{
+use array::{
   Shape, Array, AsyncArray, ArrayView, ArrayViewMut,
   ArrayZeroExt, NdArraySerialize,
   Array2d, Array3d,

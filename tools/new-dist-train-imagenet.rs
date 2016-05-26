@@ -26,26 +26,11 @@ use rembrandt::data_new::{
 };
 use rembrandt::operator::{
   OpCapability,
-  ActivationFunction, ParamsInit,
-  AffineBackend, Conv2dFwdBackend, Conv2dBwdBackend, PoolOperation,
-  AffineOperatorConfig,
-  Conv2dOperatorConfig,
-  Pool2dOperatorConfig,
-  DropoutOperatorConfig,
-};
-use rembrandt::operator::loss::{
-  CategoricalLossConfig,
 };
 use rembrandt::operator::comm::{
   ParameterServerConfig,
   GossipConfig,
   DeviceSyncGossipCommWorkerBuilder,
-};
-use rembrandt::operator::conv::{
-  BNormMovingAverage,
-  BNormConv2dOperatorConfig,
-  StackResConv2dOperatorConfig,
-  ProjStackResConv2dOperatorConfig,
 };
 use rembrandt::operator::worker::{
   OperatorWorkerBuilder,
@@ -67,12 +52,13 @@ use rembrandt::opt::sgd::{
 use rembrandt::opt::sgd::new::{
   SgdOpt,
 };
-use rembrandt::templates::examples::{
+/*use rembrandt::templates::examples::{
   build_caffenet_var224x224,
   build_vgga_var224x224,
-};
+};*/
 use rembrandt::templates::resnet_new::{
   build_resnet18_var224x224,
+  build_resnet18pool_var224x224,
 };
 /*use rembrandt::templates::resnet::{
   build_resnet18_warp256x256,
@@ -84,12 +70,12 @@ use rembrandt::templates::vgg::{
 use rembrandt::worker::allreduce_dist::{
   MpiDistSyncAllreduceCommWorker,
 };
-use rembrandt::worker::elasticserver_dist::{
+/*use rembrandt::worker::elasticserver_dist::{
   MpiDistElasticServerCommWorker,
-};
-use rembrandt::worker::gossip_pull_dist_rdma::{
+};*/
+/*use rembrandt::worker::gossip_pull_dist_rdma::{
   MpiDistAsyncPullGossipCommWorker,
-};
+};*/
 use rembrandt::worker::gossip_dist::{
   MpiDistAsyncPushGossipCommWorker,
   ExperimentConfig,
@@ -113,7 +99,7 @@ fn main() {
 
   //let num_workers = 1;
   let batch_size = 16;
-  let minibatch_size = 256;
+  let minibatch_size = 16;
   /*let batch_size = 32;
   let minibatch_size = 32;*/
   /*let batch_size = 64;
@@ -148,7 +134,7 @@ fn main() {
     sync_order:     SyncOrder::SyncGradsThenStep,   // XXX: for allreduce.
     checkpoint:     CheckpointBehavior::Discard,
     comm_interval:  1,
-    display_iters:      5,
+    display_iters:      25,
     /*checkpoint_iters:   50,
     save_iters:         50,
     valid_iters:        50,*/
@@ -190,7 +176,7 @@ fn main() {
     //checkpoint_dir:     PathBuf::from("models/imagenet_maxscale480-elastic_x16_run2_minibatch128"),
     //checkpoint_dir:     PathBuf::from("models/imagenet_maxscale480-test"),
     //checkpoint_dir:     PathBuf::from("models/imagenet_maxscale480-x1_run1"),
-    checkpoint_dir:     PathBuf::from("models/imagenet_maxscale480-test"),
+    checkpoint_dir:     PathBuf::from("models/imagenet_maxscale480-sync_x16_resnet18pool_run1"),
   };
   info!("sgd: {:?}", sgd_opt_cfg);
 
@@ -206,7 +192,9 @@ fn main() {
   //let worker_cfg = build_vgga_var224x224();
 
   //let worker_cfg = build_resnet18_warp256x256();
-  let worker_cfg = build_resnet18_var224x224();
+
+  //let worker_cfg = build_resnet18_var224x224();
+  let worker_cfg = build_resnet18pool_var224x224();
 
   info!("operator: {:?}", worker_cfg);
 
@@ -246,8 +234,8 @@ fn main() {
 
   let mut train_data =
       AsyncQueueDataIter::new(
-      CyclicSampleDataIter::new(
-      //RandomSampleDataIter::new(
+      //CyclicSampleDataIter::new(
+      RandomSampleDataIter::new(
       VarrayDbShard::open_partition(
           &PathBuf::from("/rscratch/phj/data/ilsvrc2012_multiv2_shuf/ilsvrc2012_maxscale480_shuf_train_data.varraydb"),
           &PathBuf::from("/rscratch/phj/data/ilsvrc2012_multiv2_shuf/ilsvrc2012_maxscale480_shuf_train_labels.varraydb"),

@@ -1,6 +1,6 @@
 use data_new::{SampleDatum};
 
-use array_new::{ArrayZeroExt, NdArraySerialize, Array3d};
+use array::{ArrayZeroExt, NdArraySerialize, Array3d};
 //use image::{GenericImage, DynamicImage, ImageFormat, load};
 use stb_image::image::{Image, LoadResult, load_from_memory};
 use turbojpeg::{TurbojpegDecoder, TurbojpegEncoder};

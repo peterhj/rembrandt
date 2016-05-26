@@ -6,8 +6,8 @@ use data_new::{
 use operator::{Operator, OpPhase, Regularization};
 use operator::worker::{OperatorWorker};
 
+use array::{Shape};
 //use array_cuda::device::context::{DeviceCtxRef};
-use array_new::{Shape};
 
 use std::fs::{File, OpenOptions, create_dir_all};
 use std::io::{Write, BufWriter};

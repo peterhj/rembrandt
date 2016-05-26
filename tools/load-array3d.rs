@@ -1,6 +1,6 @@
-extern crate array_new;
+extern crate array;
 
-use array_new::{NdArraySerialize, Array3d};
+use array::{NdArraySerialize, Array3d};
 
 use std::fs::{File};
 

@@ -1,7 +1,7 @@
-extern crate array_new;
+extern crate array;
 extern crate rembrandt;
 
-use array_new::{NdArraySerialize, Array3d};
+use array::{NdArraySerialize, Array3d};
 use rembrandt::data_new::{
   DataIterator,
   SampleDatumConfig, SampleDatum,

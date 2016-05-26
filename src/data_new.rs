@@ -1,6 +1,6 @@
 use caffe_proto::{Datum};
 
-use array_new::{Shape, Array, ArrayViewMut, NdArraySerialize, Array3d, BitArray3d};
+use array::{Shape, Array, ArrayViewMut, NdArraySerialize, Array3d, BitArray3d};
 use byteorder::{LittleEndian, BigEndian, ReadBytesExt};
 use episodb::{EpisoDb};
 use lmdb::{LmdbEnv, LmdbCursor};

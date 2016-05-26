@@ -1,6 +1,6 @@
 use data_new::{SampleDatum, SampleLabel};
 
-use array_new::{ArrayZeroExt, Array3d};
+use array::{ArrayZeroExt, Array3d};
 //use epeg::{EpegImage};
 //use image::{ImageBuffer, Luma};
 //use image::imageops::{FilterType, resize};

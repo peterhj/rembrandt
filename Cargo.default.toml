@@ -107,9 +107,9 @@ toggle = { path = "../../libtoggle" }
 toml = { path = "../third_party/toml-rs" }
 vec_map = "*"
 
+array = { path = "../libarray" }
 array_cuda = { path = "../libarray_cuda" }
-array_dist = { path = "../libarray_dist" }
-array_new = { path = "../libarray_new" }
+#array_dist = { path = "../libarray_dist" }
 arraydb = { path = "../arraydb" }
 cuda = { path = "../libcuda" }
 cuda_dnn = { path = "../libcuda_dnn" } #, features = ["cudnn_v3"] }

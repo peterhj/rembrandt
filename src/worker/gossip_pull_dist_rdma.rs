@@ -26,13 +26,13 @@ use operator::worker::{
 use worker::{MpiDistCommWorker};
 //use worker::allreduce_dist::{MpiDistSyncAllreduceCommWorker};
 
+use array::{AsyncArray};
 use array_cuda::device::array::{DeviceArray2d};
 use array_cuda::device::comm::{ReduceOperation, AverageReduceOperation, for_all_devices};
 use array_cuda::device::context::{DeviceContext, DeviceCtxRef};
 use array_cuda::device::ext::{DeviceAsyncNumExt};
 use array_cuda::device::linalg::{BlasVectorExt, AsyncBlasVectorExt};
 use array_cuda::device::memory::{DeviceZeroExt, DeviceBuffer, RawDeviceBuffer};
-use array_new::{AsyncArray};
 use rng::xorshift::{Xorshiftplus128Rng};
 use worker_::{WorkerData};
 

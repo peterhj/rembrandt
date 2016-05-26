@@ -1,13 +1,13 @@
 use data_new::{SampleLabel};
 use operator::{Operator, LossOperator, SharedDeviceBuf, OpPhase};
 
-use array_cuda::device::array::{DeviceArray2d};
-use array_cuda::device::context::{DeviceContext};
-use array_cuda::device::memory::{DeviceZeroExt, DeviceBuffer};
-use array_new::{
+use array::{
   Array, AsyncArray, ArrayView, ArrayViewMut, ArrayZeroExt, NdArraySerialize,
   Shape, Array2d,
 };
+use array_cuda::device::array::{DeviceArray2d};
+use array_cuda::device::context::{DeviceContext};
+use array_cuda::device::memory::{DeviceZeroExt, DeviceBuffer};
 use cuda_dnn::v4::{
   CudnnSoftmaxOp,
   CudnnTensorDesc, //CudnnFilterDesc, CudnnConvDesc,

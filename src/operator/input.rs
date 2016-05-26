@@ -10,16 +10,16 @@ use operator::conv::{
   ProjStackResConv2dOperator,
 };
 
+use array::{
+  Array, AsyncArray, ArrayView, ArrayViewMut, ArrayZeroExt, NdArraySerialize,
+  Shape, Array2d, Array3d,
+};
 use array_cuda::device::array::{DeviceArray2d};
 use array_cuda::device::context::{DeviceContext, DeviceCtxRef};
 use array_cuda::device::ext::{DeviceCastBytesExt, DeviceNumExt};
 use array_cuda::device::linalg::{BlasMatrixExt, BlasVectorExt, Transpose};
 use array_cuda::device::memory::{DeviceZeroExt, DeviceBuffer};
 use array_cuda::device::random::{RandomSampleExt, UniformDist, GaussianDist};
-use array_new::{
-  Array, AsyncArray, ArrayView, ArrayViewMut, ArrayZeroExt, NdArraySerialize,
-  Shape, Array2d, Array3d,
-};
 use cuda_dnn::v4::{
   CudnnConvFwdOp, CudnnConvBwdFilterOp, CudnnConvBwdDataOp,
   CudnnAddOp, CudnnActKind, CudnnActOp, CudnnSoftmaxOp, CudnnPoolingOp, CudnnTransformOp,
