@@ -11,7 +11,7 @@ use array_cuda::device::{
 use array_cuda::device::comm::allreduce::{DeviceAllReduceWorker};
 use array_cuda::device::ext::{DeviceCastBytesExt, DeviceNumExt};
 use array_cuda::device::linalg::{BlasVectorExt, BlasMatrixExt, Transpose};
-use array_cuda::device::memory::{DeviceZeroExt};
+use array_cuda::device::memory::{DeviceBufferInitExt};
 //use array_dist::comm::{DistAllReduceWorker};
 use cuda_dnn::v4::{
   CudnnConvFwdOp, CudnnConvBwdFilterOp, CudnnConvBwdDataOp,

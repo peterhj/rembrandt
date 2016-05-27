@@ -3,7 +3,7 @@ use data_new::{
   DataIterator,
   SampleDatum, SampleDatumConfig, SampleLabel, SampleLabelConfig, 
 };
-use operator::{Operator, OpPhase, Regularization};
+use operator::{Operator, CompleteOperator, OpPhase, Regularization};
 use operator::worker::{OperatorWorker};
 
 use array::{Shape};
@@ -200,7 +200,7 @@ pub struct SerialSgdOptConfig {
 }
 
 pub struct SerialSgdOpt {
-  config:   SerialOptConfig,
+  config:   SerialSgdOptConfig,
 }
 
 impl SerialSgdOpt {
@@ -211,14 +211,14 @@ impl SerialSgdOpt {
   pub fn train(&mut self,
       mut train_data: &mut DataIter<Item=(SampleDatum, Option<SampleLabel>)>,
       mut valid_data: Option<&mut DataIter<Item=(SampleDatum, Option<SampleLabel>)>>,
-      operator: &mut FullOperator)
+      operator: &mut CompleteOperator)
   {
     unimplemented!();
   }
 
   pub fn validate(&mut self,
       mut valid_data: Option<&mut DataIter<Item=(SampleDatum, Option<SampleLabel>)>>,
-      operator: &mut FullOperator)
+      operator: &mut CompleteOperator)
   {
     unimplemented!();
   }

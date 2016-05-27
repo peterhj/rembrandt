@@ -21,7 +21,7 @@ use array_cuda::device::array::{DeviceArray2d};
 use array_cuda::device::context::{DeviceContext, DeviceCtxRef};
 use array_cuda::device::ext::{DeviceCastBytesExt, DeviceNumExt};
 use array_cuda::device::linalg::{BlasMatrixExt, BlasVectorExt, Transpose};
-use array_cuda::device::memory::{DeviceZeroExt, DeviceBuffer};
+use array_cuda::device::memory::{DeviceBufferInitExt, DeviceBuffer};
 use array_cuda::device::random::{RandomSampleExt, UniformDist};
 use cuda_dnn::v4::{
   CudnnTensorDesc, CudnnFilterDesc, CudnnConvDesc,
@@ -261,9 +261,9 @@ impl Operator for Conv2dOperator {
     Some(self.out_delta.clone())
   }
 
-  fn get_output_act(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> {
+  fn get_output_act(&self, _arm: usize) -> SharedDeviceBuf<f32> {
     assert_eq!(0, _arm);
-    Some(self.out_act.clone())
+    self.out_act.clone()
   }
 
   fn get_output_delta(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> {
@@ -594,7 +594,7 @@ impl Operator for Conv2dOperator {
       ActivationFunction::Rect => {
         // FIXME(20160526): in-place activation function is not sufficient!
         unsafe { rembrandt_kernel_batch_map_rect_backprop_inplace(
-            tmp_act.as_ptr(),
+            tmp_act.as_ref(ctx).as_ptr(),
             out_length as i32,
             batch_size as i32,
             out_r_act.as_mut_ptr(),

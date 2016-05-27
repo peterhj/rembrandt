@@ -12,6 +12,7 @@ extern crate episodb;
 extern crate lmdb;
 #[cfg(feature = "mpich")]
 extern crate mpich as mpi;
+extern crate nccl;
 #[cfg(feature = "openmpi")]
 extern crate openmpi as mpi;
 //extern crate procgroup;

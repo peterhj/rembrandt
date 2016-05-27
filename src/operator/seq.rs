@@ -1,6 +1,6 @@
 use data_new::{SampleDatum, SampleLabel};
 use operator::{
-  Operator, InputOperator, LossOperator, FullOperator,
+  Operator, InputOperator, LossOperator, CompleteOperator,
   OperatorNode, OperatorConfig,
   OpCapability, OpPhase,
   Regularization,
@@ -337,7 +337,8 @@ impl LossOperator for SequentialOperator {
     self.loss_op.store_output_categories(batch_size);
   }
 
-  fn get_output_categories(&self, batch_size: usize) -> &Array2d<i32> {
+  //fn get_output_categories(&self, batch_size: usize) -> &Array2d<i32> {
+  fn get_output_categories(&self, batch_size: usize) -> &[i32] {
     self.loss_op.get_output_categories(batch_size)
   }
 
@@ -346,5 +347,5 @@ impl LossOperator for SequentialOperator {
   }
 }
 
-impl FullOperator for SequentialOperator {
+impl CompleteOperator for SequentialOperator {
 }

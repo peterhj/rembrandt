@@ -111,12 +111,14 @@ array = { path = "../libarray" }
 array_cuda = { path = "../libarray_cuda" }
 #array_dist = { path = "../libarray_dist" }
 arraydb = { path = "../arraydb" }
-cuda = { path = "../libcuda" }
+#cuda = { path = "../libcuda" }
+cuda = { git = "https://github.com/peterhj/libcuda.git" }
 cuda_dnn = { path = "../libcuda_dnn" } #, features = ["cudnn_v3"] }
 #epeg = { path = "../libepeg" }
 episodb = { path = "../../episodb" }
 lmdb = { path = "../liblmdb" }
 #mpich = { path = "../../libmpich" }
+nccl = { git = "https://github.com/peterhj/libnccl.git" }
 openmpi = { path = "../../libopenmpi" }
 procgroup = { path = "../../libprocgroup" }
 procgroup_mpi = { path = "../../libprocgroup_mpi" }

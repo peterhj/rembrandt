@@ -33,8 +33,8 @@ use array::{
 use array_cuda::device::array::{DeviceArray2d};
 use array_cuda::device::context::{DeviceContext, DeviceCtxRef};
 use array_cuda::device::ext::{DeviceCastBytesExt, DeviceNumExt};
-use array_cuda::device::linalg::{BlasMatrixExt, BlasVectorExt, Transpose};
-use array_cuda::device::memory::{DeviceZeroExt, DeviceBuffer, DeviceBufferRef, DeviceBufferRefMut};
+use array_cuda::device::linalg::{VectorExt, BlasMatrixExt, BlasVectorExt, Transpose};
+use array_cuda::device::memory::{DeviceBufferInitExt, DeviceBuffer, DeviceBufferRef, DeviceBufferRefMut};
 use array_cuda::device::random::{RandomSampleExt, UniformDist, GaussianDist};
 use cuda_dnn::v4::{
   CudnnConvFwdOp, CudnnConvBwdFilterOp, CudnnConvBwdDataOp,
@@ -78,7 +78,7 @@ pub trait OpWrite {
 }
 
 pub struct OpCursor<T> {
-  inner:    T,
+  pub inner:    T,
 }
 
 impl<T> OpCursor<T> {
@@ -111,35 +111,35 @@ pub trait Operator {
   fn params_len(&self) -> usize { unimplemented!(); }
   fn get_output_vars(&self) -> Option<SharedDeviceBuf<f32>> { None }
   fn get_output_deltas(&self) -> Option<SharedDeviceBuf<f32>> { None }
-  fn get_output_act(&self, arm: usize) -> Option<SharedDeviceBuf<f32>> { None }
-  fn get_output_delta(&self, arm: usize) -> Option<SharedDeviceBuf<f32>> { None }
-  fn get_output_r_act(&self, arm: usize) -> Option<SharedDeviceBuf<f32>> { None }
-  fn get_output_r_delta(&self, arm: usize) -> Option<SharedDeviceBuf<f32>> { None }
+  fn get_output_act(&self, _arm: usize) -> SharedDeviceBuf<f32> { unimplemented!(); }
+  fn get_output_delta(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> { unimplemented!(); }
+  fn get_output_r_act(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> { unimplemented!(); }
+  fn get_output_r_delta(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> { unimplemented!(); }
   fn init_params(&mut self, _shared_seed: [u64; 2]) {}
   fn decode_params(&mut self, _blob: &[u8]) -> usize { 0 }
   fn encode_params(&mut self, _blob: &mut Vec<u8>) {}
   fn decode_state(&mut self, _blob: &[u8]) -> usize { 0 }
   fn encode_state(&mut self, _blob: &mut Vec<u8>) {}
-  fn read_params(&mut self, _offset: usize, _reader: &mut OpRead) -> usize { 0 }
-  fn write_params(&mut self, _offset: usize, _writer: &mut OpWrite) -> usize { 0 }
+  fn read_param(&mut self, _offset: usize, _reader: &mut OpRead) -> usize { 0 }
+  fn write_param(&mut self, _offset: usize, _writer: &mut OpWrite) -> usize { 0 }
   fn forward(&mut self, batch_size: usize, phase: OpPhase);
 
   // Requires `Backward` capability.
-  fn read_grads(&mut self, _offset: usize, _reader: &mut OpRead) -> usize { 0 }
-  fn write_grads(&mut self, _offset: usize, _writer: &mut OpWrite) -> usize { 0 }
+  fn reset(&mut self) {}
+  fn read_grad(&mut self, _offset: usize, _reader: &mut OpRead) -> usize { 0 }
+  fn write_grad(&mut self, _offset: usize, _writer: &mut OpWrite) -> usize { 0 }
   fn backward(&mut self, batch_size: usize);
   fn regularize(&mut self, _reg: Regularization) {}
   fn accumulate_grads(&mut self, _scale: f32, _momentum: f32) {}
   fn update_params(&mut self, _scale: f32) {}
   fn update_params2(&mut self, _grad_scale: f32, _update_scale: f32) {}
-  fn save_params(&mut self) {}
-  fn restore_params(&mut self) {}
+  #[deprecated] fn save_params(&mut self) {}
+  #[deprecated] fn restore_params(&mut self) {}
   //fn set_grads_with_params_diff(&mut self) {}
-  fn stage_grads(&mut self, _offset: usize, _comm_worker: &mut CommWorker) -> usize { 0 }
-  fn merge_grads(&mut self, _offset: usize, _comm_worker: &mut CommWorker) -> usize { 0 }
-  fn stage_params(&mut self, _offset: usize, _comm_worker: &mut CommWorker) -> usize { 0 }
-  fn merge_params(&mut self, _offset: usize, _comm_worker: &mut CommWorker) -> usize { 0 }
-  fn reset(&mut self) {}
+  #[deprecated] fn stage_grads(&mut self, _offset: usize, _comm_worker: &mut CommWorker) -> usize { 0 }
+  #[deprecated] fn merge_grads(&mut self, _offset: usize, _comm_worker: &mut CommWorker) -> usize { 0 }
+  #[deprecated] fn stage_params(&mut self, _offset: usize, _comm_worker: &mut CommWorker) -> usize { 0 }
+  #[deprecated] fn merge_params(&mut self, _offset: usize, _comm_worker: &mut CommWorker) -> usize { 0 }
 
   // Requires `RForward` capability.
   fn read_direction(&mut self, _offset: usize, _reader: &mut OpRead) -> usize { 0 }
@@ -149,11 +149,11 @@ pub trait Operator {
   // Requires `RBackward` capability.
   fn r_backward(&mut self, _batch_size: usize) { unimplemented!(); }
 
-  fn hv_reset_direction(&mut self, _init: HvDirectionInit) { unimplemented!(); }
+  /*fn hv_reset_direction(&mut self, _init: HvDirectionInit) { unimplemented!(); }
   fn hv_solve_direction(&mut self, _solver: HvDirectionSolver) { unimplemented!(); }
   fn hv_forward(&mut self, _batch_size: usize) { unimplemented!(); }
   fn hv_backward(&mut self, _batch_size: usize) { unimplemented!(); }
-  fn hv_update_params(&mut self, _scale: f32) { unimplemented!(); }
+  fn hv_update_params(&mut self, _scale: f32) { unimplemented!(); }*/
 }
 
 pub trait InputOperator: Operator {
@@ -174,15 +174,18 @@ pub trait LossOperator: Operator {
   fn load_weights(&mut self, batch_size: usize);
   fn stage_category_weight(&mut self, _batch_idx: usize, _category: i32, _cat_weight: f32) {}
   fn load_category_weights(&mut self, _batch_size: usize) {}
+  //fn stage_r_weight(&mut self, batch_idx: usize, weight: f32);
+  //fn load_r_weights(&mut self, batch_size: usize);
 
-  fn set_target_factors_with_rfwd_targets(&mut self, _batch_size: usize) { unimplemented!(); }
-  fn reset_target_factors(&mut self, _batch_size: usize) { unimplemented!(); }
+  fn reset_targets(&mut self, _batch_size: usize) { unimplemented!(); }
+  fn set_targets_with_r_loss(&mut self, _batch_size: usize) { unimplemented!(); }
 
   fn store_loss(&mut self, batch_size: usize) -> f32;
   fn store_output_values(&mut self, batch_size: usize);
   fn get_output_values(&self, batch_size: usize) -> &Array2d<f32>;
   fn store_output_categories(&mut self, batch_size: usize);
-  fn get_output_categories(&self, batch_size: usize) -> &Array2d<i32>;
+  //fn get_output_categories(&self, batch_size: usize) -> &Array2d<i32>;
+  fn get_output_categories(&self, batch_size: usize) -> &[i32];
   fn accuracy_count(&self, batch_size: usize) -> usize;
   //fn reset_loss(&mut self);
 
@@ -192,11 +195,11 @@ pub trait LossOperator: Operator {
   fn r_backward_loss(&mut self, batch_size: usize);*/
 
   // Requires `HVBackward` capability.
-  fn hv_stage_hessian_weight(&mut self, _batch_idx: usize, _h_weight: f32) { unimplemented!(); }
-  fn hv_load_hessian_weights(&mut self, _batch_size: usize) { unimplemented!(); }
+  /*fn hv_stage_hessian_weight(&mut self, _batch_idx: usize, _h_weight: f32) { unimplemented!(); }
+  fn hv_load_hessian_weights(&mut self, _batch_size: usize) { unimplemented!(); }*/
 }
 
-pub trait FullOperator: Operator + InputOperator + LossOperator {
+pub trait CompleteOperator: InputOperator + LossOperator {
 }
 
 pub enum OperatorNode {
@@ -225,25 +228,6 @@ pub enum OperatorConfig {
   //_Dummy(PhantomData<Comm>),
 }
 
-// FIXME(20160331): this is needed because of the hacky <Comm> generic.
-/*unsafe impl<Comm> Send for OperatorConfig<Comm> where Comm: 'static + CommWorker {
-}*/
-
-/*impl<Comm> Clone for OperatorConfig<Comm> where Comm: 'static + CommWorker {
-  fn clone(&self) -> OperatorConfig<Comm> {
-    match self {
-      &OperatorConfig::Data3d(cfg)        => OperatorConfig::Data3d(cfg),
-      &OperatorConfig::Affine(cfg)        => OperatorConfig::Affine(cfg),
-      &OperatorConfig::Conv2d(cfg)        => OperatorConfig::Conv2d(cfg),
-      &OperatorConfig::Pool2d(cfg)        => OperatorConfig::Pool2d(cfg),
-      &OperatorConfig::SoftmaxKLLoss(cfg) => OperatorConfig::SoftmaxKLLoss(cfg),
-      &OperatorConfig::Split(cfg)         => OperatorConfig::Split(cfg),
-      &OperatorConfig::_Dummy(marker)     => OperatorConfig::_Dummy(PhantomData),
-    }
-  }
-}*/
-
-//impl<Comm2> OperatorConfig<Comm2> where Comm2: 'static + CommWorker {
 impl OperatorConfig {
   pub fn params_len(&self) -> usize {
     match self {
@@ -286,7 +270,7 @@ impl OperatorConfig {
         OperatorNode::Input(Box::new(VarData3dOperator::new(batch_size, cfg.clone(), context)))
       }
       &OperatorConfig::SoftmaxKLLoss(ref cfg) => {
-        OperatorNode::Loss(Box::new(SoftmaxKLLossOperator::new(batch_size, *cfg, prev_op, context)))
+        OperatorNode::Loss(Box::new(SoftmaxKLLossOperator::new(batch_size, capability, *cfg, prev_op, context)))
       }
       &OperatorConfig::Split(dims) => {
         unimplemented!();
@@ -370,7 +354,7 @@ pub enum Regularization {
   L2{l2_reg_coef: f32},
 }
 
-#[derive(Clone, Copy, Debug)]
+/*#[derive(Clone, Copy, Debug)]
 pub enum HvDirectionInit {
   Gradient,
 }
@@ -378,7 +362,7 @@ pub enum HvDirectionInit {
 #[derive(Clone, Copy, Debug)]
 pub enum HvDirectionSolver {
   PrecondConjGrad,
-}
+}*/
 
 #[derive(Clone, Copy, Debug)]
 pub enum ActivationFunction {
@@ -478,21 +462,126 @@ pub struct AddJoinOperator {
   batch_cap:    usize,
   num_in_arms:  usize,
   config:       JoinOperatorConfig,
+  context:      Rc<DeviceContext>,
 
-  in_act:       SharedDeviceBuf<f32>,
-  in_delta:     Option<SharedDeviceBuf<f32>>,
+  in_acts:      Vec<SharedDeviceBuf<f32>>,
   out_act:      SharedDeviceBuf<f32>,
-  out_delta:    SharedDeviceBuf<f32>,
 
+  backward:     Option<AddJoinBwdOperator>,
+  r_forward:    Option<AddJoinRFwdOperator>,
+}
+
+struct AddJoinBwdOperator {
+  in_deltas:    Vec<Option<SharedDeviceBuf<f32>>>,
+  out_delta:    SharedDeviceBuf<f32>,
+}
+
+struct AddJoinRFwdOperator {
+  in_r_acts:    Vec<SharedDeviceBuf<f32>>,
+  out_r_act:    SharedDeviceBuf<f32>,
 }
 
 impl AddJoinOperator {
-  pub fn new(batch_size: usize, num_in_arms: usize, config: JoinOperatorConfig, prev_ops: Vec<&Operator>, context: Rc<DeviceContext>) -> AddJoinOperator {
+  pub fn new(batch_size: usize, capability: OpCapability, config: JoinOperatorConfig, prev_ops: Vec<&Operator>, context: Rc<DeviceContext>) -> AddJoinOperator {
     unimplemented!();
+
+    let num_in_arms = prev_ops.len();
+    let out_length = config.out_dims.len();
+
+    let ctx = &(*context).as_ref();
+
+    let mut in_acts = Vec::with_capacity(num_in_arms);
+    for arm in 0 .. num_in_arms {
+      in_acts.push(prev_ops[arm].get_output_act(0));
+    }
+    let out_act = Rc::new(RefCell::new(DeviceBuffer::zeros(out_length * batch_size, ctx)));
+
+    let backward = if capability.backward_enabled() {
+      let mut in_deltas = Vec::with_capacity(num_in_arms);
+      for arm in 0 .. num_in_arms {
+        in_deltas.push(prev_ops[arm].get_output_delta(0));
+      }
+      let out_delta = Rc::new(RefCell::new(DeviceBuffer::zeros(out_length * batch_size, ctx)));
+      Some(AddJoinBwdOperator{
+        in_deltas:  in_deltas,
+        out_delta:  out_delta,
+      })
+    } else {
+      None
+    };
+
+    let r_forward = if capability.r_forward_enabled() {
+      let mut in_r_acts = Vec::with_capacity(num_in_arms);
+      for arm in 0 .. num_in_arms {
+        in_r_acts.push(prev_ops[arm].get_output_r_act(0).unwrap());
+      }
+      let out_r_act = Rc::new(RefCell::new(DeviceBuffer::zeros(out_length * batch_size, ctx)));
+      Some(AddJoinRFwdOperator{
+        in_r_acts:  in_r_acts,
+        out_r_act:  out_r_act,
+      })
+    } else {
+      None
+    };
+
+    AddJoinOperator{
+      batch_cap:    batch_size,
+      num_in_arms:  num_in_arms,
+      config:       config,
+      context:      context.clone(),
+      in_acts:      in_acts,
+      out_act:      out_act,
+      backward:     backward,
+      r_forward:    r_forward,
+    }
+  }
+}
+
+impl Operator for AddJoinOperator {
+  fn batch_size(&self) -> usize {
+    self.batch_cap
+  }
+
+  fn forward(&mut self, batch_size: usize, _phase: OpPhase) {
+    assert!(batch_size <= self.batch_cap);
+    let ctx = &(*self.context).as_ref();
+    let mut out_act = self.out_act.borrow_mut().as_ref_mut(ctx);
+    out_act.copy(&self.in_acts[0].borrow_mut().as_ref(ctx));
+    for arm in 1 .. self.num_in_arms {
+      out_act.vector_add(1.0, &self.in_acts[arm].borrow_mut().as_ref(ctx));
+    }
+  }
+
+  fn backward(&mut self, batch_size: usize) {
+    assert!(self.backward.is_some());
+    assert!(batch_size <= self.batch_cap);
+    let ctx = &(*self.context).as_ref();
+    let mut backward = self.backward.as_mut().unwrap();
+    let out_delta = backward.out_delta.borrow_mut().as_ref(ctx);
+    for arm in 0 .. self.num_in_arms {
+      if let Some(ref mut in_delta) = backward.in_deltas[arm] {
+        in_delta.borrow_mut().as_ref_mut(ctx)
+          .copy(&out_delta);
+      }
+    }
+  }
+
+  fn r_forward(&mut self, batch_size: usize) {
+    assert!(self.r_forward.is_some());
+    assert!(batch_size <= self.batch_cap);
+    let ctx = &(*self.context).as_ref();
+    let mut r_forward = self.r_forward.as_mut().unwrap();
+    let mut out_r_act = r_forward.out_r_act.borrow_mut().as_ref_mut(ctx);
+    out_r_act.copy(&r_forward.in_r_acts[0].borrow_mut().as_ref(ctx));
+    for arm in 1 .. self.num_in_arms {
+      out_r_act.vector_add(1.0, &r_forward.in_r_acts[arm].borrow_mut().as_ref(ctx));
+    }
   }
 }
 
 pub struct CatJoinOperator;
+
+pub struct BatchJoinOperator;
 
 #[derive(Clone, Copy, Debug)]
 pub enum PoolOperation {

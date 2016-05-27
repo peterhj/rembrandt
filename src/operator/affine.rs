@@ -18,7 +18,7 @@ use array_cuda::device::array::{DeviceArray2d};
 use array_cuda::device::context::{DeviceContext, DeviceCtxRef};
 use array_cuda::device::ext::{DeviceCastBytesExt, DeviceNumExt};
 use array_cuda::device::linalg::{BlasMatrixExt, BlasVectorExt, Transpose};
-use array_cuda::device::memory::{DeviceZeroExt, DeviceBuffer};
+use array_cuda::device::memory::{DeviceBufferInitExt, DeviceBuffer};
 use array_cuda::device::random::{RandomSampleExt, UniformDist};
 use cuda_dnn::v4::{
   CudnnTensorDesc, CudnnFilterDesc, CudnnConvDesc,
@@ -83,6 +83,7 @@ pub struct AffineOperator {
 
   backward:     Option<AffineBwdOperator>,
   hv_backward:  Option<AffineHvBwdOperator>,
+  //r_forward:    Option<AffineRFwdOperator>,
 }
 
 struct AffineBwdOperator {
@@ -99,6 +100,11 @@ struct AffineBwdOperator {
 }
 
 struct AffineHvBwdOperator {
+  dir_weights:  DeviceArray2d<f32>,
+  dir_bias:     DeviceArray2d<f32>,
+}
+
+struct AffineRFwdOperator {
   dir_weights:  DeviceArray2d<f32>,
   dir_bias:     DeviceArray2d<f32>,
 }

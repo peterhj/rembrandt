@@ -18,7 +18,7 @@ use array_cuda::device::array::{DeviceArray2d};
 use array_cuda::device::context::{DeviceContext, DeviceCtxRef};
 use array_cuda::device::ext::{DeviceCastBytesExt, DeviceNumExt};
 use array_cuda::device::linalg::{BlasMatrixExt, BlasVectorExt, Transpose};
-use array_cuda::device::memory::{DeviceZeroExt, DeviceBuffer};
+use array_cuda::device::memory::{DeviceBufferInitExt, DeviceBuffer};
 use array_cuda::device::random::{RandomSampleExt, UniformDist, GaussianDist};
 use cuda_dnn::v4::{
   CudnnConvFwdOp, CudnnConvBwdFilterOp, CudnnConvBwdDataOp,

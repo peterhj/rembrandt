@@ -1,12 +1,21 @@
-use operator::{FullOperator};
+use operator::{CompleteOperator};
+use opt::sgd::{
+  InitBehavior,
+  StepSizeSchedule,
+  Momentum,
+};
 
 use std::ops::{Deref, DerefMut};
+use std::path::{PathBuf};
 
 pub mod dev_allreduce;
 //pub mod mpi_dist_allreduce;
 //pub mod mpi_dist_dev_allreduce;
 
-pub trait ParallelSgdOptWorker: Deref<Target=FullOperator> + DerefMut {
+//pub trait ParallelSgdOptWorker: Deref<Target=CompleteOperator> + DerefMut {
+pub trait ParallelSgdOptWorker {
+  fn operator(&mut self) -> &mut CompleteOperator;
+
   fn signal_checkpoint(&mut self);
   fn wait_checkpoint(&mut self) -> bool;
 
