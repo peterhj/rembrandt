@@ -30,6 +30,10 @@ pub struct SoftmaxKLLossOperator {
 
   in_act:       SharedDeviceBuf<f32>,
   in_delta:     SharedDeviceBuf<f32>,
+  logit:        DeviceBuffer<f32>,
+  logit_sum:    DeviceBuffer<f32>,
+  out_act:      DeviceBuffer<f32>,
+  //out_loss:     DeviceBuffer<f32>,
 
   label_cats:   DeviceArray2d<i32>,
   label_cats_h: Array2d<i32>,
@@ -46,6 +50,22 @@ pub struct SoftmaxKLLossOperator {
   out_loss_h:   Vec<f32>,
 
   softmax:      CudnnSoftmaxOp,
+
+  backward:     Option<SoftmaxKLLossBwdOperator>,
+  r_forward:    Option<SoftmaxKLLossRFwdOperator>,
+  //r_backward:   Option<SoftmaxKLLossRBwdOperator>,
+}
+
+pub struct SoftmaxKLLossBwdOperator {
+  //in_delta:     SharedDeviceBuf<f32>,
+  target_factors:   DeviceBuffer<f32>,
+}
+
+pub struct SoftmaxKLLossRFwdOperator {
+  in_r_act:     SharedDeviceBuf<f32>,
+  mix_in_r_act: DeviceBuffer<f32>,
+  out_r_act:    DeviceBuffer<f32>,
+  out_r_loss:   DeviceBuffer<f32>,
 }
 
 impl SoftmaxKLLossOperator {
@@ -97,12 +117,15 @@ impl Operator for SoftmaxKLLossOperator {
   fn forward(&mut self, batch_size: usize, _phase: OpPhase) {
     assert!(batch_size <= self.batch_cap);
     let ctx = &(*self.context).as_ref();
+    // FIXME(20160526): replace the cudnn softmax function with all the steps;
+    // we need the intermediate values for later passes.
     self.softmax.set_batch_size(batch_size).unwrap();
     unsafe { self.softmax.forward(
         self.in_act.borrow_mut().as_ref(ctx).as_ptr(),
         self.out_values.as_view_mut(ctx).as_mut_ptr(),
         &*ctx.get_dnn(),
     ) }.unwrap();
+    // FIXME(20160526): also calculate the loss.
   }
 
   fn backward(&mut self, batch_size: usize) {
@@ -119,17 +142,31 @@ impl Operator for SoftmaxKLLossOperator {
     ) };
   }
 
-  /*fn sync_grads(&mut self) {
-    // Do nothing.
+  fn r_forward(&mut self, batch_size: usize) {
+    assert!(self.r_forward.is_some());
+    assert!(batch_size <= self.batch_cap);
+    let ctx = &(*self.context).as_ref();
+    let mut r_forward = self.r_forward.as_mut().unwrap();
+    unsafe { rembrandt_kernel_softmax_r_fwd_batch(
+        self.in_act.as_ref(ctx).as_ptr(),
+        self.loss_config.num_categories as i32,
+        batch_size as i32,
+        self.out_act.as_ref(ctx).as_ptr(),
+        r_forward.in_r_act.as_ref(ctx).as_ptr(),
+        r_forward.mix_in_r_act.as_ref(ctx).as_ptr(),
+        r_forward.out_r_act.as_ref_mut(ctx).as_mut_ptr(),
+        ctx.stream.ptr,
+    ) };
+    unsafe { rembrandt_kernel_softmax_kl_loss_r_fwd_batch(
+        self.out_act.as_ref(ctx).as_ptr(),
+        self.loss_config.num_categories as i32,
+        batch_size as i32,
+        r_forward.out_r_act.as_ref(ctx).as_ptr(),
+        self.label_cats.as_ref(ctx).as_ptr(),
+        r_forward.out_r_loss.as_ref_mut(ctx).as_mut_ptr(),
+        ctx.stream.ptr,
+    ) };
   }
-
-  fn sync_params(&mut self) {
-    // Do nothing.
-  }
-
-  fn reset_grads(&mut self, _scale: f32) {
-    // Do nothing.
-  }*/
 }
 
 impl LossOperator for SoftmaxKLLossOperator {

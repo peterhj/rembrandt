@@ -104,7 +104,11 @@ impl OpWrite for OpCursor<DeviceBuffer<f32>> {
 }
 
 pub trait Operator {
+  fn upcast_input(&mut self) -> &mut InputOperator { unimplemented!(); }
+  fn upcast_loss(&mut self) -> &mut LossOperator { unimplemented!(); }
+
   fn batch_size(&self) -> usize;
+  fn params_len(&self) -> usize { unimplemented!(); }
   fn get_output_vars(&self) -> Option<SharedDeviceBuf<f32>> { None }
   fn get_output_deltas(&self) -> Option<SharedDeviceBuf<f32>> { None }
   fn get_output_act(&self, arm: usize) -> Option<SharedDeviceBuf<f32>> { None }

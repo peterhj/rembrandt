@@ -96,6 +96,7 @@ pub struct Conv2dOperator {
 
   in_act:       SharedDeviceBuf<f32>,
   in_delta:     Option<SharedDeviceBuf<f32>>,
+  tmp_act:      DeviceBuffer<f32>,
   out_act:      SharedDeviceBuf<f32>,
   out_delta:    SharedDeviceBuf<f32>,
 
@@ -232,6 +233,7 @@ impl Conv2dOperator {
         None => panic!("Conv2dOperator missing required prev operator output vars"),
       },
       in_delta:     prev_op.unwrap().get_output_deltas(),
+      tmp_act:      DeviceBuffer::<f32>::zeros(out_length * batch_size, ctx),
       out_act:      Rc::new(RefCell::new(DeviceBuffer::<f32>::zeros(out_length * batch_size, ctx))),
       out_delta:    Rc::new(RefCell::new(DeviceBuffer::<f32>::zeros(out_length * batch_size, ctx))),
       weights:      DeviceArray2d::<f32>::zeros((conv_size * conv_size * in_channels, out_channels), ctx),
@@ -281,6 +283,7 @@ impl Operator for Conv2dOperator {
   fn get_output_r_delta(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> {
     assert_eq!(0, _arm);
     if let Some(ref r_backward) = self.r_backward {
+      // FIXME(20160526)
       //Some(r_backward.out_r_delta.clone())
       unimplemented!();
     } else {
@@ -536,6 +539,70 @@ impl Operator for Conv2dOperator {
     assert!(batch_size <= self.batch_cap);
 
     // FIXME(20160524)
+
+    let out_dims = self.config.get_out_dims();
+    let out_length = out_dims.len();
+
+    let &mut Conv2dOperator{
+      ref context,
+      ref mut in_act, ref mut tmp_act, ref mut out_act,
+      ref mut weights, ref mut bias,
+      ref mut workspace,
+      ref mut r_forward,
+      .. } = self;
+
+    let mut r_forward = r_forward.as_mut().unwrap();
+    let &mut Conv2dRFwdOperator{
+      ref mut in_r_act, ref mut out_r_act,
+      ref mut dir_weights, ref mut dir_bias,
+      .. } = r_forward;
+
+    let ctx = &(**context).as_ref();
+    //let mut out_act = out_act.borrow_mut().as_ref_mut(ctx);
+    let mut out_r_act = out_r_act.borrow_mut().as_ref_mut(ctx);
+
+    self.conv_fwd.set_batch_size(batch_size).unwrap();
+    unsafe { self.conv_fwd.forward(
+        1.0,
+        in_r_act.borrow_mut().as_ref(ctx).as_ptr(),
+        weights.as_view(ctx).as_ptr(),
+        0.0,
+        out_r_act.as_mut_ptr(),
+        workspace.as_ref_mut(ctx).as_mut_ptr(),
+        &*ctx.get_dnn(),
+    ).unwrap() };
+    unsafe { self.conv_fwd.forward(
+        1.0,
+        in_act.borrow_mut().as_ref(ctx).as_ptr(),
+        dir_weights.as_view(ctx).as_ptr(),
+        1.0,
+        out_r_act.as_mut_ptr(),
+        workspace.as_ref_mut(ctx).as_mut_ptr(),
+        &*ctx.get_dnn(),
+    ).unwrap() };
+    self.add_bias.set_batch_size(batch_size).unwrap();
+    unsafe { self.add_bias.forward(
+        1.0,
+        dir_bias.as_view(ctx).as_ptr(),
+        1.0,
+        out_r_act.as_mut_ptr(),
+        &*ctx.get_dnn(),
+    ).unwrap() };
+
+    match self.config.act_func {
+      ActivationFunction::Identity => {}
+      ActivationFunction::Rect => {
+        // FIXME(20160526): in-place activation function is not sufficient!
+        unsafe { rembrandt_kernel_batch_map_rect_backprop_inplace(
+            tmp_act.as_ptr(),
+            out_length as i32,
+            batch_size as i32,
+            out_r_act.as_mut_ptr(),
+            ctx.stream.ptr,
+        ) };
+      }
+      _ => unimplemented!(),
+    }
   }
 
   fn regularize(&mut self, reg: Regularization) {
