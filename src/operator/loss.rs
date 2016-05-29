@@ -17,7 +17,6 @@ use rembrandt_kernels::ffi::*;
 
 use std::cell::{RefCell};
 use std::iter::{repeat};
-//use std::ptr::{null_mut};
 use std::rc::{Rc};
 
 #[derive(Clone, Copy, Debug)]
@@ -40,26 +39,16 @@ pub struct SoftmaxKLLossOperator {
   out_act:      DeviceBuffer<f32>,
   out_loss:     DeviceBuffer<f32>,
 
-  //label_cats:   DeviceArray2d<i32>,
-  //label_cats_h: Array2d<i32>,
   label_cats:   DeviceBuffer<i32>,
   label_cats_h: Vec<i32>,
-  //weights:      DeviceArray2d<f32>,
-  //weights_h:    Array2d<f32>,
   weights:      DeviceBuffer<f32>,
   weights_h:    Vec<f32>,
   targets:      DeviceBuffer<f32>,
   r_weights:    DeviceBuffer<f32>,
   //r_weights_h:  Vec<f32>,
 
-  //out_values:   DeviceArray2d<f32>,
-  //out_values_h: Array2d<f32>,
-  //max_value:    DeviceArray2d<f32>,
-  //out_cats:     DeviceArray2d<i32>,
-  //out_cats_h:   Array2d<i32>,
   out_cats:     DeviceBuffer<i32>,
   out_cats_h:   Vec<i32>,
-  //out_loss1:    DeviceArray2d<f32>,
   out_loss0:    DeviceBuffer<f32>,
   out_loss_h:   Vec<f32>,
 
@@ -126,24 +115,14 @@ impl SoftmaxKLLossOperator {
       factor_sum:   DeviceBuffer::zeros(batch_size, ctx),
       out_act:      DeviceBuffer::zeros(loss_config.num_categories * batch_size, ctx),
       out_loss:     DeviceBuffer::zeros(batch_size, ctx),
-      //label_cats:   DeviceArray2d::zeros((1, batch_size), ctx),
-      //label_cats_h: Array2d::zeros((1, batch_size)),
       label_cats:   DeviceBuffer::zeros(batch_size, ctx),
       label_cats_h: repeat(0).take(batch_size).collect(),
-      //weights:      DeviceArray2d::zeros((1, batch_size), ctx),
-      //weights_h:    Array2d::zeros((1, batch_size)),
       weights:      DeviceBuffer::zeros(batch_size, ctx),
       weights_h:    repeat(0.0).take(batch_size).collect(),
       targets:      DeviceBuffer::ones(batch_size, ctx),
       r_weights:    DeviceBuffer::ones(batch_size, ctx),
-      //out_values:   DeviceArray2d::zeros((loss_config.num_categories, batch_size), ctx),
-      //out_values_h: Array2d::zeros((loss_config.num_categories, batch_size)),
-      //max_value:    DeviceArray2d::zeros((1, batch_size), ctx),
-      //out_cats:     DeviceArray2d::zeros((1, batch_size), ctx),
-      //out_cats_h:   Array2d::zeros((1, batch_size)),
       out_cats:     DeviceBuffer::zeros(batch_size, ctx),
       out_cats_h:   repeat(0).take(batch_size).collect(),
-      //out_loss1:    DeviceArray2d::zeros((1, batch_size), ctx),
       out_loss0:    DeviceBuffer::zeros(1, ctx),
       out_loss_h:   vec![0.0],
       //softmax:      softmax,
@@ -285,6 +264,7 @@ impl Operator for SoftmaxKLLossOperator {
         batch_size as i32,
         r_forward.out_r_act.as_ref(ctx).as_ptr(),
         self.label_cats.as_ref(ctx).as_ptr(),
+        self.r_weights.as_ref(ctx).as_ptr(),
         r_forward.out_r_loss.as_ref_mut(ctx).as_mut_ptr(),
         ctx.stream.ptr,
     ) };

@@ -332,9 +332,9 @@ impl SgdOpt {
           operator.loss_operator(0).load_labels(batch_size);
           operator.loss_operator(0).load_weights(batch_size);
           operator.forward(batch_size, OpPhase::Training{t: iter_counter});
+          operator.backward(batch_size);
           operator.loss_operator(0).store_output_categories(batch_size);
           let local_loss = operator.loss_operator(0).store_loss(batch_size);
-          operator.backward(batch_size);
           let local_correct_count = operator.loss_operator(0).accuracy_count(batch_size);
           //self.shared.acc_correct_count.fetch_add(local_correct_count, Ordering::AcqRel);
           //self.shared.acc_total_count.fetch_add(batch_size, Ordering::AcqRel);

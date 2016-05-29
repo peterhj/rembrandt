@@ -66,7 +66,7 @@ impl AffineOperatorConfig {
 pub struct AffineOperator {
   batch_cap:    usize,
   _capability:  OpCapability,
-  params_off:   usize,
+  //params_off:   usize,
   config:       AffineOperatorConfig,
 
   context:      Rc<DeviceContext>,
@@ -110,7 +110,7 @@ struct AffineRFwdOperator {
 }
 
 impl AffineOperator {
-  pub fn new(batch_size: usize, capability: OpCapability, params_offset: usize, config: AffineOperatorConfig, prev_op: Option<&Operator>, /*comm_worker: Option<Rc<RefCell<Comm>>>,*/ context: Rc<DeviceContext>) -> AffineOperator {
+  pub fn new(batch_size: usize, capability: OpCapability, /*params_offset: usize,*/ config: AffineOperatorConfig, prev_op: Option<&Operator>, /*comm_worker: Option<Rc<RefCell<Comm>>>,*/ context: Rc<DeviceContext>) -> AffineOperator {
     let in_channels = config.in_channels;
     let out_channels = config.out_channels;
 
@@ -141,7 +141,7 @@ impl AffineOperator {
     AffineOperator{
       batch_cap:    batch_size,
       _capability:  capability,
-      params_off:   params_offset,
+      //params_off:   params_offset,
       config:       config,
       context:      context.clone(),
       in_act:       match prev_op.unwrap().get_output_vars() {

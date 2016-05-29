@@ -109,8 +109,8 @@ pub trait Operator {
 
   fn batch_size(&self) -> usize;
   fn params_len(&self) -> usize { unimplemented!(); }
-  fn get_output_vars(&self) -> Option<SharedDeviceBuf<f32>> { None }
-  fn get_output_deltas(&self) -> Option<SharedDeviceBuf<f32>> { None }
+  #[deprecated] fn get_output_vars(&self) -> Option<SharedDeviceBuf<f32>> { None }
+  #[deprecated] fn get_output_deltas(&self) -> Option<SharedDeviceBuf<f32>> { None }
   fn get_output_act(&self, _arm: usize) -> SharedDeviceBuf<f32> { unimplemented!(); }
   fn get_output_delta(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> { unimplemented!(); }
   fn get_output_r_act(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> { unimplemented!(); }
@@ -223,8 +223,8 @@ pub enum OperatorConfig {
   Pool2d(Pool2dOperatorConfig),
   Dropout(DropoutOperatorConfig),
   SoftmaxKLLoss(CategoricalLossConfig),
-  Split((usize, usize, usize)),
-  //Join((usize, usize, usize)),
+  CopySplit(SplitOperatorConfig),
+  AddJoin(JoinOperatorConfig),
   //_Dummy(PhantomData<Comm>),
 }
 
@@ -243,7 +243,7 @@ impl OperatorConfig {
   pub fn build_node(&self, batch_size: usize, capability: OpCapability, params_offset: Option<usize>, prev_op: Option<&Operator>, /*comm_worker: Option<Rc<RefCell<Comm>>>,*/ context: Rc<DeviceContext>) -> OperatorNode {
     match self {
       &OperatorConfig::Affine(ref cfg) => {
-        OperatorNode::Hidden(Box::new(AffineOperator::new(batch_size, capability, params_offset.unwrap(), *cfg, prev_op, /*comm_worker,*/ context)))
+        OperatorNode::Hidden(Box::new(AffineOperator::new(batch_size, capability, /*params_offset.unwrap(),*/ *cfg, prev_op, /*comm_worker,*/ context)))
       }
       &OperatorConfig::Conv2d(ref cfg) => {
         OperatorNode::Hidden(Box::new(Conv2dOperator::new(batch_size, capability, params_offset.unwrap(), *cfg, prev_op, /*comm_worker,*/ context)))
@@ -272,9 +272,15 @@ impl OperatorConfig {
       &OperatorConfig::SoftmaxKLLoss(ref cfg) => {
         OperatorNode::Loss(Box::new(SoftmaxKLLossOperator::new(batch_size, capability, *cfg, prev_op, context)))
       }
-      &OperatorConfig::Split(dims) => {
+      &OperatorConfig::CopySplit(ref cfg) => {
         unimplemented!();
       }
+      &OperatorConfig::AddJoin(ref cfg) => {
+        unimplemented!();
+      }
+      /*&OperatorConfig::Split(dims) => {
+        unimplemented!();
+      }*/
       /*&OperatorConfig::Join(dims) => {
         unimplemented!();
       }*/
@@ -454,13 +460,141 @@ impl Operator for SplitOperator {
   }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct SplitOperatorConfig {
+  pub in_dims:  (usize, usize, usize),
+  pub num_out_arms: usize,
+}
+
+pub struct CopySplitOperator {
+  //num_out_arms: usize,
+  batch_cap:    usize,
+  config:       SplitOperatorConfig,
+  context:      Rc<DeviceContext>,
+
+  in_act:       SharedDeviceBuf<f32>,
+  //out_acts:     Vec<SharedDeviceBuf<f32>>,
+
+  backward:     Option<CopySplitBwdOperator>,
+  r_forward:    Option<CopySplitRFwdOperator>,
+}
+
+struct CopySplitBwdOperator {
+  in_delta:     Option<SharedDeviceBuf<f32>>,
+  out_deltas:   Vec<Option<SharedDeviceBuf<f32>>>,
+}
+
+struct CopySplitRFwdOperator {
+  in_r_act:     SharedDeviceBuf<f32>,
+  //out_r_acts:   Vec<SharedDeviceBuf<f32>>,
+}
+
+impl CopySplitOperator {
+  pub fn new(/*num_out_arms: usize,*/ batch_size: usize, capability: OpCapability, config: SplitOperatorConfig, prev_op: &Operator, context: Rc<DeviceContext>) -> CopySplitOperator {
+    let num_out_arms = config.num_out_arms;
+    let out_length = config.in_dims.len();
+
+    let ctx = &(*context).as_ref();
+
+    let in_act = prev_op.get_output_act(0);
+
+    let backward = if capability.backward_enabled() {
+      let in_delta = prev_op.get_output_delta(0);
+      let mut out_deltas = Vec::with_capacity(num_out_arms);
+      for arm in 0 .. num_out_arms {
+        if in_delta.is_some() {
+          out_deltas.push(Some(Rc::new(RefCell::new(DeviceBuffer::zeros(out_length, ctx)))));
+        } else {
+          out_deltas.push(None);
+        }
+      }
+      Some(CopySplitBwdOperator{
+        in_delta:   in_delta,
+        out_deltas: out_deltas,
+      })
+    } else {
+      None
+    };
+
+    let r_forward = if capability.r_forward_enabled() {
+      let in_r_act = prev_op.get_output_r_act(0).unwrap();
+      Some(CopySplitRFwdOperator{
+        in_r_act:   in_r_act,
+      })
+    } else {
+      None
+    };
+
+    CopySplitOperator{
+      //num_out_arms: num_out_arms,
+      batch_cap:    batch_size,
+      config:       config,
+      context:      context.clone(),
+      in_act:       in_act,
+      backward:     backward,
+      r_forward:    r_forward,
+    }
+  }
+}
+
+impl Operator for CopySplitOperator {
+  fn batch_size(&self) -> usize {
+    self.batch_cap
+  }
+
+  fn get_output_act(&self, _arm: usize) -> SharedDeviceBuf<f32> {
+    assert_eq!(0, _arm);
+    self.in_act.clone()
+  }
+
+  fn get_output_delta(&self, arm: usize) -> Option<SharedDeviceBuf<f32>> {
+    assert!(self.backward.is_some());
+    self.backward.as_ref().unwrap().out_deltas[arm].clone()
+  }
+
+  fn get_output_r_act(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> {
+    assert!(self.r_forward.is_some());
+    assert_eq!(0, _arm);
+    Some(self.r_forward.as_ref().unwrap().in_r_act.clone())
+  }
+
+  fn get_output_r_delta(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> {
+    unimplemented!();
+  }
+
+  fn forward(&mut self, batch_size: usize, _phase: OpPhase) {
+    assert!(batch_size <= self.batch_cap);
+    // Do nothing.
+  }
+
+  fn backward(&mut self, batch_size: usize) {
+    assert!(self.backward.is_some());
+    let ctx = &(*self.context).as_ref();
+    let mut backward = self.backward.as_mut().unwrap();
+    if let Some(ref mut in_delta) = backward.in_delta {
+      let mut in_delta = in_delta.borrow_mut().as_ref_mut(ctx);
+      in_delta.copy(&backward.out_deltas[0].as_mut().unwrap().borrow_mut().as_ref(ctx));
+      for arm in 1 .. self.config.num_out_arms {
+        in_delta.vector_add(1.0, &backward.out_deltas[arm].as_mut().unwrap().borrow_mut().as_ref(ctx));
+      }
+    }
+  }
+
+  fn r_forward(&mut self, batch_size: usize) {
+    assert!(batch_size <= self.batch_cap);
+    // Do nothing.
+  }
+}
+
+#[derive(Clone, Copy, Debug)]
 pub struct JoinOperatorConfig {
+  pub num_in_arms:  usize,
   pub out_dims:  (usize, usize, usize),
 }
 
 pub struct AddJoinOperator {
+  //num_in_arms:  usize,
   batch_cap:    usize,
-  num_in_arms:  usize,
   config:       JoinOperatorConfig,
   context:      Rc<DeviceContext>,
 
@@ -483,9 +617,8 @@ struct AddJoinRFwdOperator {
 
 impl AddJoinOperator {
   pub fn new(batch_size: usize, capability: OpCapability, config: JoinOperatorConfig, prev_ops: Vec<&Operator>, context: Rc<DeviceContext>) -> AddJoinOperator {
-    unimplemented!();
-
     let num_in_arms = prev_ops.len();
+    assert_eq!(num_in_arms, config.num_in_arms);
     let out_length = config.out_dims.len();
 
     let ctx = &(*context).as_ref();
@@ -525,8 +658,8 @@ impl AddJoinOperator {
     };
 
     AddJoinOperator{
+      //num_in_arms:  num_in_arms,
       batch_cap:    batch_size,
-      num_in_arms:  num_in_arms,
       config:       config,
       context:      context.clone(),
       in_acts:      in_acts,
@@ -547,7 +680,7 @@ impl Operator for AddJoinOperator {
     let ctx = &(*self.context).as_ref();
     let mut out_act = self.out_act.borrow_mut().as_ref_mut(ctx);
     out_act.copy(&self.in_acts[0].borrow_mut().as_ref(ctx));
-    for arm in 1 .. self.num_in_arms {
+    for arm in 1 .. self.config.num_in_arms {
       out_act.vector_add(1.0, &self.in_acts[arm].borrow_mut().as_ref(ctx));
     }
   }
@@ -558,7 +691,7 @@ impl Operator for AddJoinOperator {
     let ctx = &(*self.context).as_ref();
     let mut backward = self.backward.as_mut().unwrap();
     let out_delta = backward.out_delta.borrow_mut().as_ref(ctx);
-    for arm in 0 .. self.num_in_arms {
+    for arm in 0 .. self.config.num_in_arms {
       if let Some(ref mut in_delta) = backward.in_deltas[arm] {
         in_delta.borrow_mut().as_ref_mut(ctx)
           .copy(&out_delta);
@@ -573,7 +706,7 @@ impl Operator for AddJoinOperator {
     let mut r_forward = self.r_forward.as_mut().unwrap();
     let mut out_r_act = r_forward.out_r_act.borrow_mut().as_ref_mut(ctx);
     out_r_act.copy(&r_forward.in_r_acts[0].borrow_mut().as_ref(ctx));
-    for arm in 1 .. self.num_in_arms {
+    for arm in 1 .. self.config.num_in_arms {
       out_r_act.vector_add(1.0, &r_forward.in_r_acts[arm].borrow_mut().as_ref(ctx));
     }
   }
