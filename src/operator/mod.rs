@@ -202,11 +202,19 @@ pub trait LossOperator: Operator {
 pub trait CompleteOperator: InputOperator + LossOperator {
 }
 
+pub enum OperatorVariant {
+  Hidden(Box<Operator>),
+  Input(Box<Operator>),
+  Loss(Box<Operator>),
+  //Split(Box<Operator>),
+  //Join(Box<Operator>),
+}
+
 pub enum OperatorNode {
   Hidden(Box<Operator>),
   Input(Box<InputOperator>),
   Loss(Box<LossOperator>),
-  Split(Box<Operator>),
+  //Split(Box<Operator>),
   //Join(Box<Operator>),
 }
 
@@ -237,6 +245,57 @@ impl OperatorConfig {
       &OperatorConfig::StackResConv2d(ref cfg) => cfg.params_len(),
       &OperatorConfig::ProjStackResConv2d(ref cfg) => cfg.params_len(),
       _ => 0,
+    }
+  }
+
+  pub fn build_variant(&self, batch_size: usize, capability: OpCapability, prev_ops: Vec<&Operator>, context: Rc<DeviceContext>) -> OperatorVariant {
+    match self {
+      &OperatorConfig::Affine(ref cfg) => {
+        let prev_op = Some(prev_ops[0]);
+        OperatorVariant::Hidden(Box::new(AffineOperator::new(batch_size, capability, *cfg, prev_op, context)))
+      }
+      &OperatorConfig::Conv2d(ref cfg) => {
+        let prev_op = Some(prev_ops[0]);
+        OperatorVariant::Hidden(Box::new(Conv2dOperator::new(batch_size, capability, 0, *cfg, prev_op, context)))
+      }
+      &OperatorConfig::BNormConv2d(ref cfg) => {
+        let prev_op = Some(prev_ops[0]);
+        OperatorVariant::Hidden(Box::new(BNormConv2dOperator::new(batch_size, capability, 0, *cfg, prev_op, context)))
+      }
+      &OperatorConfig::StackResConv2d(ref cfg) => {
+        let prev_op = Some(prev_ops[0]);
+        OperatorVariant::Hidden(Box::new(StackResConv2dOperator::new(batch_size, capability, 0, *cfg, prev_op, context)))
+      }
+      &OperatorConfig::ProjStackResConv2d(ref cfg) => {
+        let prev_op = Some(prev_ops[0]);
+        OperatorVariant::Hidden(Box::new(ProjStackResConv2dOperator::new(batch_size, capability, 0, *cfg, prev_op, context)))
+      }
+      &OperatorConfig::Pool2d(ref cfg) => {
+        let prev_op = Some(prev_ops[0]);
+        OperatorVariant::Hidden(Box::new(Pool2dOperator::new(batch_size, *cfg, prev_op, context)))
+      }
+      &OperatorConfig::Dropout(ref cfg) => {
+        let prev_op = Some(prev_ops[0]);
+        OperatorVariant::Hidden(Box::new(DropoutOperator::new(batch_size, *cfg, prev_op, context)))
+      }
+      &OperatorConfig::Data3d(ref cfg) => {
+        OperatorVariant::Input(Box::new(Data3dOperator::new(batch_size, cfg.clone(), context)))
+      }
+      &OperatorConfig::VarData3d(ref cfg) => {
+        OperatorVariant::Input(Box::new(VarData3dOperator::new(batch_size, cfg.clone(), context)))
+      }
+      &OperatorConfig::SoftmaxKLLoss(ref cfg) => {
+        let prev_op = Some(prev_ops[0]);
+        OperatorVariant::Loss(Box::new(SoftmaxKLLossOperator::new(batch_size, capability, *cfg, prev_op, context)))
+      }
+      &OperatorConfig::CopySplit(ref cfg) => {
+        //let prev_op = prev_ops[0];
+        OperatorVariant::Hidden(Box::new(CopySplitOperator::new(batch_size, capability, *cfg, prev_ops, context)))
+      }
+      &OperatorConfig::AddJoin(ref cfg) => {
+        OperatorVariant::Hidden(Box::new(AddJoinOperator::new(batch_size, capability, *cfg, prev_ops, context)))
+      }
+      //_ => unreachable!(),
     }
   }
 
@@ -278,12 +337,6 @@ impl OperatorConfig {
       &OperatorConfig::AddJoin(ref cfg) => {
         unimplemented!();
       }
-      /*&OperatorConfig::Split(dims) => {
-        unimplemented!();
-      }*/
-      /*&OperatorConfig::Join(dims) => {
-        unimplemented!();
-      }*/
       //_ => unreachable!(),
     }
   }
@@ -490,12 +543,14 @@ struct CopySplitRFwdOperator {
 }
 
 impl CopySplitOperator {
-  pub fn new(/*num_out_arms: usize,*/ batch_size: usize, capability: OpCapability, config: SplitOperatorConfig, prev_op: &Operator, context: Rc<DeviceContext>) -> CopySplitOperator {
+  pub fn new(batch_size: usize, capability: OpCapability, config: SplitOperatorConfig, prev_ops: Vec<&Operator>, context: Rc<DeviceContext>) -> CopySplitOperator {
     let num_out_arms = config.num_out_arms;
     let out_length = config.in_dims.len();
 
     let ctx = &(*context).as_ref();
 
+    assert_eq!(1, prev_ops.len());
+    let prev_op = prev_ops[0];
     let in_act = prev_op.get_output_act(0);
 
     let backward = if capability.backward_enabled() {

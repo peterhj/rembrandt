@@ -16,9 +16,17 @@ path = "src/lib.rs"
 #name = "test-openmpi"
 #path = "tools/test-openmpi.rs"
 
-[[bin]]
-name = "sleep-test"
-path = "tools/sleep-test.rs"
+#[[bin]]
+#name = "sleep-test"
+#path = "tools/sleep-test.rs"
+
+#[[bin]]
+#name = "test-lmdb"
+#path = "tools/test-lmdb.rs"
+
+#[[bin]]
+#name = "test-varraydb"
+#path = "tools/test-varraydb.rs"
 
 [[bin]]
 name = "dump-array3d-header"
@@ -31,14 +39,6 @@ path = "tools/load-array3d.rs"
 [[bin]]
 name = "calculate-cifar10-mean"
 path = "tools/calculate-cifar10-mean.rs"
-
-[[bin]]
-name = "test-lmdb"
-path = "tools/test-lmdb.rs"
-
-[[bin]]
-name = "test-varraydb"
-path = "tools/test-varraydb.rs"
 
 #[[bin]]
 #name = "train-mnist"
@@ -111,10 +111,8 @@ array = { path = "../libarray" }
 array_cuda = { path = "../libarray_cuda" }
 #array_dist = { path = "../libarray_dist" }
 arraydb = { path = "../arraydb" }
-#cuda = { path = "../libcuda" }
 cuda = { git = "https://github.com/peterhj/libcuda.git" }
 cuda_dnn = { path = "../libcuda_dnn" } #, features = ["cudnn_v3"] }
-#epeg = { path = "../libepeg" }
 episodb = { path = "../../episodb" }
 lmdb = { path = "../liblmdb" }
 #mpich = { path = "../../libmpich" }
@@ -129,18 +127,3 @@ stb_image = { path = "../rust-stb-image" }
 turbojpeg = { path = "../libturbojpeg" }
 varraydb = { path = "../varraydb" }
 worker = { path = "../../libworker" }
-
-#[dependencies.array]
-#path = "../libarray"
-
-#[dependencies.async]
-#path = "../libasync"
-
-#[dependencies.async_cuda]
-#path = "../libasync_cuda"
-
-#[dependencies.cuda_sparse]
-#path = "../libcuda_sparse"
-
-#[dependencies.linalg]
-#path = "../liblinalg"
