@@ -12,6 +12,8 @@ pub mod dev_allreduce;
 //pub mod mpi_dist_allreduce;
 //pub mod mpi_dist_dev_allreduce;
 
+//pub mod solve;
+
 //pub trait ParallelSgdOptWorker: Deref<Target=CompleteOperator> + DerefMut {
 pub trait ParallelSgdOptWorker {
   fn operator(&mut self) -> &mut CompleteOperator;

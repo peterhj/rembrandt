@@ -104,10 +104,11 @@ impl OpWrite for OpCursor<DeviceBuffer<f32>> {
 }
 
 pub trait Operator {
-  fn upcast_input(&mut self) -> &mut InputOperator { unimplemented!(); }
-  fn upcast_loss(&mut self) -> &mut LossOperator { unimplemented!(); }
+  fn upcast_input(&mut self) -> &mut InputOperator { unreachable!(); }
+  fn upcast_loss(&mut self) -> &mut LossOperator { unreachable!(); }
 
-  fn batch_size(&self) -> usize;
+  fn reset_batch(&self) { unimplemented!(); }
+  #[deprecated] fn batch_size(&self) -> usize { unimplemented!(); }
   fn params_len(&self) -> usize { unimplemented!(); }
   //#[deprecated] fn get_output_vars(&self) -> Option<SharedDeviceBuf<f32>> { None }
   //#[deprecated] fn get_output_deltas(&self) -> Option<SharedDeviceBuf<f32>> { None }
@@ -115,6 +116,7 @@ pub trait Operator {
   fn get_output_delta(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> { unimplemented!(); }
   fn get_output_r_act(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> { unimplemented!(); }
   fn get_output_r_delta(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> { unimplemented!(); }
+
   fn init_params(&mut self, _shared_seed: [u64; 2]) {}
   fn decode_params(&mut self, _blob: &[u8]) -> usize { 0 }
   fn encode_params(&mut self, _blob: &mut Vec<u8>) {}
@@ -126,6 +128,7 @@ pub trait Operator {
 
   // Requires `Backward` capability.
   fn reset(&mut self) {}
+  fn reset_grad(&mut self) { unimplemented!(); }
   fn read_grad(&mut self, _offset: usize, _reader: &mut OpRead) -> usize { 0 }
   fn write_grad(&mut self, _offset: usize, _writer: &mut OpWrite) -> usize { 0 }
   fn backward(&mut self, batch_size: usize);
@@ -147,6 +150,7 @@ pub trait Operator {
   fn r_forward(&mut self, _batch_size: usize) { unimplemented!(); }
 
   // Requires `RBackward` capability.
+  fn reset_r_grad(&mut self) { unimplemented!(); }
   fn r_backward(&mut self, _batch_size: usize) { unimplemented!(); }
 
   /*fn hv_reset_direction(&mut self, _init: HvDirectionInit) { unimplemented!(); }
@@ -251,45 +255,56 @@ impl OperatorConfig {
   pub fn build_variant(&self, batch_size: usize, capability: OpCapability, prev_ops: Vec<(usize, &Operator)>, context: Rc<DeviceContext>) -> OperatorVariant {
     match self {
       &OperatorConfig::Affine(ref cfg) => {
+        assert_eq!(1, prev_ops.len());
         let prev_op = Some(prev_ops[0].1);
         OperatorVariant::Hidden(Box::new(AffineOperator::new(batch_size, capability, *cfg, prev_op, context)))
       }
       &OperatorConfig::Conv2d(ref cfg) => {
+        assert_eq!(1, prev_ops.len());
         let prev_op = Some(prev_ops[0].1);
         OperatorVariant::Hidden(Box::new(Conv2dOperator::new(batch_size, capability, 0, *cfg, prev_op, context)))
       }
       &OperatorConfig::BNormConv2d(ref cfg) => {
+        assert_eq!(1, prev_ops.len());
         OperatorVariant::Hidden(Box::new(BNormConv2dOperator::new(batch_size, capability, *cfg, prev_ops[0].0, prev_ops[0].1, context)))
       }
       &OperatorConfig::StackResConv2d(ref cfg) => {
-        unimplemented!();
-        /*let prev_op = Some(prev_ops[0].1);
-        OperatorVariant::Hidden(Box::new(StackResConv2dOperator::new(batch_size, capability, 0, *cfg, prev_op, context)))*/
+        //unimplemented!();
+        assert_eq!(1, prev_ops.len());
+        let prev_op = Some(prev_ops[0].1);
+        OperatorVariant::Hidden(Box::new(StackResConv2dOperator::new(batch_size, capability, 0, *cfg, prev_op, context)))
       }
       &OperatorConfig::ProjStackResConv2d(ref cfg) => {
-        unimplemented!();
-        /*let prev_op = Some(prev_ops[0].1);
-        OperatorVariant::Hidden(Box::new(ProjStackResConv2dOperator::new(batch_size, capability, 0, *cfg, prev_op, context)))*/
+        //unimplemented!();
+        assert_eq!(1, prev_ops.len());
+        let prev_op = Some(prev_ops[0].1);
+        OperatorVariant::Hidden(Box::new(ProjStackResConv2dOperator::new(batch_size, capability, 0, *cfg, prev_op, context)))
       }
       &OperatorConfig::Pool2d(ref cfg) => {
+        assert_eq!(1, prev_ops.len());
         let prev_op = Some(prev_ops[0].1);
         OperatorVariant::Hidden(Box::new(Pool2dOperator::new(batch_size, *cfg, prev_op, context)))
       }
       &OperatorConfig::Dropout(ref cfg) => {
+        assert_eq!(1, prev_ops.len());
         let prev_op = Some(prev_ops[0].1);
         OperatorVariant::Hidden(Box::new(DropoutOperator::new(batch_size, *cfg, prev_op, context)))
       }
       &OperatorConfig::Data3d(ref cfg) => {
+        assert_eq!(0, prev_ops.len());
         OperatorVariant::Input(Box::new(Data3dOperator::new(batch_size, cfg.clone(), context)))
       }
       &OperatorConfig::VarData3d(ref cfg) => {
+        assert_eq!(0, prev_ops.len());
         OperatorVariant::Input(Box::new(VarData3dOperator::new(batch_size, cfg.clone(), context)))
       }
       &OperatorConfig::SoftmaxKLLoss(ref cfg) => {
+        assert_eq!(1, prev_ops.len());
         let prev_op = Some(prev_ops[0].1);
         OperatorVariant::Loss(Box::new(SoftmaxKLLossOperator::new(batch_size, capability, *cfg, prev_op, context)))
       }
       &OperatorConfig::CopySplit(ref cfg) => {
+        assert_eq!(1, prev_ops.len());
         OperatorVariant::Hidden(Box::new(CopySplitOperator::new(batch_size, capability, *cfg, prev_ops[0].0, prev_ops[0].1, context)))
       }
       &OperatorConfig::AddJoin(ref cfg) => {
@@ -512,7 +527,7 @@ impl Operator for SplitOperator {
 
 #[derive(Clone, Copy, Debug)]
 pub struct SplitOperatorConfig {
-  pub in_dims:  (usize, usize, usize),
+  pub in_dims:      (usize, usize, usize),
   pub num_out_arms: usize,
 }
 
@@ -599,14 +614,12 @@ impl Operator for CopySplitOperator {
   }
 
   fn get_output_delta(&self, arm: usize) -> Option<SharedDeviceBuf<f32>> {
-    assert!(self.backward.is_some());
-    self.backward.as_ref().unwrap().out_deltas[arm].clone()
+    self.backward.as_ref().map(|bwd| bwd.out_deltas[arm].clone())
   }
 
   fn get_output_r_act(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> {
-    assert!(self.r_forward.is_some());
-    assert_eq!(0, _arm);
-    Some(self.r_forward.as_ref().unwrap().in_r_act.clone())
+    assert!(_arm < self.config.num_out_arms);
+    self.r_forward.as_ref().map(|r_fwd| r_fwd.in_r_act.clone())
   }
 
   fn get_output_r_delta(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> {
@@ -640,7 +653,8 @@ impl Operator for CopySplitOperator {
 #[derive(Clone, Copy, Debug)]
 pub struct JoinOperatorConfig {
   pub num_in_arms:  usize,
-  pub out_dims:  (usize, usize, usize),
+  pub out_dims:     (usize, usize, usize),
+  pub act_func:     ActivationFunction,
 }
 
 pub struct AddJoinOperator {
@@ -755,10 +769,25 @@ impl Operator for AddJoinOperator {
   fn forward(&mut self, batch_size: usize, _phase: OpPhase) {
     assert!(batch_size <= self.batch_cap);
     let ctx = &(*self.context).as_ref();
+    let out_length = self.config.out_dims.len();
     let mut out_act = self.out_act.borrow_mut().as_ref_mut(ctx);
+
     out_act.copy(&self.in_acts[0].borrow_mut().as_ref(ctx));
     for arm in 1 .. self.config.num_in_arms {
       out_act.vector_add(1.0, &self.in_acts[arm].borrow_mut().as_ref(ctx));
+    }
+
+    match self.config.act_func {
+      ActivationFunction::Identity => {}
+      ActivationFunction::Rect => {
+        unsafe { rembrandt_kernel_batch_map_rect_inplace(
+            out_act.as_mut_ptr(),
+            out_length as i32,
+            batch_size as i32,
+            ctx.stream.ptr,
+        ) };
+      }
+      _ => unimplemented!(),
     }
   }
 
@@ -766,12 +795,29 @@ impl Operator for AddJoinOperator {
     assert!(self.backward.is_some());
     assert!(batch_size <= self.batch_cap);
     let ctx = &(*self.context).as_ref();
+    let out_length = self.config.out_dims.len();
     let mut backward = self.backward.as_mut().unwrap();
+
+    match self.config.act_func {
+      ActivationFunction::Identity => {}
+      ActivationFunction::Rect => {
+        let out_act = backward.out_act.borrow_mut().as_ref(ctx);
+        let mut out_delta = backward.out_delta.borrow_mut().as_ref_mut(ctx);
+        unsafe { rembrandt_kernel_batch_map_rect_backprop_inplace(
+            out_act.as_ptr(),
+            out_length as i32,
+            batch_size as i32,
+            out_delta.as_mut_ptr(),
+            ctx.stream.ptr,
+        ) };
+      }
+      _ => unimplemented!(),
+    }
+
     let out_delta = backward.out_delta.borrow_mut().as_ref(ctx);
     for arm in 0 .. self.config.num_in_arms {
       if let Some(ref mut in_delta) = backward.in_deltas[arm] {
-        in_delta.borrow_mut().as_ref_mut(ctx)
-          .copy(&out_delta);
+        in_delta.borrow_mut().as_ref_mut(ctx).copy(&out_delta);
       }
     }
   }
@@ -782,6 +828,10 @@ impl Operator for AddJoinOperator {
     let ctx = &(*self.context).as_ref();
     let mut r_forward = self.r_forward.as_mut().unwrap();
     let mut out_r_act = r_forward.out_r_act.borrow_mut().as_ref_mut(ctx);
+
+    // FIXME(20160602): activation function.
+    unimplemented!();
+
     out_r_act.copy(&r_forward.in_r_acts[0].borrow_mut().as_ref(ctx));
     for arm in 1 .. self.config.num_in_arms {
       out_r_act.vector_add(1.0, &r_forward.in_r_acts[arm].borrow_mut().as_ref(ctx));

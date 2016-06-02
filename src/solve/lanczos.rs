@@ -1,4 +1,4 @@
-use operator::{OpRead, OpWrite, OpCursor, FullOperator};
+use operator::{OpRead, OpWrite, OpCursor, CompleteOperator};
 use solve::{IterativeSolveStep, IterativeSolveConfig};
 
 use array_cuda::device::context::{DeviceContext};
@@ -35,16 +35,19 @@ impl<Iteration> LanczosSolve<Iteration> where Iteration: IterativeSolveStep {
     }
   }
 
-  pub fn solve_condition_number(&mut self, batch_size: usize, operator: &mut FullOperator) -> f32 {
+  pub fn solve_extreme_eigenvalues(&mut self, batch_size: usize, phase: OpPhase, operator: &mut CompleteOperator) -> (f32, f32) {
+    let ctx = &(*self.context).as_ref();
     self.v_prev.as_ref_mut(ctx).set_constant(0.0);
     self.v_curr.as_ref_mut(ctx).sample(&GaussianDist{mean: 0.0, std: 1.0});
     self.betas.as_ref_mut_range(0, 1, ctx).vector_l2_norm(&self.v_curr.as_ref(ctx))
       .sync_store(&mut self.betas_h[0 .. 1]);
     self.v_curr.as_ref_mut(ctx).vector_scale(1.0 / self.betas_h[0]);
-    for k in 0 .. self.max_iters {
+    operator.reset();
+    self.config.iteration.init(batch_size, phase, operator);
+    for k in 0 .. self.config.max_iters {
       operator.read_direction(0, &mut self.v_curr);
-      self.iteration.step(batch_size, operator);
-      operator.write_direction(0, &mut self.r);
+      self.config.iteration.step(batch_size, operator);
+      operator.write_grad(0, &mut self.r);
       if k > 0 {
         self.r.as_ref_mut(ctx).vector_sum(-self.betas_h[k], &self.v_prev.as_ref(ctx));
       }

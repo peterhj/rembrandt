@@ -44,7 +44,7 @@ pub struct GraphOperatorConfig {
   nodes:    BTreeMap<String, ConfigNode>,
   key_ids:  BTreeMap<String, usize>,
   id_keys:  Vec<String>,
-  input_keys:   Vec<String>,
+  //input_keys:   Vec<String>,
   id_counter:   usize,
 }
 
@@ -60,7 +60,7 @@ impl GraphOperatorConfig {
       nodes:    BTreeMap::new(),
       key_ids:  BTreeMap::new(),
       id_keys:  vec![],
-      input_keys:   vec![],
+      //input_keys:   vec![],
       id_counter:   0,
     }
   }
@@ -78,7 +78,7 @@ impl GraphOperatorConfig {
     let id = self.id_counter;
     self.key_ids.insert(key.to_owned(), id);
     self.id_keys.push(key.to_owned());
-    self.input_keys.push(key.to_owned());
+    //self.input_keys.push(key.to_owned());
     self.id_counter += 1;
     self
   }
@@ -143,6 +143,30 @@ impl GraphOperatorConfig {
     self
   }
 
+  pub fn old_stack_res_conv2d(&mut self, key: &str, in_key: &str, cfg: StackResConv2dOperatorConfig) -> &mut Self {
+    self.nodes.insert(key.to_owned(), ConfigNode{
+      in_keys:  vec![in_key.to_owned()],
+      config:   OperatorConfig::StackResConv2d(cfg),
+    });
+    let id = self.id_counter;
+    self.key_ids.insert(key.to_owned(), id);
+    self.id_keys.push(key.to_owned());
+    self.id_counter += 1;
+    self
+  }
+
+  pub fn old_proj_stack_res_conv2d(&mut self, key: &str, in_key: &str, cfg: ProjStackResConv2dOperatorConfig) -> &mut Self {
+    self.nodes.insert(key.to_owned(), ConfigNode{
+      in_keys:  vec![in_key.to_owned()],
+      config:   OperatorConfig::ProjStackResConv2d(cfg),
+    });
+    let id = self.id_counter;
+    self.key_ids.insert(key.to_owned(), id);
+    self.id_keys.push(key.to_owned());
+    self.id_counter += 1;
+    self
+  }
+
   pub fn stack_res_conv2d(&mut self, prefix: &str, in_key: &str, cfg: StackResConv2dOperatorConfig) -> &mut Self {
     let split_cfg = SplitOperatorConfig{
       in_dims:      cfg.in_dims,
@@ -156,8 +180,8 @@ impl GraphOperatorConfig {
       out_channels:     cfg.in_dims.2,
       bnorm_mov_avg:    cfg.bnorm_mov_avg,
       bnorm_epsilon:    cfg.bnorm_epsilon,
-      pre_act_func:     ActivationFunction::Rect,
-      act_func:         ActivationFunction::Identity,
+      pre_act_func:     ActivationFunction::Identity,
+      act_func:         ActivationFunction::Rect,
       init_weights:     cfg.init_weights,
       fwd_backend:      cfg.fwd_backend,
       bwd_backend:      cfg.bwd_backend,
@@ -170,7 +194,7 @@ impl GraphOperatorConfig {
       out_channels:     cfg.in_dims.2,
       bnorm_mov_avg:    cfg.bnorm_mov_avg,
       bnorm_epsilon:    cfg.bnorm_epsilon,
-      pre_act_func:     ActivationFunction::Rect,
+      pre_act_func:     ActivationFunction::Identity,
       act_func:         ActivationFunction::Identity,
       init_weights:     cfg.init_weights,
       fwd_backend:      cfg.fwd_backend,
@@ -179,6 +203,7 @@ impl GraphOperatorConfig {
     let join_cfg = JoinOperatorConfig{
       num_in_arms:  2,
       out_dims:     cfg.in_dims,
+      act_func:     ActivationFunction::Rect,
     };
     self.nodes.insert(format!("{}__split", prefix), ConfigNode{
       in_keys:  vec![in_key.to_owned()],
@@ -232,8 +257,8 @@ impl GraphOperatorConfig {
       out_channels:     cfg.out_dims.2,
       bnorm_mov_avg:    cfg.bnorm_mov_avg,
       bnorm_epsilon:    cfg.bnorm_epsilon,
-      pre_act_func:     ActivationFunction::Rect,
-      act_func:         ActivationFunction::Identity,
+      pre_act_func:     ActivationFunction::Identity,
+      act_func:         ActivationFunction::Rect,
       init_weights:     cfg.init_weights,
       fwd_backend:      cfg.fwd_backend,
       bwd_backend:      cfg.bwd_backend,
@@ -246,7 +271,7 @@ impl GraphOperatorConfig {
       out_channels:     cfg.out_dims.2,
       bnorm_mov_avg:    cfg.bnorm_mov_avg,
       bnorm_epsilon:    cfg.bnorm_epsilon,
-      pre_act_func:     ActivationFunction::Rect,
+      pre_act_func:     ActivationFunction::Identity,
       act_func:         ActivationFunction::Identity,
       init_weights:     cfg.init_weights,
       fwd_backend:      cfg.fwd_backend,
@@ -255,6 +280,7 @@ impl GraphOperatorConfig {
     let join_cfg = JoinOperatorConfig{
       num_in_arms:  2,
       out_dims:     cfg.out_dims,
+      act_func:     ActivationFunction::Rect,
     };
     self.nodes.insert(format!("{}__split", prefix), ConfigNode{
       in_keys:  vec![in_key.to_owned()],
