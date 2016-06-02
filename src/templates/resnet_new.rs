@@ -40,8 +40,11 @@ use operator::conv::{
 use operator::worker::{
   OperatorWorkerBuilder,
   OperatorWorker,
-  SequentialOperatorConfig,
+  //SequentialOperatorConfig,
   SequentialOperatorWorkerBuilder,
+};
+use operator::seq::{
+  SequentialOperatorConfig,
 };
 use opt::sgd::{
   SgdOptConfig, StepSizeSchedule, Momentum, SyncOrder,
@@ -100,6 +103,7 @@ pub fn build_resnet18_var224x224() -> SequentialOperatorConfig {
     out_channels:   64,
     bnorm_mov_avg:  BNormMovingAverage::Exponential{ema_factor: BNORM_EMA_FACTOR},
     bnorm_epsilon:  BNORM_EPSILON,
+    pre_act_func:   ActivationFunction::Identity,
     act_func:       ActivationFunction::Rect,
     init_weights:   ParamsInit::KaimingFwd,
     fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
@@ -256,6 +260,7 @@ pub fn build_resnet18pool_var224x224() -> SequentialOperatorConfig {
     out_channels:   64,
     bnorm_mov_avg:  BNormMovingAverage::Exponential{ema_factor: BNORM_EMA_FACTOR},
     bnorm_epsilon:  BNORM_EPSILON,
+    pre_act_func:   ActivationFunction::Identity,
     act_func:       ActivationFunction::Rect,
     init_weights:   ParamsInit::KaimingFwd,
     fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,
@@ -439,6 +444,7 @@ pub fn build_resnet34_var224x224() -> SequentialOperatorConfig {
     out_channels:   64,
     bnorm_mov_avg:  BNormMovingAverage::Exponential{ema_factor: BNORM_EMA_FACTOR},
     bnorm_epsilon:  BNORM_EPSILON,
+    pre_act_func:   ActivationFunction::Identity,
     act_func:       ActivationFunction::Rect,
     init_weights:   ParamsInit::KaimingFwd,
     fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,

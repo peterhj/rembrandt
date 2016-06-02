@@ -228,11 +228,8 @@ impl Conv2dOperator {
       params_off:   params_offset,
       config:       config,
       context:      context.clone(),
-      in_act:       match prev_op.unwrap().get_output_vars() {
-        Some(vars) => vars,
-        None => panic!("Conv2dOperator missing required prev operator output vars"),
-      },
-      in_delta:     prev_op.unwrap().get_output_deltas(),
+      in_act:       prev_op.unwrap().get_output_act(0),
+      in_delta:     prev_op.unwrap().get_output_delta(0),
       tmp_act:      DeviceBuffer::<f32>::zeros(out_length * batch_size, ctx),
       out_act:      Rc::new(RefCell::new(DeviceBuffer::<f32>::zeros(out_length * batch_size, ctx))),
       out_delta:    Rc::new(RefCell::new(DeviceBuffer::<f32>::zeros(out_length * batch_size, ctx))),
@@ -253,13 +250,13 @@ impl Operator for Conv2dOperator {
     self.batch_cap
   }
 
-  fn get_output_vars(&self) -> Option<SharedDeviceBuf<f32>> {
+  /*fn get_output_vars(&self) -> Option<SharedDeviceBuf<f32>> {
     Some(self.out_act.clone())
   }
 
   fn get_output_deltas(&self) -> Option<SharedDeviceBuf<f32>> {
     Some(self.out_delta.clone())
-  }
+  }*/
 
   fn get_output_act(&self, _arm: usize) -> SharedDeviceBuf<f32> {
     assert_eq!(0, _arm);
@@ -845,6 +842,7 @@ pub struct BNormConv2dOperatorConfig {
   pub out_channels: usize,
   pub bnorm_mov_avg:    BNormMovingAverage,
   pub bnorm_epsilon:    f64,
+  pub pre_act_func: ActivationFunction,
   pub act_func:     ActivationFunction,
   pub init_weights: ParamsInit,
   pub fwd_backend:  Conv2dFwdBackend,
@@ -870,7 +868,7 @@ impl BNormConv2dOperatorConfig {
 pub struct BNormConv2dOperator {
   batch_cap:    usize,
   _capability:  OpCapability,
-  params_off:   usize,
+  //params_off:   usize,
   config:       BNormConv2dOperatorConfig,
 
   context:      Rc<DeviceContext>,
@@ -885,6 +883,7 @@ pub struct BNormConv2dOperator {
   workspace:    DeviceBuffer<u8>,
   conv_fwd:     CudnnConvFwdOp,
 
+  pre_act:      DeviceBuffer<f32>,
   tmp_act:      DeviceBuffer<f32>,
   tmp_delta:    DeviceBuffer<f32>,
 
@@ -926,11 +925,12 @@ struct BNormConv2dHvBwdOperator {
 }
 
 impl BNormConv2dOperator {
-  pub fn new(batch_size: usize, capability: OpCapability, params_offset: usize, config: BNormConv2dOperatorConfig, prev_op: Option<&Operator>, /*comm_worker: Option<Rc<RefCell<Comm>>>,*/ context: Rc<DeviceContext>) -> BNormConv2dOperator {
+  pub fn new(batch_size: usize, capability: OpCapability, config: BNormConv2dOperatorConfig, prev_arm: usize, prev_op: &Operator, /*comm_worker: Option<Rc<RefCell<Comm>>>,*/ context: Rc<DeviceContext>) -> BNormConv2dOperator {
     let BNormConv2dOperatorConfig{
       in_dims, conv_size, conv_stride, conv_pad,
       .. } = config;
     let (in_width, in_height, in_channels) = in_dims;
+    let in_length = in_dims.len();
     let out_dims = config.get_out_dims();
     let (out_width, out_height, out_channels) = out_dims;
     let out_length = out_dims.len();
@@ -998,15 +998,12 @@ impl BNormConv2dOperator {
     BNormConv2dOperator{
       batch_cap:    batch_size,
       _capability:  capability,
-      params_off:   params_offset,
+      //params_off:   params_offset,
       config:       config,
       context:      context.clone(),
 
-      in_act:       match prev_op.unwrap().get_output_vars() {
-        Some(vars) => vars,
-        None => panic!("BNormConv2dOperator missing required prev operator output vars"),
-      },
-      in_delta:     prev_op.unwrap().get_output_deltas(),
+      in_act:       prev_op.get_output_act(prev_arm),
+      in_delta:     prev_op.get_output_delta(prev_arm),
       out_act:      Rc::new(RefCell::new(DeviceBuffer::<f32>::zeros(out_length * batch_size, ctx))),
       out_delta:    Rc::new(RefCell::new(DeviceBuffer::<f32>::zeros(out_length * batch_size, ctx))),
 
@@ -1015,6 +1012,7 @@ impl BNormConv2dOperator {
       workspace:    DeviceBuffer::<u8>::zeros(workspace_size, ctx),
       conv_fwd:     conv_fwd,
 
+      pre_act:      DeviceBuffer::<f32>::zeros(in_length * batch_size, ctx),
       tmp_act:      DeviceBuffer::<f32>::zeros(out_length * batch_size, ctx),
       tmp_delta:    DeviceBuffer::<f32>::zeros(out_length * batch_size, ctx),
 
@@ -1045,11 +1043,21 @@ impl Operator for BNormConv2dOperator {
     self.batch_cap
   }
 
-  fn get_output_vars(&self) -> Option<SharedDeviceBuf<f32>> {
+  /*fn get_output_vars(&self) -> Option<SharedDeviceBuf<f32>> {
     Some(self.out_act.clone())
   }
 
   fn get_output_deltas(&self) -> Option<SharedDeviceBuf<f32>> {
+    Some(self.out_delta.clone())
+  }*/
+
+  fn get_output_act(&self, _arm: usize) -> SharedDeviceBuf<f32> {
+    assert_eq!(0, _arm);
+    self.out_act.clone()
+  }
+
+  fn get_output_delta(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> {
+    assert_eq!(0, _arm);
     Some(self.out_delta.clone())
   }
 
@@ -1224,6 +1232,7 @@ impl Operator for BNormConv2dOperator {
 
   fn forward(&mut self, batch_size: usize, phase: OpPhase) {
     assert!(batch_size <= self.batch_cap);
+    let in_length = self.config.in_dims.len();
     let out_dims = self.config.get_out_dims();
     let out_length = out_dims.len();
 
@@ -1232,16 +1241,32 @@ impl Operator for BNormConv2dOperator {
       ref mut in_act, ref mut out_act,
       ref mut weights,
       ref mut workspace,
+      ref mut pre_act,
       ref mut tmp_act,
       .. } = self;
 
     let ctx = &(**context).as_ref();
     let mut out_act = out_act.borrow_mut().as_ref_mut(ctx);
 
+    pre_act.as_ref_mut(ctx).copy(&in_act.borrow_mut().as_ref_range(0, in_length * batch_size, ctx));
+    match self.config.pre_act_func {
+      ActivationFunction::Identity => {}
+      ActivationFunction::Rect => {
+        unsafe { rembrandt_kernel_batch_map_rect_inplace(
+            pre_act.as_ref_mut(ctx).as_mut_ptr(),
+            in_length as i32,
+            batch_size as i32,
+            ctx.stream.ptr,
+        ) };
+      }
+      _ => unimplemented!(),
+    }
+
     self.conv_fwd.set_batch_size(batch_size).unwrap();
     match unsafe { self.conv_fwd.forward(
         1.0,
-        in_act.borrow_mut().as_ref(ctx).as_ptr(),
+        //in_act.borrow_mut().as_ref(ctx).as_ptr(),
+        pre_act.as_ref(ctx).as_ptr(),
         weights.as_view(ctx).as_ptr(),
         0.0,
         tmp_act.as_ref_mut(ctx).as_mut_ptr(),
@@ -1317,6 +1342,7 @@ impl Operator for BNormConv2dOperator {
   fn backward(&mut self, batch_size: usize) {
     assert!(self.backward.is_some());
     assert!(batch_size <= self.batch_cap);
+    let in_length = self.config.in_dims.len();
     let out_dims = self.config.get_out_dims();
     let out_length = out_dims.len();
 
@@ -1327,6 +1353,7 @@ impl Operator for BNormConv2dOperator {
       ref mut weights,
       ref mut workspace,
       ref mut backward,
+      ref mut pre_act, //ref mut pre_delta,
       ref mut tmp_act, ref mut tmp_delta,
       .. } = self;
     let mut backward = backward.as_mut().unwrap();
@@ -1335,7 +1362,7 @@ impl Operator for BNormConv2dOperator {
       .. } = backward;
 
     let ctx = &(**context).as_ref();
-    let in_act = in_act.borrow_mut().as_ref(ctx);
+    //let in_act = in_act.borrow_mut().as_ref(ctx);
     let out_act = out_act.borrow_mut().as_ref(ctx);
     let mut out_delta = out_delta.borrow_mut().as_ref_mut(ctx);
     let mut workspace = workspace.as_ref_mut(ctx);
@@ -1375,7 +1402,8 @@ impl Operator for BNormConv2dOperator {
     backward.conv_bwd_w.set_batch_size(batch_size).unwrap();
     unsafe { backward.conv_bwd_w.backward_filter(
         1.0,
-        in_act.as_ptr(),
+        //in_act.as_ptr(),
+        pre_act.as_ref(ctx).as_ptr(),
         tmp_delta.as_ref(ctx).as_ptr(),
         1.0,
         grad_weights.as_view_mut(ctx).as_mut_ptr(),
@@ -1385,6 +1413,7 @@ impl Operator for BNormConv2dOperator {
 
     if let &mut Some(ref mut in_delta) = in_delta {
       let mut in_delta = in_delta.borrow_mut().as_ref_mut(ctx);
+
       backward.conv_bwd_d.set_batch_size(batch_size).unwrap();
       unsafe { backward.conv_bwd_d.backward_data(
           1.0,
@@ -1395,6 +1424,20 @@ impl Operator for BNormConv2dOperator {
           workspace.as_mut_ptr(),
           &*ctx.get_dnn(),
       ).unwrap() };
+
+      match self.config.pre_act_func {
+        ActivationFunction::Identity => {}
+        ActivationFunction::Rect => {
+          unsafe { rembrandt_kernel_batch_map_rect_backprop_inplace(
+              pre_act.as_ref(ctx).as_ptr(),
+              in_length as i32,
+              batch_size as i32,
+              in_delta.as_mut_ptr(),
+              ctx.stream.ptr,
+          ) };
+        }
+        _ => unimplemented!(),
+      }
     }
   }
 
@@ -1909,11 +1952,8 @@ impl StackResConv2dOperator {
       params_off:   params_offset,
       config:       config,
       context:      context.clone(),
-      in_act:       match prev_op.unwrap().get_output_vars() {
-        Some(vars) => vars,
-        None => panic!("BotResConv2dOperator missing required prev operator output vars"),
-      },
-      in_delta:     prev_op.unwrap().get_output_deltas(),
+      in_act:       prev_op.unwrap().get_output_act(0),
+      in_delta:     prev_op.unwrap().get_output_delta(0),
       out_act:      Rc::new(RefCell::new(DeviceBuffer::<f32>::zeros(out_length * batch_size, ctx))),
       out_delta:    Rc::new(RefCell::new(DeviceBuffer::<f32>::zeros(out_length * batch_size, ctx))),
 
@@ -1974,11 +2014,21 @@ impl Operator for StackResConv2dOperator {
     self.batch_cap
   }
 
-  fn get_output_vars(&self) -> Option<SharedDeviceBuf<f32>> {
+  /*fn get_output_vars(&self) -> Option<SharedDeviceBuf<f32>> {
     Some(self.out_act.clone())
   }
 
   fn get_output_deltas(&self) -> Option<SharedDeviceBuf<f32>> {
+    Some(self.out_delta.clone())
+  }*/
+
+  fn get_output_act(&self, _arm: usize) -> SharedDeviceBuf<f32> {
+    assert_eq!(0, _arm);
+    self.out_act.clone()
+  }
+
+  fn get_output_delta(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> {
+    assert_eq!(0, _arm);
     Some(self.out_delta.clone())
   }
 
@@ -3267,11 +3317,8 @@ impl ProjStackResConv2dOperator {
       params_off:   params_offset,
       config:       config,
       context:      context.clone(),
-      in_act:       match prev_op.unwrap().get_output_vars() {
-        Some(vars) => vars,
-        None => panic!("ProjStackResConv2dOperator missing required prev operator output vars"),
-      },
-      in_delta:     prev_op.unwrap().get_output_deltas(),
+      in_act:       prev_op.unwrap().get_output_act(0),
+      in_delta:     prev_op.unwrap().get_output_delta(0),
       out_act:      Rc::new(RefCell::new(DeviceBuffer::<f32>::zeros(out_length * batch_size, ctx))),
       out_delta:    Rc::new(RefCell::new(DeviceBuffer::<f32>::zeros(out_length * batch_size, ctx))),
       weights1:     DeviceArray2d::<f32>::zeros((3 * 3 * in_channels, out_channels), ctx),
@@ -3356,11 +3403,21 @@ impl Operator for ProjStackResConv2dOperator {
     self.batch_cap
   }
 
-  fn get_output_vars(&self) -> Option<SharedDeviceBuf<f32>> {
+  /*fn get_output_vars(&self) -> Option<SharedDeviceBuf<f32>> {
     Some(self.out_act.clone())
   }
 
   fn get_output_deltas(&self) -> Option<SharedDeviceBuf<f32>> {
+    Some(self.out_delta.clone())
+  }*/
+
+  fn get_output_act(&self, _arm: usize) -> SharedDeviceBuf<f32> {
+    assert_eq!(0, _arm);
+    self.out_act.clone()
+  }
+
+  fn get_output_delta(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> {
+    assert_eq!(0, _arm);
     Some(self.out_delta.clone())
   }
 

@@ -81,6 +81,7 @@ pub fn build_resnet18pool_var224x224() -> GraphOperatorConfig {
     out_channels:   64,
     bnorm_mov_avg:  BNormMovingAverage::Exponential{ema_factor: BNORM_EMA_FACTOR},
     bnorm_epsilon:  BNORM_EPSILON,
+    pre_act_func:   ActivationFunction::Identity,
     act_func:       ActivationFunction::Rect,
     init_weights:   ParamsInit::KaimingFwd,
     fwd_backend:    Conv2dFwdBackend::CudnnImplicitPrecompGemm,

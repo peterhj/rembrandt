@@ -109,8 +109,8 @@ pub trait Operator {
 
   fn batch_size(&self) -> usize;
   fn params_len(&self) -> usize { unimplemented!(); }
-  #[deprecated] fn get_output_vars(&self) -> Option<SharedDeviceBuf<f32>> { None }
-  #[deprecated] fn get_output_deltas(&self) -> Option<SharedDeviceBuf<f32>> { None }
+  //#[deprecated] fn get_output_vars(&self) -> Option<SharedDeviceBuf<f32>> { None }
+  //#[deprecated] fn get_output_deltas(&self) -> Option<SharedDeviceBuf<f32>> { None }
   fn get_output_act(&self, _arm: usize) -> SharedDeviceBuf<f32> { unimplemented!(); }
   fn get_output_delta(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> { unimplemented!(); }
   fn get_output_r_act(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> { unimplemented!(); }
@@ -157,7 +157,7 @@ pub trait Operator {
 }
 
 pub trait InputOperator: Operator {
-  fn downcast(&self) -> &Operator;
+  fn downcast(&self) -> &Operator { unimplemented!(); }
   fn stage_shape(&mut self, batch_idx: usize, shape: (usize, usize, usize));
   fn expose_host_frame_buf(&mut self, batch_idx: usize) -> &mut [u8];
   fn load_frames(&mut self, batch_size: usize);
@@ -166,7 +166,7 @@ pub trait InputOperator: Operator {
 }
 
 pub trait LossOperator: Operator {
-  fn downcast(&self) -> &Operator;
+  fn downcast(&self) -> &Operator { unimplemented!(); }
 
   fn stage_label(&mut self, batch_idx: usize, label: &SampleLabel);
   fn load_labels(&mut self, batch_size: usize);
@@ -185,8 +185,8 @@ pub trait LossOperator: Operator {
   fn get_output_values(&self, batch_size: usize) -> &Array2d<f32>;
   fn store_output_categories(&mut self, batch_size: usize);
   //fn get_output_categories(&self, batch_size: usize) -> &Array2d<i32>;
-  fn get_output_categories(&self, batch_size: usize) -> &[i32];
-  fn accuracy_count(&self, batch_size: usize) -> usize;
+  fn get_output_categories(&mut self, batch_size: usize) -> &[i32];
+  fn accuracy_count(&mut self, batch_size: usize) -> usize;
   //fn reset_loss(&mut self);
 
   /*fn forward_loss(&mut self, batch_size: usize);
@@ -248,34 +248,35 @@ impl OperatorConfig {
     }
   }
 
-  pub fn build_variant(&self, batch_size: usize, capability: OpCapability, prev_ops: Vec<&Operator>, context: Rc<DeviceContext>) -> OperatorVariant {
+  pub fn build_variant(&self, batch_size: usize, capability: OpCapability, prev_ops: Vec<(usize, &Operator)>, context: Rc<DeviceContext>) -> OperatorVariant {
     match self {
       &OperatorConfig::Affine(ref cfg) => {
-        let prev_op = Some(prev_ops[0]);
+        let prev_op = Some(prev_ops[0].1);
         OperatorVariant::Hidden(Box::new(AffineOperator::new(batch_size, capability, *cfg, prev_op, context)))
       }
       &OperatorConfig::Conv2d(ref cfg) => {
-        let prev_op = Some(prev_ops[0]);
+        let prev_op = Some(prev_ops[0].1);
         OperatorVariant::Hidden(Box::new(Conv2dOperator::new(batch_size, capability, 0, *cfg, prev_op, context)))
       }
       &OperatorConfig::BNormConv2d(ref cfg) => {
-        let prev_op = Some(prev_ops[0]);
-        OperatorVariant::Hidden(Box::new(BNormConv2dOperator::new(batch_size, capability, 0, *cfg, prev_op, context)))
+        OperatorVariant::Hidden(Box::new(BNormConv2dOperator::new(batch_size, capability, *cfg, prev_ops[0].0, prev_ops[0].1, context)))
       }
       &OperatorConfig::StackResConv2d(ref cfg) => {
-        let prev_op = Some(prev_ops[0]);
-        OperatorVariant::Hidden(Box::new(StackResConv2dOperator::new(batch_size, capability, 0, *cfg, prev_op, context)))
+        unimplemented!();
+        /*let prev_op = Some(prev_ops[0].1);
+        OperatorVariant::Hidden(Box::new(StackResConv2dOperator::new(batch_size, capability, 0, *cfg, prev_op, context)))*/
       }
       &OperatorConfig::ProjStackResConv2d(ref cfg) => {
-        let prev_op = Some(prev_ops[0]);
-        OperatorVariant::Hidden(Box::new(ProjStackResConv2dOperator::new(batch_size, capability, 0, *cfg, prev_op, context)))
+        unimplemented!();
+        /*let prev_op = Some(prev_ops[0].1);
+        OperatorVariant::Hidden(Box::new(ProjStackResConv2dOperator::new(batch_size, capability, 0, *cfg, prev_op, context)))*/
       }
       &OperatorConfig::Pool2d(ref cfg) => {
-        let prev_op = Some(prev_ops[0]);
+        let prev_op = Some(prev_ops[0].1);
         OperatorVariant::Hidden(Box::new(Pool2dOperator::new(batch_size, *cfg, prev_op, context)))
       }
       &OperatorConfig::Dropout(ref cfg) => {
-        let prev_op = Some(prev_ops[0]);
+        let prev_op = Some(prev_ops[0].1);
         OperatorVariant::Hidden(Box::new(DropoutOperator::new(batch_size, *cfg, prev_op, context)))
       }
       &OperatorConfig::Data3d(ref cfg) => {
@@ -285,12 +286,11 @@ impl OperatorConfig {
         OperatorVariant::Input(Box::new(VarData3dOperator::new(batch_size, cfg.clone(), context)))
       }
       &OperatorConfig::SoftmaxKLLoss(ref cfg) => {
-        let prev_op = Some(prev_ops[0]);
+        let prev_op = Some(prev_ops[0].1);
         OperatorVariant::Loss(Box::new(SoftmaxKLLossOperator::new(batch_size, capability, *cfg, prev_op, context)))
       }
       &OperatorConfig::CopySplit(ref cfg) => {
-        //let prev_op = prev_ops[0];
-        OperatorVariant::Hidden(Box::new(CopySplitOperator::new(batch_size, capability, *cfg, prev_ops, context)))
+        OperatorVariant::Hidden(Box::new(CopySplitOperator::new(batch_size, capability, *cfg, prev_ops[0].0, prev_ops[0].1, context)))
       }
       &OperatorConfig::AddJoin(ref cfg) => {
         OperatorVariant::Hidden(Box::new(AddJoinOperator::new(batch_size, capability, *cfg, prev_ops, context)))
@@ -308,7 +308,7 @@ impl OperatorConfig {
         OperatorNode::Hidden(Box::new(Conv2dOperator::new(batch_size, capability, params_offset.unwrap(), *cfg, prev_op, /*comm_worker,*/ context)))
       }
       &OperatorConfig::BNormConv2d(ref cfg) => {
-        OperatorNode::Hidden(Box::new(BNormConv2dOperator::new(batch_size, capability, params_offset.unwrap(), *cfg, prev_op, /*comm_worker,*/ context)))
+        OperatorNode::Hidden(Box::new(BNormConv2dOperator::new(batch_size, capability, *cfg, 0, prev_op.unwrap(), /*comm_worker,*/ context)))
       }
       &OperatorConfig::StackResConv2d(ref cfg) => {
         OperatorNode::Hidden(Box::new(StackResConv2dOperator::new(batch_size, capability, params_offset.unwrap(), *cfg, prev_op, /*comm_worker,*/ context)))
@@ -442,7 +442,7 @@ pub enum ParamsInit {
 
 pub type SharedDeviceBuf<T> = Rc<RefCell<DeviceBuffer<T>>>;
 
-pub struct SplitOperator {
+/*pub struct SplitOperator {
   batch_cap:    usize,
   in_dims:      (usize, usize, usize),
 
@@ -459,11 +459,8 @@ impl SplitOperator {
       batch_cap:    batch_size,
       in_dims:      in_dims,
       context:      context,
-      shared_act:   match prev_op.unwrap().get_output_vars() {
-        Some(vars) => vars,
-        None => panic!("SplitOperator missing required prev operator output vars"),
-      },
-      in_delta:     prev_op.unwrap().get_output_deltas(),
+      shared_act:   prev_op.unwrap().get_output_act(),
+      in_delta:     prev_op.unwrap().get_output_delta(),
       out_deltas:   vec![],
     }
   }
@@ -483,7 +480,7 @@ impl Operator for SplitOperator {
     self.batch_cap
   }
 
-  fn get_output_vars(&self) -> Option<SharedDeviceBuf<f32>> {
+  /*fn get_output_vars(&self) -> Option<SharedDeviceBuf<f32>> {
     Some(self.shared_act.clone())
   }
 
@@ -494,7 +491,7 @@ impl Operator for SplitOperator {
     } else {
       None
     }
-  }
+  }*/
 
   fn forward(&mut self, _batch_size: usize, _phase: OpPhase) {
     // Do nothing.
@@ -511,7 +508,7 @@ impl Operator for SplitOperator {
       }
     }
   }
-}
+}*/
 
 #[derive(Clone, Copy, Debug)]
 pub struct SplitOperatorConfig {
@@ -543,22 +540,21 @@ struct CopySplitRFwdOperator {
 }
 
 impl CopySplitOperator {
-  pub fn new(batch_size: usize, capability: OpCapability, config: SplitOperatorConfig, prev_ops: Vec<&Operator>, context: Rc<DeviceContext>) -> CopySplitOperator {
+  pub fn new(batch_size: usize, capability: OpCapability, config: SplitOperatorConfig, prev_arm: usize, prev_op: &Operator, context: Rc<DeviceContext>) -> CopySplitOperator {
     let num_out_arms = config.num_out_arms;
     let out_length = config.in_dims.len();
 
     let ctx = &(*context).as_ref();
 
-    assert_eq!(1, prev_ops.len());
-    let prev_op = prev_ops[0];
-    let in_act = prev_op.get_output_act(0);
+    //assert_eq!(1, prev_ops.len());
+    let in_act = prev_op.get_output_act(prev_arm);
 
     let backward = if capability.backward_enabled() {
-      let in_delta = prev_op.get_output_delta(0);
+      let in_delta = prev_op.get_output_delta(prev_arm);
       let mut out_deltas = Vec::with_capacity(num_out_arms);
       for arm in 0 .. num_out_arms {
         if in_delta.is_some() {
-          out_deltas.push(Some(Rc::new(RefCell::new(DeviceBuffer::zeros(out_length, ctx)))));
+          out_deltas.push(Some(Rc::new(RefCell::new(DeviceBuffer::zeros(out_length * batch_size, ctx)))));
         } else {
           out_deltas.push(None);
         }
@@ -572,7 +568,7 @@ impl CopySplitOperator {
     };
 
     let r_forward = if capability.r_forward_enabled() {
-      let in_r_act = prev_op.get_output_r_act(0).unwrap();
+      let in_r_act = prev_op.get_output_r_act(prev_arm).unwrap();
       Some(CopySplitRFwdOperator{
         in_r_act:   in_r_act,
       })
@@ -598,7 +594,7 @@ impl Operator for CopySplitOperator {
   }
 
   fn get_output_act(&self, _arm: usize) -> SharedDeviceBuf<f32> {
-    assert_eq!(0, _arm);
+    assert!(_arm < self.config.num_out_arms);
     self.in_act.clone()
   }
 
@@ -671,7 +667,7 @@ struct AddJoinRFwdOperator {
 }
 
 impl AddJoinOperator {
-  pub fn new(batch_size: usize, capability: OpCapability, config: JoinOperatorConfig, prev_ops: Vec<&Operator>, context: Rc<DeviceContext>) -> AddJoinOperator {
+  pub fn new(batch_size: usize, capability: OpCapability, config: JoinOperatorConfig, prev_ops: Vec<(usize, &Operator)>, context: Rc<DeviceContext>) -> AddJoinOperator {
     let num_in_arms = prev_ops.len();
     assert_eq!(num_in_arms, config.num_in_arms);
     let out_length = config.out_dims.len();
@@ -680,14 +676,18 @@ impl AddJoinOperator {
 
     let mut in_acts = Vec::with_capacity(num_in_arms);
     for arm in 0 .. num_in_arms {
-      in_acts.push(prev_ops[arm].get_output_act(0));
+      let prev_arm = prev_ops[arm].0;
+      let prev_op = prev_ops[arm].1;
+      in_acts.push(prev_op.get_output_act(prev_arm));
     }
     let out_act = Rc::new(RefCell::new(DeviceBuffer::zeros(out_length * batch_size, ctx)));
 
     let backward = if capability.backward_enabled() {
       let mut in_deltas = Vec::with_capacity(num_in_arms);
       for arm in 0 .. num_in_arms {
-        in_deltas.push(prev_ops[arm].get_output_delta(0));
+        let prev_arm = prev_ops[arm].0;
+        let prev_op = prev_ops[arm].1;
+        in_deltas.push(prev_op.get_output_delta(prev_arm));
       }
       let out_delta = Rc::new(RefCell::new(DeviceBuffer::zeros(out_length * batch_size, ctx)));
       Some(AddJoinBwdOperator{
@@ -701,7 +701,9 @@ impl AddJoinOperator {
     let r_forward = if capability.r_forward_enabled() {
       let mut in_r_acts = Vec::with_capacity(num_in_arms);
       for arm in 0 .. num_in_arms {
-        in_r_acts.push(prev_ops[arm].get_output_r_act(0).unwrap());
+        let prev_arm = prev_ops[arm].0;
+        let prev_op = prev_ops[arm].1;
+        in_r_acts.push(prev_op.get_output_r_act(prev_arm).unwrap());
       }
       let out_r_act = Rc::new(RefCell::new(DeviceBuffer::zeros(out_length * batch_size, ctx)));
       Some(AddJoinRFwdOperator{
@@ -728,6 +730,26 @@ impl AddJoinOperator {
 impl Operator for AddJoinOperator {
   fn batch_size(&self) -> usize {
     self.batch_cap
+  }
+
+  fn get_output_act(&self, arm: usize) -> SharedDeviceBuf<f32> {
+    self.in_acts[arm].clone()
+  }
+
+  fn get_output_delta(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> {
+    assert_eq!(0, _arm);
+    self.backward.as_ref().map(|bwd| bwd.out_delta.clone())
+  }
+
+  fn get_output_r_act(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> {
+    /*assert!(self.r_forward.is_some());
+    assert_eq!(0, _arm);
+    Some(self.r_forward.as_ref().unwrap().in_r_act.clone())*/
+    unimplemented!();
+  }
+
+  fn get_output_r_delta(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> {
+    unimplemented!();
   }
 
   fn forward(&mut self, batch_size: usize, _phase: OpPhase) {
@@ -840,11 +862,8 @@ impl Pool2dOperator {
       batch_cap:    batch_size,
       config:       config,
       context:      context.clone(),
-      in_act:       match prev_op.unwrap().get_output_vars() {
-        Some(vars) => vars,
-        None => panic!("Pool2dOperator missing required prev operator output vars"),
-      },
-      in_delta:     prev_op.unwrap().get_output_deltas(),
+      in_act:       prev_op.unwrap().get_output_act(0),
+      in_delta:     prev_op.unwrap().get_output_delta(0),
       out_act:      Rc::new(RefCell::new(DeviceBuffer::<f32>::zeros(out_len * batch_size, ctx))),
       out_delta:    Rc::new(RefCell::new(DeviceBuffer::<f32>::zeros(out_len * batch_size, ctx))),
       pooling:      pooling,
@@ -857,11 +876,21 @@ impl Operator for Pool2dOperator {
     self.batch_cap
   }
 
-  fn get_output_vars(&self) -> Option<SharedDeviceBuf<f32>> {
+  /*fn get_output_vars(&self) -> Option<SharedDeviceBuf<f32>> {
     Some(self.out_act.clone())
   }
 
   fn get_output_deltas(&self) -> Option<SharedDeviceBuf<f32>> {
+    Some(self.out_delta.clone())
+  }*/
+
+  fn get_output_act(&self, _arm: usize) -> SharedDeviceBuf<f32> {
+    assert_eq!(0, _arm);
+    self.out_act.clone()
+  }
+
+  fn get_output_delta(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> {
+    assert_eq!(0, _arm);
     Some(self.out_delta.clone())
   }
 
@@ -949,11 +978,8 @@ impl DropoutOperator {
       batch_cap:    batch_size,
       config:       config,
       context:      context.clone(),
-      in_act:       match prev_op.unwrap().get_output_vars() {
-        Some(vars) => vars,
-        None => panic!("DropoutOperator missing required prev operator output vars"),
-      },
-      in_delta:     prev_op.unwrap().get_output_deltas(),
+      in_act:       prev_op.unwrap().get_output_act(0),
+      in_delta:     prev_op.unwrap().get_output_delta(0),
       out_act:      Rc::new(RefCell::new(DeviceBuffer::<f32>::zeros(channels * batch_size, ctx))),
       out_delta:    Rc::new(RefCell::new(DeviceBuffer::<f32>::zeros(channels * batch_size, ctx))),
       uniform_dist: UniformDist,
@@ -968,11 +994,13 @@ impl Operator for DropoutOperator {
     self.batch_cap
   }
 
-  fn get_output_vars(&self) -> Option<SharedDeviceBuf<f32>> {
-    Some(self.out_act.clone())
+  fn get_output_act(&self, _arm: usize) -> SharedDeviceBuf<f32> {
+    assert_eq!(0, _arm);
+    self.out_act.clone()
   }
 
-  fn get_output_deltas(&self) -> Option<SharedDeviceBuf<f32>> {
+  fn get_output_delta(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> {
+    assert_eq!(0, _arm);
     Some(self.out_delta.clone())
   }
 

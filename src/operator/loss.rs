@@ -104,11 +104,8 @@ impl SoftmaxKLLossOperator {
       batch_cap:    batch_size,
       loss_config:  loss_config,
       context:      context.clone(),
-      in_act:       match prev_op.unwrap().get_output_vars() {
-        Some(vars) => vars,
-        None => panic!("SoftmaxKLLossOperator missing required prev operator output vars"),
-      },
-      in_delta:     prev_op.unwrap().get_output_deltas().unwrap(),
+      in_act:       prev_op.unwrap().get_output_act(0),
+      in_delta:     prev_op.unwrap().get_output_delta(0).unwrap(),
       logit:        DeviceBuffer::zeros(loss_config.num_categories * batch_size, ctx),
       logit_max:    DeviceBuffer::zeros(batch_size, ctx),
       factor:       DeviceBuffer::zeros(loss_config.num_categories * batch_size, ctx),
@@ -133,15 +130,28 @@ impl SoftmaxKLLossOperator {
 }
 
 impl Operator for SoftmaxKLLossOperator {
+  fn upcast_loss(&mut self) -> &mut LossOperator {
+    self
+  }
+
   fn batch_size(&self) -> usize {
     self.batch_cap
   }
 
-  fn get_output_vars(&self) -> Option<SharedDeviceBuf<f32>> {
+  /*fn get_output_vars(&self) -> Option<SharedDeviceBuf<f32>> {
     None
   }
 
   fn get_output_deltas(&self) -> Option<SharedDeviceBuf<f32>> {
+    None
+  }*/
+
+  fn get_output_act(&self, _arm: usize) -> SharedDeviceBuf<f32> {
+    unimplemented!();
+  }
+
+  fn get_output_delta(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> {
+    assert_eq!(0, _arm);
     None
   }
 
@@ -375,11 +385,11 @@ impl LossOperator for SoftmaxKLLossOperator {
   }
 
   //fn get_output_categories(&self, batch_size: usize) -> &Array2d<i32> {
-  fn get_output_categories(&self, batch_size: usize) -> &[i32] {
+  fn get_output_categories(&mut self, batch_size: usize) -> &[i32] {
     &self.out_cats_h
   }
 
-  fn accuracy_count(&self, batch_size: usize) -> usize {
+  fn accuracy_count(&mut self, batch_size: usize) -> usize {
     assert!(batch_size <= self.batch_cap);
     let mut correct_count = 0;
     //print!("DEBUG: accuracy count: ");
@@ -433,11 +443,20 @@ impl Operator for MarginalizedSoftmaxIndLossOperator {
     self.batch_cap
   }
 
-  fn get_output_vars(&self) -> Option<SharedDeviceBuf<f32>> {
+  /*fn get_output_vars(&self) -> Option<SharedDeviceBuf<f32>> {
     None
   }
 
   fn get_output_deltas(&self) -> Option<SharedDeviceBuf<f32>> {
+    None
+  }*/
+
+  fn get_output_act(&self, _arm: usize) -> SharedDeviceBuf<f32> {
+    unimplemented!();
+  }
+
+  fn get_output_delta(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> {
+    assert_eq!(0, _arm);
     None
   }
 
@@ -534,11 +553,11 @@ impl LossOperator for MarginalizedSoftmaxIndLossOperator {
   }
 
   //fn get_output_categories(&self, batch_size: usize) -> &Array2d<i32> {
-  fn get_output_categories(&self, batch_size: usize) -> &[i32] {
+  fn get_output_categories(&mut self, batch_size: usize) -> &[i32] {
     unimplemented!();
   }
 
-  fn accuracy_count(&self, batch_size: usize) -> usize {
+  fn accuracy_count(&mut self, batch_size: usize) -> usize {
     unimplemented!();
   }
 }

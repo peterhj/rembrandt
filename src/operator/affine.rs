@@ -144,11 +144,8 @@ impl AffineOperator {
       //params_off:   params_offset,
       config:       config,
       context:      context.clone(),
-      in_act:       match prev_op.unwrap().get_output_vars() {
-        Some(vars) => vars,
-        None => panic!("AffineOperator missing required prev operator output vars"),
-      },
-      in_delta:     prev_op.unwrap().get_output_deltas(),
+      in_act:       prev_op.unwrap().get_output_act(0),
+      in_delta:     prev_op.unwrap().get_output_delta(0),
       out_act:      Rc::new(RefCell::new(DeviceBuffer::<f32>::zeros(out_channels * batch_size, ctx))),
       out_delta:    Rc::new(RefCell::new(DeviceBuffer::<f32>::zeros(out_channels * batch_size, ctx))),
       weights:      DeviceArray2d::<f32>::zeros((in_channels, out_channels), ctx),
@@ -165,11 +162,13 @@ impl Operator for AffineOperator {
     self.batch_cap
   }
 
-  fn get_output_vars(&self) -> Option<SharedDeviceBuf<f32>> {
-    Some(self.out_act.clone())
+  fn get_output_act(&self, _arm: usize) -> SharedDeviceBuf<f32> {
+    assert_eq!(0, _arm);
+    self.out_act.clone()
   }
 
-  fn get_output_deltas(&self) -> Option<SharedDeviceBuf<f32>> {
+  fn get_output_delta(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> {
+    assert_eq!(0, _arm);
     Some(self.out_delta.clone())
   }
 

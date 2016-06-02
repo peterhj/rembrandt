@@ -285,11 +285,21 @@ impl Operator for Data3dOperator {
     self.batch_cap
   }
 
-  fn get_output_vars(&self) -> Option<SharedDeviceBuf<f32>> {
+  /*fn get_output_vars(&self) -> Option<SharedDeviceBuf<f32>> {
     Some(self.out_buf.clone())
   }
 
   fn get_output_deltas(&self) -> Option<SharedDeviceBuf<f32>> {
+    None
+  }*/
+
+  fn get_output_act(&self, _arm: usize) -> SharedDeviceBuf<f32> {
+    assert_eq!(0, _arm);
+    self.out_buf.clone()
+  }
+
+  fn get_output_delta(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> {
+    assert_eq!(0, _arm);
     None
   }
 
@@ -683,15 +693,21 @@ impl VarData3dOperator {
 }
 
 impl Operator for VarData3dOperator {
+  fn upcast_input(&mut self) -> &mut InputOperator {
+    self
+  }
+
   fn batch_size(&self) -> usize {
     self.batch_cap
   }
 
-  fn get_output_vars(&self) -> Option<SharedDeviceBuf<f32>> {
-    Some(self.out_buf.clone())
+  fn get_output_act(&self, _arm: usize) -> SharedDeviceBuf<f32> {
+    assert_eq!(0, _arm);
+    self.out_buf.clone()
   }
 
-  fn get_output_deltas(&self) -> Option<SharedDeviceBuf<f32>> {
+  fn get_output_delta(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> {
+    assert_eq!(0, _arm);
     None
   }
 

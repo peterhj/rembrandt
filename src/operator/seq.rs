@@ -33,6 +33,7 @@ use rng::xorshift::{Xorshiftplus128Rng};
 use rand::{Rng, SeedableRng, thread_rng};
 use std::rc::{Rc};
 
+#[derive(Clone, Debug)]
 pub struct SequentialOperatorConfig {
   pub input_op:     Option<OperatorConfig>,
   pub hidden_ops:   Vec<OperatorConfig>,
@@ -131,7 +132,7 @@ pub struct SequentialOperator {
 }
 
 impl SequentialOperator {
-  pub fn new(batch_size: usize, config: SequentialOperatorConfig, capability: OpCapability, shared_seed: [u64; 2], context: Rc<DeviceContext>) -> SequentialOperator {
+  pub fn new(config: SequentialOperatorConfig, batch_size: usize, capability: OpCapability, shared_seed: [u64; 2], context: Rc<DeviceContext>) -> SequentialOperator {
     let total_params_len = config.params_len();
     let input_op = config.input_op.as_ref().unwrap().build_input_operator(batch_size, context.clone());
     let mut hidden_ops: Vec<Box<Operator>> = vec![];
@@ -338,11 +339,11 @@ impl LossOperator for SequentialOperator {
   }
 
   //fn get_output_categories(&self, batch_size: usize) -> &Array2d<i32> {
-  fn get_output_categories(&self, batch_size: usize) -> &[i32] {
+  fn get_output_categories(&mut self, batch_size: usize) -> &[i32] {
     self.loss_op.get_output_categories(batch_size)
   }
 
-  fn accuracy_count(&self, batch_size: usize) -> usize {
+  fn accuracy_count(&mut self, batch_size: usize) -> usize {
     self.loss_op.accuracy_count(batch_size)
   }
 }
