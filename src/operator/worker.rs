@@ -230,7 +230,7 @@ impl SequentialOperatorConfig {
   }
 }
 
-pub struct SequentialOperatorWorkerBuilder<Comm> where Comm: 'static + CommWorker {
+/*pub struct SequentialOperatorWorkerBuilder<Comm> where Comm: 'static + CommWorker {
 //pub struct SequentialOperatorWorkerBuilder {
   num_workers:  usize,
   batch_size:   usize,
@@ -596,7 +596,7 @@ impl<Comm> GraphOperatorWorkerBuilder<Comm> where Comm: 'static + CommWorker {
 pub struct GraphOperatorWorker<Comm> where Comm: CommWorker {
   worker_data:  WorkerData,
   comm_worker:  Comm,
-}
+}*/
 
 /*#[derive(Clone)]
 pub struct DistOperatorWorkerBuilder<B, Comm>

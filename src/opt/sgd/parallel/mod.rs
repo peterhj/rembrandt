@@ -1,12 +1,18 @@
-use operator::{CompleteOperator};
+use data::{DataShard, DataIter};
+use data_new::{SampleDatum, SampleLabel};
+//use operator::{CompleteOperator, OpPhase};
+use operator::{Operator, CompleteOperator, OpPhase, Regularization};
 use opt::sgd::{
   InitBehavior,
   StepSizeSchedule,
   Momentum,
 };
 
+use array::{Shape};
+
 use std::ops::{Deref, DerefMut};
 use std::path::{PathBuf};
+use time::{get_time};
 
 pub mod dev_allreduce;
 //pub mod mpi_dist_allreduce;
@@ -18,22 +24,24 @@ pub mod dev_allreduce;
 pub trait ParallelSgdOptWorker {
   fn operator(&mut self) -> &mut CompleteOperator;
 
+  fn shared_seed(&mut self) -> [u64; 2];
+
   fn signal_checkpoint(&mut self);
   fn wait_checkpoint(&mut self) -> bool;
 
-  fn save_params(&mut self);
-  fn restore_params(&mut self);
+  fn save_param(&mut self);
+  fn restore_param(&mut self);
 
-  fn stage_params(&mut self);
-  fn merge_params(&mut self);
-  fn sync_params(&mut self);
+  fn stage_param(&mut self);
+  fn merge_param(&mut self);
+  fn sync_param(&mut self);
 
-  fn stage_grads(&mut self);
-  fn merge_grads(&mut self);
-  fn sync_grads(&mut self);
+  fn stage_grad(&mut self);
+  fn merge_grad(&mut self);
+  fn sync_grad(&mut self);
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ParallelSgdOptConfig {
   pub init:           InitBehavior,
   pub minibatch_size: usize,
@@ -58,24 +66,30 @@ impl ParallelSgdOptBuilder {
   pub fn new(config: ParallelSgdOptConfig) -> ParallelSgdOptBuilder {
     ParallelSgdOptBuilder{
       config:   config,
-      shared_seed:  shared_seed,
+      //shared_seed:  shared_seed,
     }
   }
 
   pub fn into_opt(self) -> ParallelSgdOpt {
     ParallelSgdOpt{
       config:       self.config,
-      shared_seed:  self.shared_seed,
+      //shared_seed:  self.shared_seed,
     }
   }
-}
+}*/
 
 pub struct ParallelSgdOpt {
   config:   ParallelSgdOptConfig,
-  shared_seed:  [u64; 2],
+  //shared_seed:  [u64; 2],
 }
 
 impl ParallelSgdOpt {
+  pub fn new(config: ParallelSgdOptConfig) -> ParallelSgdOpt {
+    ParallelSgdOpt{
+      config:   config,
+    }
+  }
+
   pub fn train(&mut self,
       mut train_data: &mut DataIter<Item=(SampleDatum, Option<SampleLabel>)>,
       mut valid_data: Option<&mut DataIter<Item=(SampleDatum, Option<SampleLabel>)>>,
@@ -95,24 +109,25 @@ impl ParallelSgdOpt {
           init_t = operator.can_rollback(&self.config.checkpoint_dir).unwrap();
         } else {
           let shared_seed = operator.shared_seed();
-          operator.init_params(shared_seed);
+          operator.init_param(shared_seed);
         }
       }
       InitBehavior::ResumeFrom{t} => {
-        operator.rollback_params(Some(t), &self.config.checkpoint_dir);
+        operator.rollback_param(Some(t), &self.config.checkpoint_dir);
         init_t = t;
       }
     }*/
     //let shared_seed = operator.shared_seed();
-    let seed = [thread_rng().next_u64(), thread_rng().next_u64()];
-    worker.operator().init_params(seed);
+    //let seed = [thread_rng().next_u64(), thread_rng().next_u64()];
+    let shared_seed = worker.shared_seed();
+    worker.operator().init_param(shared_seed);
 
     // If we are using the standard Nesterov update, apply some extra
     // momentum before the next iteration begins.
     match self.config.momentum {
       Momentum::UpdateNesterov{mu} => {
         if init_t > 0 {
-          worker.operator().update_params(mu);
+          worker.operator().update_param(mu);
         }
       }
       _ => {}
@@ -200,7 +215,7 @@ impl ParallelSgdOpt {
           match self.config.momentum {
             Momentum::UpdateNesterov{mu} => {
               if iter_counter > 0 {
-                worker.operator().update_params(-mu);
+                worker.operator().update_param(-mu);
               }
             }
             _ => {}
@@ -209,26 +224,30 @@ impl ParallelSgdOpt {
           // Increase the iteration counter _before_ updates and communication.
           iter_counter += 1;
 
+          worker.stage_grad();
+          worker.sync_grad();
+          worker.merge_grad();
+
           // Compute the update, possibly with momentum.
           match self.config.momentum {
-            Momentum::Zero                  => worker.operator().accumulate_grads(-step_size, 0.0),
+            Momentum::Zero                  => worker.operator().accumulate_grad(-step_size, 0.0),
             Momentum::Update{mu} |
-            Momentum::UpdateNesterov{mu}    => worker.operator().accumulate_grads(-step_size, mu),
+            Momentum::UpdateNesterov{mu}    => worker.operator().accumulate_grad(-step_size, mu),
             // XXX(20160422): These are the Torch `optim.sgd`-style update;
             // see: <https://github.com/torch/optim/blob/master/sgd.lua>.
-            Momentum::Gradient{mu}          => worker.operator().accumulate_grads(1.0, mu),
-            Momentum::GradientNesterov{mu}  => worker.operator().accumulate_grads(1.0, mu),
+            Momentum::Gradient{mu}          => worker.operator().accumulate_grad(1.0, mu),
+            Momentum::GradientNesterov{mu}  => worker.operator().accumulate_grad(1.0, mu),
           }
 
           // Apply the update, possibly with momentum.
           match self.config.momentum {
-            Momentum::Zero                  => worker.operator().update_params(1.0),
+            Momentum::Zero                  => worker.operator().update_param(1.0),
             Momentum::Update{mu} |
-            Momentum::UpdateNesterov{mu}    => worker.operator().update_params(1.0),
+            Momentum::UpdateNesterov{mu}    => worker.operator().update_param(1.0),
             // XXX(20160422): These are the Torch `optim.sgd`-style update;
             // see: <https://github.com/torch/optim/blob/master/sgd.lua>.
-            Momentum::Gradient{mu}          => worker.operator().update_params(-step_size),
-            Momentum::GradientNesterov{mu}  => worker.operator().update_params2(-step_size, -step_size * mu),
+            Momentum::Gradient{mu}          => worker.operator().update_param(-step_size),
+            Momentum::GradientNesterov{mu}  => worker.operator().update_param2(-step_size, -step_size * mu),
           }
 
           worker.operator().reset();
@@ -271,10 +290,10 @@ impl ParallelSgdOpt {
           // momentum before the next iteration begins.
           // XXX(20160406): Interestingly, we should use the local update rather
           // than the communicated update with momentum.
-          //worker.operator().set_grads_with_params_diff();
+          //worker.operator().set_grad_with_param_diff();
           match self.config.momentum {
             Momentum::UpdateNesterov{mu} => {
-              worker.operator().update_params(mu);
+              worker.operator().update_param(mu);
             }
             _ => {}
           }
@@ -290,4 +309,4 @@ impl ParallelSgdOpt {
   {
     //unimplemented!();
   }
-}*/
+}

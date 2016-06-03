@@ -109,7 +109,7 @@ pub trait Operator {
 
   fn reset_batch(&self) { unimplemented!(); }
   #[deprecated] fn batch_size(&self) -> usize { unimplemented!(); }
-  fn params_len(&self) -> usize { unimplemented!(); }
+  fn params_len(&self) -> usize { 0 }
   //#[deprecated] fn get_output_vars(&self) -> Option<SharedDeviceBuf<f32>> { None }
   //#[deprecated] fn get_output_deltas(&self) -> Option<SharedDeviceBuf<f32>> { None }
   fn get_output_act(&self, _arm: usize) -> SharedDeviceBuf<f32> { unimplemented!(); }
@@ -117,9 +117,9 @@ pub trait Operator {
   fn get_output_r_act(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> { unimplemented!(); }
   fn get_output_r_delta(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> { unimplemented!(); }
 
-  fn init_params(&mut self, _shared_seed: [u64; 2]) {}
-  fn decode_params(&mut self, _blob: &[u8]) -> usize { 0 }
-  fn encode_params(&mut self, _blob: &mut Vec<u8>) {}
+  fn init_param(&mut self, _shared_seed: [u64; 2]) {}
+  fn decode_param(&mut self, _blob: &[u8]) -> usize { 0 }
+  fn encode_param(&mut self, _blob: &mut Vec<u8>) {}
   fn decode_state(&mut self, _blob: &[u8]) -> usize { 0 }
   fn encode_state(&mut self, _blob: &mut Vec<u8>) {}
   fn read_param(&mut self, _offset: usize, _reader: &mut OpRead) -> usize { 0 }
@@ -133,9 +133,9 @@ pub trait Operator {
   fn write_grad(&mut self, _offset: usize, _writer: &mut OpWrite) -> usize { 0 }
   fn backward(&mut self, batch_size: usize);
   fn regularize(&mut self, _reg: Regularization) {}
-  fn accumulate_grads(&mut self, _scale: f32, _momentum: f32) {}
-  fn update_params(&mut self, _scale: f32) {}
-  fn update_params2(&mut self, _grad_scale: f32, _update_scale: f32) {}
+  fn accumulate_grad(&mut self, _scale: f32, _momentum: f32) {}
+  fn update_param(&mut self, _scale: f32) {}
+  fn update_param2(&mut self, _grad_scale: f32, _update_scale: f32) {}
   #[deprecated] fn save_params(&mut self) {}
   #[deprecated] fn restore_params(&mut self) {}
   //fn set_grads_with_params_diff(&mut self) {}
@@ -977,14 +977,6 @@ impl Operator for Pool2dOperator {
       ) }.unwrap();
     }
   }
-
-  /*fn sync_grads(&mut self) {
-    // Do nothing.
-  }
-
-  fn sync_params(&mut self) {
-    // Do nothing.
-  }*/
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1099,12 +1091,4 @@ impl Operator for DropoutOperator {
       ) };
     }
   }
-
-  /*fn sync_grads(&mut self) {
-    // Do nothing.
-  }
-
-  fn sync_params(&mut self) {
-    // Do nothing.
-  }*/
 }

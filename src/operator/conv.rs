@@ -250,6 +250,10 @@ impl Operator for Conv2dOperator {
     self.batch_cap
   }
 
+  fn params_len(&self) -> usize {
+    self.config.params_len()
+  }
+
   /*fn get_output_vars(&self) -> Option<SharedDeviceBuf<f32>> {
     Some(self.out_act.clone())
   }
@@ -288,7 +292,7 @@ impl Operator for Conv2dOperator {
     }
   }
 
-  fn init_params(&mut self, shared_seed: [u64; 2]) {
+  fn init_param(&mut self, shared_seed: [u64; 2]) {
     let Conv2dOperatorConfig{in_dims, conv_size, out_channels, ..} = self.config;
     let ctx = &(*self.context).as_ref();
     let (_, _, in_channels) = in_dims;
@@ -328,7 +332,7 @@ impl Operator for Conv2dOperator {
     self.bias.as_view_mut(ctx).sync_load(&init_bias.as_view());
   }
 
-  fn decode_params(&mut self, blob: &[u8]) -> usize {
+  fn decode_param(&mut self, blob: &[u8]) -> usize {
     let Conv2dOperatorConfig{in_dims, conv_size, out_channels, ..} = self.config;
     let ctx = &(*self.context).as_ref();
     let (_, _, in_channels) = in_dims;
@@ -345,7 +349,7 @@ impl Operator for Conv2dOperator {
     progress
   }
 
-  fn encode_params(&mut self, blob: &mut Vec<u8>) {
+  fn encode_param(&mut self, blob: &mut Vec<u8>) {
     let ctx = &(*self.context).as_ref();
     let weights = self.weights.as_view(ctx);
     let bias = self.bias.as_view(ctx);
@@ -619,7 +623,7 @@ impl Operator for Conv2dOperator {
     }
   }
 
-  fn accumulate_grads(&mut self, scale: f32, momentum: f32) {
+  fn accumulate_grad(&mut self, scale: f32, momentum: f32) {
     assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
     let mut backward = self.backward.as_mut().unwrap();
@@ -633,7 +637,7 @@ impl Operator for Conv2dOperator {
       .row_vector_sum(scale, &backward.grad_bias.as_view(ctx));
   }
 
-  fn update_params(&mut self, scale: f32) {
+  fn update_param(&mut self, scale: f32) {
     assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
     let mut backward = self.backward.as_mut().unwrap();
@@ -643,7 +647,7 @@ impl Operator for Conv2dOperator {
       .row_vector_sum(scale, &backward.acc_grad_bias.as_view(ctx));
   }
 
-  fn update_params2(&mut self, grad_scale: f32, update_scale: f32) {
+  fn update_param2(&mut self, grad_scale: f32, update_scale: f32) {
     assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
     let mut backward = self.backward.as_mut().unwrap();
@@ -1043,6 +1047,10 @@ impl Operator for BNormConv2dOperator {
     self.batch_cap
   }
 
+  fn params_len(&self) -> usize {
+    self.config.params_len()
+  }
+
   /*fn get_output_vars(&self) -> Option<SharedDeviceBuf<f32>> {
     Some(self.out_act.clone())
   }
@@ -1061,7 +1069,7 @@ impl Operator for BNormConv2dOperator {
     Some(self.out_delta.clone())
   }
 
-  fn init_params(&mut self, shared_seed: [u64; 2]) {
+  fn init_param(&mut self, shared_seed: [u64; 2]) {
     let BNormConv2dOperatorConfig{in_dims, conv_size, out_channels, ..} = self.config;
     let ctx = &(*self.context).as_ref();
     let (_, _, in_channels) = in_dims;
@@ -1117,7 +1125,7 @@ impl Operator for BNormConv2dOperator {
     self.bn_running_ivar3.as_view_mut(ctx).set_constant(1.0);*/
   }
 
-  fn decode_params(&mut self, blob: &[u8]) -> usize {
+  fn decode_param(&mut self, blob: &[u8]) -> usize {
     /*let BNormConv2dOperatorConfig{in_dims, conv_size, out_channels, ..} = self.config;
     let ctx = &(*self.context).as_ref();
     let (_, _, in_channels) = in_dims;
@@ -1148,7 +1156,7 @@ impl Operator for BNormConv2dOperator {
     progress
   }
 
-  fn encode_params(&mut self, blob: &mut Vec<u8>) {
+  fn encode_param(&mut self, blob: &mut Vec<u8>) {
     let ctx = &(*self.context).as_ref();
 
     let weights = self.weights.as_view(ctx);
@@ -1457,7 +1465,7 @@ impl Operator for BNormConv2dOperator {
     }
   }
 
-  fn accumulate_grads(&mut self, scale: f32, momentum: f32) {
+  fn accumulate_grad(&mut self, scale: f32, momentum: f32) {
     assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
     let mut backward = self.backward.as_mut().unwrap();
@@ -1477,7 +1485,7 @@ impl Operator for BNormConv2dOperator {
       .row_vector_sum(scale, &self.bn_bias1_grad.as_view(ctx));
   }
 
-  fn update_params(&mut self, scale: f32) {
+  fn update_param(&mut self, scale: f32) {
     assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
     let mut backward = self.backward.as_mut().unwrap();
@@ -1491,7 +1499,7 @@ impl Operator for BNormConv2dOperator {
       .row_vector_sum(scale, &self.acc_bn_bias1_grad.as_view(ctx));
   }
 
-  fn update_params2(&mut self, grad_scale: f32, update_scale: f32) {
+  fn update_param2(&mut self, grad_scale: f32, update_scale: f32) {
     assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
     let mut backward = self.backward.as_mut().unwrap();
@@ -2014,6 +2022,10 @@ impl Operator for StackResConv2dOperator {
     self.batch_cap
   }
 
+  fn params_len(&self) -> usize {
+    self.config.params_len()
+  }
+
   /*fn get_output_vars(&self) -> Option<SharedDeviceBuf<f32>> {
     Some(self.out_act.clone())
   }
@@ -2032,7 +2044,7 @@ impl Operator for StackResConv2dOperator {
     Some(self.out_delta.clone())
   }
 
-  fn init_params(&mut self, shared_seed: [u64; 2]) {
+  fn init_param(&mut self, shared_seed: [u64; 2]) {
     let StackResConv2dOperatorConfig{in_dims, ..} = self.config;
     let ctx = &(*self.context).as_ref();
     let (_, _, in_channels) = in_dims;
@@ -2101,7 +2113,7 @@ impl Operator for StackResConv2dOperator {
     self.bn_running_ivar3.as_view_mut(ctx).set_constant(1.0);*/
   }
 
-  fn decode_params(&mut self, blob: &[u8]) -> usize {
+  fn decode_param(&mut self, blob: &[u8]) -> usize {
     /*let StackResConv2dOperatorConfig{in_dims, ..} = self.config;
     let ctx = &(*self.context).as_ref();
     let (_, _, in_channels) = in_dims;
@@ -2148,7 +2160,7 @@ impl Operator for StackResConv2dOperator {
     progress
   }
 
-  fn encode_params(&mut self, blob: &mut Vec<u8>) {
+  fn encode_param(&mut self, blob: &mut Vec<u8>) {
     let ctx = &(*self.context).as_ref();
 
     let weights1 = self.weights1.as_view(ctx);
@@ -2664,7 +2676,7 @@ impl Operator for StackResConv2dOperator {
     }
   }
 
-  fn accumulate_grads(&mut self, scale: f32, momentum: f32) {
+  fn accumulate_grad(&mut self, scale: f32, momentum: f32) {
     assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
     let mut backward = self.backward.as_mut().unwrap();
@@ -2698,7 +2710,7 @@ impl Operator for StackResConv2dOperator {
       .row_vector_sum(scale, &self.bn_bias2_grad.as_view(ctx));
   }
 
-  fn update_params(&mut self, scale: f32) {
+  fn update_param(&mut self, scale: f32) {
     assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
     let mut backward = self.backward.as_mut().unwrap();
@@ -2720,7 +2732,7 @@ impl Operator for StackResConv2dOperator {
       .row_vector_sum(scale, &self.acc_bn_bias2_grad.as_view(ctx));
   }
 
-  fn update_params2(&mut self, grad_scale: f32, update_scale: f32) {
+  fn update_param2(&mut self, grad_scale: f32, update_scale: f32) {
     assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
     let mut backward = self.backward.as_mut().unwrap();
@@ -3403,6 +3415,10 @@ impl Operator for ProjStackResConv2dOperator {
     self.batch_cap
   }
 
+  fn params_len(&self) -> usize {
+    self.config.params_len()
+  }
+
   /*fn get_output_vars(&self) -> Option<SharedDeviceBuf<f32>> {
     Some(self.out_act.clone())
   }
@@ -3421,7 +3437,7 @@ impl Operator for ProjStackResConv2dOperator {
     Some(self.out_delta.clone())
   }
 
-  fn init_params(&mut self, shared_seed: [u64; 2]) {
+  fn init_param(&mut self, shared_seed: [u64; 2]) {
     let ProjStackResConv2dOperatorConfig{in_dims, out_dims, ..} = self.config;
     let ctx = &(*self.context).as_ref();
     let (_, _, in_channels) = in_dims;
@@ -3503,7 +3519,7 @@ impl Operator for ProjStackResConv2dOperator {
     self.bn_running_ivar3.as_view_mut(ctx).set_constant(1.0);
   }
 
-  fn decode_params(&mut self, blob: &[u8]) -> usize {
+  fn decode_param(&mut self, blob: &[u8]) -> usize {
     let ctx = &(*self.context).as_ref();
     let mut reader = Cursor::new(blob);
 
@@ -3547,7 +3563,7 @@ impl Operator for ProjStackResConv2dOperator {
     progress
   }
 
-  fn encode_params(&mut self, blob: &mut Vec<u8>) {
+  fn encode_param(&mut self, blob: &mut Vec<u8>) {
     let ctx = &(*self.context).as_ref();
 
     let weights1 = self.weights1.as_view(ctx);
@@ -4225,7 +4241,7 @@ impl Operator for ProjStackResConv2dOperator {
     }
   }
 
-  fn accumulate_grads(&mut self, scale: f32, momentum: f32) {
+  fn accumulate_grad(&mut self, scale: f32, momentum: f32) {
     assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
     let mut backward = self.backward.as_mut().unwrap();
@@ -4273,7 +4289,7 @@ impl Operator for ProjStackResConv2dOperator {
       .row_vector_sum(scale, &self.bn_bias3_grad.as_view(ctx));
   }
 
-  fn update_params(&mut self, scale: f32) {
+  fn update_param(&mut self, scale: f32) {
     assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
     let mut backward = self.backward.as_mut().unwrap();
@@ -4303,7 +4319,7 @@ impl Operator for ProjStackResConv2dOperator {
       .row_vector_sum(scale, &self.acc_bn_bias3_grad.as_view(ctx));
   }
 
-  fn update_params2(&mut self, grad_scale: f32, update_scale: f32) {
+  fn update_param2(&mut self, grad_scale: f32, update_scale: f32) {
     assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
     let mut backward = self.backward.as_mut().unwrap();

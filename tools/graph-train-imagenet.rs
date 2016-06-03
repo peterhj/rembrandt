@@ -33,12 +33,12 @@ use rembrandt::operator::comm::{
   GossipConfig,
   DeviceSyncGossipCommWorkerBuilder,
 };
-use rembrandt::operator::worker::{
+/*use rembrandt::operator::worker::{
   OperatorWorkerBuilder,
   OperatorWorker,
   SequentialOperatorConfig,
   SequentialOperatorWorkerBuilder,
-};
+};*/
 use rembrandt::opt::sgd::{
   SgdOptConfig,
   InitBehavior,
@@ -73,21 +73,21 @@ use rembrandt::templates::resnet_graph::{
 use rembrandt::templates::vgg::{
   build_vgg_a,
 };*/
-use rembrandt::worker::allreduce_dist::{
+/*use rembrandt::worker::allreduce_dist::{
   MpiDistSyncAllreduceCommWorker,
-};
+};*/
 /*use rembrandt::worker::elasticserver_dist::{
   MpiDistElasticServerCommWorker,
 };*/
 /*use rembrandt::worker::gossip_pull_dist_rdma::{
   MpiDistAsyncPullGossipCommWorker,
 };*/
-use rembrandt::worker::gossip_dist::{
+/*use rembrandt::worker::gossip_dist::{
   MpiDistAsyncPushGossipCommWorker,
   ExperimentConfig,
   MpiDistSequentialOperatorWorkerBuilder,
   MpiDistSequentialOperatorWorker,
-};
+};*/
 use threadpool::{ThreadPool};
 
 //use rand::{thread_rng};

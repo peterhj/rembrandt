@@ -76,6 +76,10 @@ path = "tools/seq-train-imagenet.rs"
 name = "graph-train-imagenet"
 path = "tools/graph-train-imagenet.rs"
 
+[[bin]]
+name = "dev-graph-train-imagenet"
+path = "tools/dev-graph-train-imagenet.rs"
+
 #[[bin]]
 #name = "dist-train-imagenet-shuf"
 #path = "tools/dist-train-imagenet-shuf.rs"
@@ -98,6 +102,7 @@ path = "tools/graph-train-imagenet.rs"
 
 [dependencies]
 byteorder = "*"
+crossbeam = "*"
 env_logger = "*"
 #image = { path = "../image" }
 libc = "*"

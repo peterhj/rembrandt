@@ -177,25 +177,25 @@ impl Operator for SequentialOperator {
     self.batch_size
   }
 
-  fn init_params(&mut self, shared_seed: [u64; 2]) {
+  fn init_param(&mut self, shared_seed: [u64; 2]) {
     let mut rng = Xorshiftplus128Rng::from_seed(shared_seed);
     for op in self.hidden_ops.iter_mut() {
       let op_seed = [rng.next_u64(), rng.next_u64()];
-      op.init_params(op_seed);
+      op.init_param(op_seed);
     }
   }
 
-  fn decode_params(&mut self, blob: &[u8]) -> usize {
+  fn decode_param(&mut self, blob: &[u8]) -> usize {
     let mut offset = 0;
     for op in self.hidden_ops.iter_mut() {
-      offset += op.decode_params(&blob[offset .. ]);
+      offset += op.decode_param(&blob[offset .. ]);
     }
     offset
   }
 
-  fn encode_params(&mut self, blob: &mut Vec<u8>) {
+  fn encode_param(&mut self, blob: &mut Vec<u8>) {
     for op in self.hidden_ops.iter_mut() {
-      op.encode_params(blob);
+      op.encode_param(blob);
     }
   }
 
@@ -220,21 +220,21 @@ impl Operator for SequentialOperator {
     }
   }
 
-  fn accumulate_grads(&mut self, scale: f32, momentum: f32) {
+  fn accumulate_grad(&mut self, scale: f32, momentum: f32) {
     for op in self.hidden_ops.iter_mut() {
-      op.accumulate_grads(scale, momentum);
+      op.accumulate_grad(scale, momentum);
     }
   }
 
-  fn update_params(&mut self, scale: f32) {
+  fn update_param(&mut self, scale: f32) {
     for op in self.hidden_ops.iter_mut() {
-      op.update_params(scale);
+      op.update_param(scale);
     }
   }
 
-  fn update_params2(&mut self, grad_scale: f32, update_scale: f32) {
+  fn update_param2(&mut self, grad_scale: f32, update_scale: f32) {
     for op in self.hidden_ops.iter_mut() {
-      op.update_params2(grad_scale, update_scale);
+      op.update_param2(grad_scale, update_scale);
     }
   }
 

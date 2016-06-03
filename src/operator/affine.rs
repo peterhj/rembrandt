@@ -162,6 +162,10 @@ impl Operator for AffineOperator {
     self.batch_cap
   }
 
+  fn params_len(&self) -> usize {
+    self.config.params_len()
+  }
+
   fn get_output_act(&self, _arm: usize) -> SharedDeviceBuf<f32> {
     assert_eq!(0, _arm);
     self.out_act.clone()
@@ -172,7 +176,7 @@ impl Operator for AffineOperator {
     Some(self.out_delta.clone())
   }
 
-  fn init_params(&mut self, shared_seed: [u64; 2]) {
+  fn init_param(&mut self, shared_seed: [u64; 2]) {
     let AffineOperatorConfig{in_channels, out_channels, ..} = self.config;
     let ctx = &(*self.context).as_ref();
     let mut rng = Xorshiftplus128Rng::from_seed(shared_seed);
@@ -216,7 +220,7 @@ impl Operator for AffineOperator {
     self.bias.as_view_mut(ctx).sync_load(&init_bias.as_view());
   }
 
-  fn decode_params(&mut self, blob: &[u8]) -> usize {
+  fn decode_param(&mut self, blob: &[u8]) -> usize {
     let AffineOperatorConfig{in_channels, out_channels, ..} = self.config;
     let ctx = &(*self.context).as_ref();
     let mut reader = Cursor::new(blob);
@@ -232,7 +236,7 @@ impl Operator for AffineOperator {
     progress
   }
 
-  fn encode_params(&mut self, blob: &mut Vec<u8>) {
+  fn encode_param(&mut self, blob: &mut Vec<u8>) {
     let ctx = &(*self.context).as_ref();
     let weights = self.weights.as_view(ctx);
     let bias = self.bias.as_view(ctx);
@@ -403,7 +407,7 @@ impl Operator for AffineOperator {
     }
   }
 
-  fn accumulate_grads(&mut self, scale: f32, momentum: f32) {
+  fn accumulate_grad(&mut self, scale: f32, momentum: f32) {
     assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
     let mut backward = self.backward.as_mut().unwrap();
@@ -417,8 +421,8 @@ impl Operator for AffineOperator {
       .row_vector_sum(scale, &backward.grad_bias.as_view(ctx));
   }
 
-  //fn update_params(&mut self, momentum: f32, nesterov: bool) {
-  fn update_params(&mut self, scale: f32) {
+  //fn update_param(&mut self, momentum: f32, nesterov: bool) {
+  fn update_param(&mut self, scale: f32) {
     assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
     let mut backward = self.backward.as_mut().unwrap();
@@ -428,7 +432,7 @@ impl Operator for AffineOperator {
       .row_vector_sum(scale, &backward.acc_grad_bias.as_view(ctx));
   }
 
-  fn update_params2(&mut self, grad_scale: f32, update_scale: f32) {
+  fn update_param2(&mut self, grad_scale: f32, update_scale: f32) {
     assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
     let mut backward = self.backward.as_mut().unwrap();

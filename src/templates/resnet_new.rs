@@ -12,9 +12,9 @@ use operator::{
   Pool2dOperatorConfig,
   DropoutOperatorConfig,
 };
-use operator::comm::{
+/*use operator::comm::{
   DeviceSyncGossipCommWorkerBuilder,
-};
+};*/
 use operator::input::{
   Data3dPreproc,
   Data3dOperatorConfig,
@@ -41,7 +41,7 @@ use operator::worker::{
   OperatorWorkerBuilder,
   OperatorWorker,
   //SequentialOperatorConfig,
-  SequentialOperatorWorkerBuilder,
+  //SequentialOperatorWorkerBuilder,
 };
 use operator::seq::{
   SequentialOperatorConfig,
@@ -51,10 +51,10 @@ use opt::sgd::{
   //OptSharedData,
   //SgdOpt,
 };
-use worker::gossip_dist::{
+/*use worker::gossip_dist::{
   MpiDistSequentialOperatorWorkerBuilder,
   MpiDistSequentialOperatorWorker,
-};
+};*/
 use threadpool::{ThreadPool};
 
 //use rand::{thread_rng};

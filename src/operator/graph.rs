@@ -476,11 +476,19 @@ impl Operator for GraphOperator {
     self.operators[0].batch_size()
   }
 
-  fn init_params(&mut self, shared_seed: [u64; 2]) {
+  fn params_len(&self) -> usize {
+    let mut params_len = 0;
+    for &id in self.fwd_toporder.iter() {
+      params_len += self.operators[id].params_len();
+    }
+    params_len
+  }
+
+  fn init_param(&mut self, shared_seed: [u64; 2]) {
     let mut rng = Xorshiftplus128Rng::from_seed(shared_seed);
     for &id in self.fwd_toporder.iter() {
       let op_seed = [rng.next_u64(), rng.next_u64()];
-      self.operators[id].init_params(op_seed);
+      self.operators[id].init_param(op_seed);
     }
   }
 
@@ -524,21 +532,21 @@ impl Operator for GraphOperator {
     }
   }
 
-  fn accumulate_grads(&mut self, scale: f32, momentum: f32) {
+  fn accumulate_grad(&mut self, scale: f32, momentum: f32) {
     for &id in self.fwd_toporder.iter() {
-      self.operators[id].accumulate_grads(scale, momentum);
+      self.operators[id].accumulate_grad(scale, momentum);
     }
   }
 
-  fn update_params(&mut self, scale: f32) {
+  fn update_param(&mut self, scale: f32) {
     for &id in self.fwd_toporder.iter() {
-      self.operators[id].update_params(scale);
+      self.operators[id].update_param(scale);
     }
   }
 
-  fn update_params2(&mut self, grad_scale: f32, update_scale: f32) {
+  fn update_param2(&mut self, grad_scale: f32, update_scale: f32) {
     for &id in self.fwd_toporder.iter() {
-      self.operators[id].update_params2(grad_scale, update_scale);
+      self.operators[id].update_param2(grad_scale, update_scale);
     }
   }
 }

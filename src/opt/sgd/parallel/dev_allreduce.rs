@@ -7,23 +7,33 @@ use array_cuda::device::linalg::{VectorExt};
 use array_cuda::device::memory::{DeviceBufferInitExt, DeviceBuffer};
 use nccl::{NcclUniqueId, NcclComm, NcclSumOp};
 
+use rand::{Rng, thread_rng};
 use std::ops::{Deref, DerefMut};
 use std::rc::{Rc};
 use std::sync::{Arc, Barrier};
+
+struct SharedData {
+  shared_seed:  [u64; 2],
+}
 
 #[derive(Clone)]
 pub struct DeviceAllreduceSgdOptWorkerBuilder {
   num_workers:  usize,
   comm_id:  NcclUniqueId,
   barrier:  Arc<Barrier>,
+  shared:   Arc<SharedData>,
 }
 
 impl DeviceAllreduceSgdOptWorkerBuilder {
   pub fn new(num_workers: usize) -> DeviceAllreduceSgdOptWorkerBuilder {
+    let shared = SharedData{
+      shared_seed:  [thread_rng().next_u64(), thread_rng().next_u64()],
+    };
     DeviceAllreduceSgdOptWorkerBuilder{
       num_workers:  num_workers,
       comm_id:  NcclUniqueId::create().unwrap(),
       barrier:  Arc::new(Barrier::new(num_workers)),
+      shared:   Arc::new(shared),
     }
   }
 
@@ -33,6 +43,7 @@ impl DeviceAllreduceSgdOptWorkerBuilder {
       Ok(comm) => comm,
     };
     let params_len = operator.params_len();
+    let padded_len = (params_len + self.num_workers - 1) / self.num_workers * self.num_workers;
     let ctx = &(*context).as_ref();
     DeviceAllreduceSgdOptWorker{
       worker_rank:  worker_rank,
@@ -40,10 +51,11 @@ impl DeviceAllreduceSgdOptWorkerBuilder {
       context:      context.clone(),
       comm:         comm,
       barrier:      self.barrier,
+      shared:       self.shared,
       operator:     operator,
-      saved_param:  OpCursor::new(DeviceBuffer::zeros(params_len, ctx)),
-      src_grad:     OpCursor::new(DeviceBuffer::zeros(params_len, ctx)),
-      dst_grad:     OpCursor::new(DeviceBuffer::zeros(params_len, ctx)),
+      saved_param:  OpCursor::new(DeviceBuffer::zeros(padded_len, ctx)),
+      src_grad:     OpCursor::new(DeviceBuffer::zeros(padded_len, ctx)),
+      dst_grad:     OpCursor::new(DeviceBuffer::zeros(padded_len, ctx)),
       sig_chkpt:    false,
     }
   }
@@ -55,6 +67,7 @@ pub struct DeviceAllreduceSgdOptWorker {
   context:      Rc<DeviceContext>,
   comm:         NcclComm,
   barrier:      Arc<Barrier>,
+  shared:       Arc<SharedData>,
 
   operator:     Box<CompleteOperator>,
 
@@ -84,6 +97,10 @@ impl ParallelSgdOptWorker for DeviceAllreduceSgdOptWorker {
     &mut *self.operator
   }
 
+  fn shared_seed(&mut self) -> [u64; 2] {
+    self.shared.shared_seed
+  }
+
   fn signal_checkpoint(&mut self) {
     self.sig_chkpt = true;
   }
@@ -98,36 +115,38 @@ impl ParallelSgdOptWorker for DeviceAllreduceSgdOptWorker {
     }
   }
 
-  fn save_params(&mut self) {
+  fn save_param(&mut self) {
     self.operator.write_param(0, &mut self.saved_param);
   }
 
-  fn restore_params(&mut self) {
+  fn restore_param(&mut self) {
     self.operator.read_param(0, &mut self.saved_param);
   }
 
-  fn stage_params(&mut self) {
+  fn stage_param(&mut self) {
     unimplemented!();
   }
 
-  fn merge_params(&mut self) {
+  fn merge_param(&mut self) {
     unimplemented!();
   }
 
-  fn sync_params(&mut self) {
+  fn sync_param(&mut self) {
     unimplemented!();
   }
 
-  fn stage_grads(&mut self) {
+  fn stage_grad(&mut self) {
     self.operator.write_grad(0, &mut self.src_grad);
   }
 
-  fn merge_grads(&mut self) {
+  fn merge_grad(&mut self) {
     self.operator.read_grad(0, &mut self.dst_grad);
   }
 
-  fn sync_grads(&mut self) {
+  fn sync_grad(&mut self) {
     let ctx = &(*self.context).as_ref();
+    //ctx.sync();
+    //self.barrier.wait();
     let params_len = self.src_grad.inner.len();
     unsafe { self.comm.allreduce(
         self.src_grad.inner.as_ref(ctx).as_ptr(), params_len,
@@ -135,6 +154,8 @@ impl ParallelSgdOptWorker for DeviceAllreduceSgdOptWorker {
         NcclSumOp,
         ctx.stream.ptr,
     ).unwrap() };
+    //ctx.sync();
+    //self.barrier.wait();
     // FIXME(20160526): assuming all worker batches are evenly sized.
     self.dst_grad.inner.as_ref_mut(ctx).vector_scale(1.0 / self.num_workers as f32);
   }
