@@ -365,11 +365,11 @@ impl GraphOperator {
       fwd_in_edges.entry(id).or_insert(vec![]);
       bwd_in_edges.entry(id).or_insert(vec![]);
       let id_key = &config.id_keys[id];
-      for r_key in config.nodes[id_key].in_keys.iter() {
-        let r_id = config.key_ids[r_key];
+      for left_key in config.nodes[id_key].in_keys.iter() {
+        let left_id = config.key_ids[left_key];
         fwd_in_edges.entry(id).or_insert(vec![])
-          .push(r_id);
-        bwd_in_edges.entry(r_id).or_insert(vec![])
+          .push(left_id);
+        bwd_in_edges.entry(left_id).or_insert(vec![])
           .push(id);
       }
     }
@@ -425,6 +425,7 @@ impl GraphOperator {
       let op_var = {
         let mut prev_ops = vec![];
         for &prev_id in fwd_in_edges[&id].iter() {
+          assert!(prev_id < id);
           let mut prev_arm: Option<usize> = None;
           for (arm, &prev_next_id) in bwd_in_edges[&prev_id].iter().enumerate() {
             if id == prev_next_id {
@@ -456,6 +457,7 @@ impl GraphOperator {
     for id in 0 .. config.nodes.len() {
       operators.push(operators_map.remove(&id).unwrap());
     }
+    assert!(operators_map.is_empty());
 
     GraphOperator{
       config:       config,

@@ -41,9 +41,9 @@ impl DeviceAllreduceSgdOptWorkerBuilder {
       comm:         comm,
       barrier:      self.barrier,
       operator:     operator,
-      saved_params: OpCursor::new(DeviceBuffer::zeros(params_len, ctx)),
-      src_grads:    OpCursor::new(DeviceBuffer::zeros(params_len, ctx)),
-      dst_grads:    OpCursor::new(DeviceBuffer::zeros(params_len, ctx)),
+      saved_param:  OpCursor::new(DeviceBuffer::zeros(params_len, ctx)),
+      src_grad:     OpCursor::new(DeviceBuffer::zeros(params_len, ctx)),
+      dst_grad:     OpCursor::new(DeviceBuffer::zeros(params_len, ctx)),
       sig_chkpt:    false,
     }
   }
@@ -58,9 +58,9 @@ pub struct DeviceAllreduceSgdOptWorker {
 
   operator:     Box<CompleteOperator>,
 
-  saved_params: OpCursor<DeviceBuffer<f32>>,
-  src_grads:    OpCursor<DeviceBuffer<f32>>,
-  dst_grads:    OpCursor<DeviceBuffer<f32>>,
+  saved_param:  OpCursor<DeviceBuffer<f32>>,
+  src_grad:     OpCursor<DeviceBuffer<f32>>,
+  dst_grad:     OpCursor<DeviceBuffer<f32>>,
 
   sig_chkpt:    bool,
 }
@@ -99,11 +99,11 @@ impl ParallelSgdOptWorker for DeviceAllreduceSgdOptWorker {
   }
 
   fn save_params(&mut self) {
-    self.operator.write_param(0, &mut self.saved_params);
+    self.operator.write_param(0, &mut self.saved_param);
   }
 
   fn restore_params(&mut self) {
-    self.operator.read_param(0, &mut self.saved_params);
+    self.operator.read_param(0, &mut self.saved_param);
   }
 
   fn stage_params(&mut self) {
@@ -119,23 +119,23 @@ impl ParallelSgdOptWorker for DeviceAllreduceSgdOptWorker {
   }
 
   fn stage_grads(&mut self) {
-    self.operator.write_grad(0, &mut self.src_grads);
+    self.operator.write_grad(0, &mut self.src_grad);
   }
 
   fn merge_grads(&mut self) {
-    self.operator.read_grad(0, &mut self.dst_grads);
+    self.operator.read_grad(0, &mut self.dst_grad);
   }
 
   fn sync_grads(&mut self) {
     let ctx = &(*self.context).as_ref();
-    let params_len = self.src_grads.inner.len();
+    let params_len = self.src_grad.inner.len();
     unsafe { self.comm.allreduce(
-        self.src_grads.inner.as_ref(ctx).as_ptr(), params_len,
-        self.dst_grads.inner.as_ref_mut(ctx).as_mut_ptr(),
+        self.src_grad.inner.as_ref(ctx).as_ptr(), params_len,
+        self.dst_grad.inner.as_ref_mut(ctx).as_mut_ptr(),
         NcclSumOp,
         ctx.stream.ptr,
     ).unwrap() };
     // FIXME(20160526): assuming all worker batches are evenly sized.
-    self.dst_grads.inner.as_ref_mut(ctx).vector_scale(1.0 / self.num_workers as f32);
+    self.dst_grad.inner.as_ref_mut(ctx).vector_scale(1.0 / self.num_workers as f32);
   }
 }

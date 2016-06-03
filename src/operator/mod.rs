@@ -256,11 +256,13 @@ impl OperatorConfig {
     match self {
       &OperatorConfig::Affine(ref cfg) => {
         assert_eq!(1, prev_ops.len());
+        assert_eq!(0, prev_ops[0].0);
         let prev_op = Some(prev_ops[0].1);
         OperatorVariant::Hidden(Box::new(AffineOperator::new(batch_size, capability, *cfg, prev_op, context)))
       }
       &OperatorConfig::Conv2d(ref cfg) => {
         assert_eq!(1, prev_ops.len());
+        assert_eq!(0, prev_ops[0].0);
         let prev_op = Some(prev_ops[0].1);
         OperatorVariant::Hidden(Box::new(Conv2dOperator::new(batch_size, capability, 0, *cfg, prev_op, context)))
       }
@@ -271,22 +273,26 @@ impl OperatorConfig {
       &OperatorConfig::StackResConv2d(ref cfg) => {
         //unimplemented!();
         assert_eq!(1, prev_ops.len());
+        assert_eq!(0, prev_ops[0].0);
         let prev_op = Some(prev_ops[0].1);
         OperatorVariant::Hidden(Box::new(StackResConv2dOperator::new(batch_size, capability, 0, *cfg, prev_op, context)))
       }
       &OperatorConfig::ProjStackResConv2d(ref cfg) => {
         //unimplemented!();
         assert_eq!(1, prev_ops.len());
+        assert_eq!(0, prev_ops[0].0);
         let prev_op = Some(prev_ops[0].1);
         OperatorVariant::Hidden(Box::new(ProjStackResConv2dOperator::new(batch_size, capability, 0, *cfg, prev_op, context)))
       }
       &OperatorConfig::Pool2d(ref cfg) => {
         assert_eq!(1, prev_ops.len());
+        assert_eq!(0, prev_ops[0].0);
         let prev_op = Some(prev_ops[0].1);
         OperatorVariant::Hidden(Box::new(Pool2dOperator::new(batch_size, *cfg, prev_op, context)))
       }
       &OperatorConfig::Dropout(ref cfg) => {
         assert_eq!(1, prev_ops.len());
+        assert_eq!(0, prev_ops[0].0);
         let prev_op = Some(prev_ops[0].1);
         OperatorVariant::Hidden(Box::new(DropoutOperator::new(batch_size, *cfg, prev_op, context)))
       }
@@ -300,6 +306,7 @@ impl OperatorConfig {
       }
       &OperatorConfig::SoftmaxKLLoss(ref cfg) => {
         assert_eq!(1, prev_ops.len());
+        assert_eq!(0, prev_ops[0].0);
         let prev_op = Some(prev_ops[0].1);
         OperatorVariant::Loss(Box::new(SoftmaxKLLossOperator::new(batch_size, capability, *cfg, prev_op, context)))
       }
@@ -746,8 +753,9 @@ impl Operator for AddJoinOperator {
     self.batch_cap
   }
 
-  fn get_output_act(&self, arm: usize) -> SharedDeviceBuf<f32> {
-    self.in_acts[arm].clone()
+  fn get_output_act(&self, _arm: usize) -> SharedDeviceBuf<f32> {
+    assert_eq!(0, _arm);
+    self.out_act.clone()
   }
 
   fn get_output_delta(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> {
