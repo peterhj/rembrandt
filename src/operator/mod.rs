@@ -614,7 +614,7 @@ impl Operator for CopySplitOperator {
   }
 
   fn get_output_delta(&self, arm: usize) -> Option<SharedDeviceBuf<f32>> {
-    self.backward.as_ref().map(|bwd| bwd.out_deltas[arm].clone())
+    self.backward.as_ref().and_then(|bwd| bwd.out_deltas[arm].clone())
   }
 
   fn get_output_r_act(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> {
@@ -801,7 +801,7 @@ impl Operator for AddJoinOperator {
     match self.config.act_func {
       ActivationFunction::Identity => {}
       ActivationFunction::Rect => {
-        let out_act = backward.out_act.borrow_mut().as_ref(ctx);
+        let out_act = self.out_act.borrow_mut().as_ref(ctx);
         let mut out_delta = backward.out_delta.borrow_mut().as_ref_mut(ctx);
         unsafe { rembrandt_kernel_batch_map_rect_backprop_inplace(
             out_act.as_ptr(),

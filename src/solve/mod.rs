@@ -1,6 +1,6 @@
 use operator::{CompleteOperator, OpPhase};
 
-pub mod cg;
+//pub mod cg;
 //pub mod lanczos;
 
 pub trait IterativeSolveStep: Copy {
