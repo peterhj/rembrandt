@@ -400,6 +400,14 @@ impl SerialSgdOpt {
             minibatch_start_time = start_time;
           }
 
+          if iter_counter % self.config.valid_iters == 0 {
+            if let Some(ref mut valid_data) = valid_data {
+              self.validate(*valid_data, operator);
+            }
+            start_time = get_time();
+            minibatch_start_time = start_time;
+          }
+
           // If we are using the standard Nesterov update, apply some extra
           // momentum before the next iteration begins.
           // XXX(20160406): Interestingly, we should use the local update rather
@@ -417,9 +425,88 @@ impl SerialSgdOpt {
   }
 
   pub fn validate(&mut self,
-      mut valid_data: Option<&mut DataIter<Item=(SampleDatum, Option<SampleLabel>)>>,
+      mut valid_data: &mut DataIter<Item=(SampleDatum, Option<SampleLabel>)>,
       operator: &mut CompleteOperator)
   {
-    //unimplemented!();
+    let batch_size = operator.batch_size();
+    let epoch_size = valid_data.num_shard_samples();
+    let weight = 1.0 / epoch_size as f32;
+
+    let mut start_time = get_time();
+
+    let mut display_acc_correct_count = 0;
+    let mut display_acc_total_count = 0;
+    let mut display_acc_loss = 0.0;
+
+    let mut local_counter = 0;
+    let mut batch_counter = 0;
+
+    valid_data.reset();
+    for (datum, maybe_label) in valid_data.take(epoch_size) {
+      match datum {
+        SampleDatum::WHCBytes(ref frame_bytes) => {
+          //println!("DEBUG: frame: {:?}", frame_bytes.as_slice());
+          let frame_len = frame_bytes.bound().len();
+          operator
+            .stage_shape(batch_counter, frame_bytes.bound());
+          operator
+            .expose_host_frame_buf(batch_counter)[ .. frame_len]
+            .copy_from_slice(frame_bytes.as_slice());
+          operator
+            .preload_frame(batch_counter);
+        }
+        _ => unimplemented!(),
+      }
+      operator.stage_label(batch_counter, &maybe_label.unwrap());
+      operator.stage_weight(batch_counter, weight);
+      local_counter += 1;
+      batch_counter += 1;
+
+      // With a full batch of data, compute a full forward/backward pass.
+      assert!(batch_counter <= batch_size);
+      if batch_counter == batch_size {
+        //operator.next();
+        //operator.input_operator().load_frames(batch_size);
+        operator.wait_preload_frames(batch_size);
+        operator.load_labels(batch_size);
+        operator.load_weights(batch_size);
+        operator.forward(batch_size, OpPhase::Inference);
+        operator.store_output_categories(batch_size);
+        let local_loss = operator.store_loss(batch_size);
+        let local_correct_count = operator.accuracy_count(batch_size);
+        display_acc_correct_count += local_correct_count;
+        display_acc_total_count += batch_size;
+        display_acc_loss += local_loss;
+        batch_counter = 0;
+      }
+    }
+    if batch_counter > 0 {
+      let batch_size = batch_counter;
+      operator.wait_preload_frames(batch_size);
+      operator.load_labels(batch_size);
+      operator.load_weights(batch_size);
+      operator.forward(batch_size, OpPhase::Inference);
+      operator.store_output_categories(batch_size);
+      let local_loss = operator.store_loss(batch_size);
+      let local_correct_count = operator.accuracy_count(batch_size);
+      display_acc_correct_count += local_correct_count;
+      display_acc_total_count += batch_size;
+      display_acc_loss += local_loss;
+      batch_counter = 0;
+    }
+    assert_eq!(local_counter, epoch_size);
+
+    let lap_time = get_time();
+    let elapsed_ms = (lap_time - start_time).num_milliseconds();
+    let acc_correct_count = display_acc_correct_count;
+    let acc_total_count = display_acc_total_count;
+    let accuracy = acc_correct_count as f32 / acc_total_count as f32;
+    let avg_loss = display_acc_loss / self.config.display_iters as f32;
+    info!("SgdOpt: valid: samples: {} loss: {:.06} accuracy: {:.03} elapsed: {:.03} s",
+        epoch_size,
+        avg_loss,
+        accuracy,
+        elapsed_ms as f32 * 0.001,
+    );
   }
 }

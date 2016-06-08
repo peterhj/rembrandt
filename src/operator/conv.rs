@@ -403,13 +403,7 @@ impl Operator for Conv2dOperator {
 
   fn forward(&mut self, batch_size: usize, _phase: OpPhase) {
     assert!(batch_size <= self.batch_cap);
-    /*let Conv2dOperatorConfig{
-      in_dims, conv_size, conv_stride, conv_pad,
-      .. } = self.config;*/
-    //let (in_width, in_height, in_channels) = in_dims;
-    //let in_length = in_dims.len();
     let out_dims = self.config.get_out_dims();
-    //let (out_width, out_height, out_channels) = out_dims;
     let out_length = out_dims.len();
 
     let &mut Conv2dOperator{
@@ -1256,7 +1250,8 @@ impl Operator for BNormConv2dOperator {
     let ctx = &(**context).as_ref();
     let mut out_act = out_act.borrow_mut().as_ref_mut(ctx);
 
-    pre_act.as_ref_mut(ctx).copy(&in_act.borrow_mut().as_ref_range(0, in_length * batch_size, ctx));
+    pre_act.as_ref_mut_range(0, in_length * batch_size, ctx)
+      .copy(&in_act.borrow_mut().as_ref_range(0, in_length * batch_size, ctx));
     match self.config.pre_act_func {
       ActivationFunction::Identity => {}
       ActivationFunction::Rect => {

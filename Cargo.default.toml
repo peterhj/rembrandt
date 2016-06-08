@@ -29,6 +29,10 @@ path = "src/lib.rs"
 #path = "tools/test-varraydb.rs"
 
 [[bin]]
+name = "test-comm"
+path = "tools/test-comm.rs"
+
+[[bin]]
 name = "dump-array3d-header"
 path = "tools/dump-array3d-header.rs"
 
@@ -124,6 +128,7 @@ array = { path = "../libarray" }
 array_cuda = { path = "../libarray_cuda" }
 #array_dist = { path = "../libarray_dist" }
 arraydb = { path = "../arraydb" }
+comm_cuda = { path = "../libcomm_cuda" }
 cuda = { git = "https://github.com/peterhj/libcuda.git" }
 cuda_dnn = { path = "../libcuda_dnn" } #, features = ["cudnn_v3"] }
 episodb = { path = "../../episodb" }

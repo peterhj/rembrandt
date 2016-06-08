@@ -51,7 +51,8 @@ use rand::distributions::{IndependentSample};
 use rand::distributions::normal::{Normal};
 use rand::distributions::range::{Range};
 use std::cell::{RefCell};
-use std::cmp::{max};
+use std::cmp::{max, min};
+use std::collections::{Bound, BTreeMap};
 use std::fs::{File};
 use std::io::{Cursor};
 use std::iter::{repeat};
@@ -77,13 +78,32 @@ pub trait OpWrite {
   fn write<'ctx>(&mut self, offset: usize, src: &DeviceBufferRef<'ctx, f32>) -> usize;
 }
 
-pub struct OpCursor<T> {
-  pub inner:    T,
+pub trait OpCursorInner {
+  type Extra;
+
+  fn extra(&self) -> Self::Extra;
 }
 
-impl<T> OpCursor<T> {
+pub struct OpCursor<T> where T: OpCursorInner {
+  pub inner:    T,
+  extra:        T::Extra,
+}
+
+impl<T> OpCursor<T> where T: OpCursorInner {
   pub fn new(inner: T) -> OpCursor<T> {
-    OpCursor{inner: inner}
+    let extra = inner.extra();
+    OpCursor{
+      inner:    inner,
+      extra:    extra,
+    }
+  }
+}
+
+impl OpCursorInner for DeviceBuffer<f32> {
+  type Extra = ();
+
+  fn extra(&self) -> () {
+    ()
   }
 }
 
@@ -103,6 +123,101 @@ impl OpWrite for OpCursor<DeviceBuffer<f32>> {
   }
 }
 
+pub struct ExtentMap {
+  offset_map:   BTreeMap<usize, (usize, usize)>,
+}
+
+impl ExtentMap {
+  pub fn new(part_lens: Vec<usize>) -> ExtentMap {
+    let num_parts = part_lens.len();
+    let mut offset_map = BTreeMap::new();
+    let mut offset = 0;
+    for part_idx in 0 .. num_parts {
+      let part_len = part_lens[part_idx];
+      offset_map.insert(offset, (part_idx, part_len));
+      offset += part_len;
+    }
+    ExtentMap{offset_map: offset_map}
+  }
+
+  pub fn foreach_extent<F>(&self, lower: usize, upper: usize, mut f: F) where F: FnMut(usize, (usize, usize), (usize, usize)) {
+    let buf_len = upper - lower;
+    let mut tmp_offset = lower;
+    for (&part_offset, &(part_idx, part_len)) in self.offset_map.range(Bound::Included(&lower), Bound::Excluded(&upper)) {
+      let start_i = tmp_offset - part_offset;
+      let end_i = min(part_len, tmp_offset + buf_len - part_offset);
+      let tmp_part_len = end_i - start_i;
+      f(part_idx, (start_i, end_i), (tmp_offset, tmp_offset + tmp_part_len));
+      /*dst.mut_range(tmp_offset, tmp_offset + tmp_part_len)
+        .copy(&mut self.inner[part_idx].as_ref_range(start_i, end_i, dst.ctx));*/
+      tmp_offset += tmp_part_len;
+    }
+    assert_eq!(upper, tmp_offset);
+  }
+}
+
+impl OpCursorInner for Vec<DeviceBuffer<f32>> {
+  type Extra = ExtentMap;
+
+  fn extra(&self) -> ExtentMap {
+    let part_lens: Vec<_> = self.iter().map(|buf| buf.len()).collect();
+    ExtentMap::new(part_lens)
+  }
+}
+
+impl OpRead for OpCursor<Vec<DeviceBuffer<f32>>> {
+  fn read<'ctx>(&mut self, offset: usize, dst: &mut DeviceBufferRefMut<'ctx, f32>) -> usize {
+    let buf_len = dst.len();
+    let &mut OpCursor{ref extra, ref mut inner} = self;
+    extra.foreach_extent(offset, offset + buf_len, |part_idx, (part_lower, part_upper), (whole_lower, whole_upper)| {
+      dst.mut_range(whole_lower, whole_upper)
+        .copy(&inner[part_idx].as_ref_range(part_lower, part_upper, dst.ctx));
+    });
+    buf_len
+  }
+}
+
+impl OpWrite for OpCursor<Vec<DeviceBuffer<f32>>> {
+  fn write<'ctx>(&mut self, offset: usize, src: &DeviceBufferRef<'ctx, f32>) -> usize {
+    let buf_len = src.len();
+    let &mut OpCursor{ref extra, ref mut inner} = self;
+    extra.foreach_extent(offset, offset + buf_len, |part_idx, (part_lower, part_upper), (whole_lower, whole_upper)| {
+      inner[part_idx].as_ref_mut_range(part_lower, part_upper, src.ctx)
+        .copy(&src.range(whole_lower, whole_upper));
+    });
+    buf_len
+  }
+}
+
+pub trait OperatorState {
+}
+
+pub struct AcyclicOperatorState {
+}
+
+impl OperatorState for AcyclicOperatorState {
+}
+
+impl AcyclicOperatorState {
+  pub fn act(&self, _arm: usize) -> SharedDeviceBuf<f32> { unimplemented!(); }
+  pub fn delta(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> { unimplemented!(); }
+  pub fn r_act(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> { unimplemented!(); }
+  pub fn r_delta(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> { unimplemented!(); }
+}
+
+pub struct SequenceOperatorState {
+}
+
+impl OperatorState for SequenceOperatorState {
+}
+
+impl SequenceOperatorState {
+  pub fn act(&self, _timestep: usize, _arm: usize) -> SharedDeviceBuf<f32> { unimplemented!(); }
+  pub fn delta(&self, _timestep: usize, _arm: usize) -> Option<SharedDeviceBuf<f32>> { unimplemented!(); }
+  //pub fn r_act(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> { unimplemented!(); }
+  //pub fn r_delta(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> { unimplemented!(); }
+}
+
 pub trait Operator {
   fn upcast_input(&mut self) -> &mut InputOperator { unreachable!(); }
   fn upcast_loss(&mut self) -> &mut LossOperator { unreachable!(); }
@@ -110,8 +225,6 @@ pub trait Operator {
   fn reset_batch(&self) { unimplemented!(); }
   #[deprecated] fn batch_size(&self) -> usize { unimplemented!(); }
   fn params_len(&self) -> usize { 0 }
-  //#[deprecated] fn get_output_vars(&self) -> Option<SharedDeviceBuf<f32>> { None }
-  //#[deprecated] fn get_output_deltas(&self) -> Option<SharedDeviceBuf<f32>> { None }
   fn get_output_act(&self, _arm: usize) -> SharedDeviceBuf<f32> { unimplemented!(); }
   fn get_output_delta(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> { unimplemented!(); }
   fn get_output_r_act(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> { unimplemented!(); }
@@ -152,12 +265,6 @@ pub trait Operator {
   // Requires `RBackward` capability.
   fn reset_r_grad(&mut self) { unimplemented!(); }
   fn r_backward(&mut self, _batch_size: usize) { unimplemented!(); }
-
-  /*fn hv_reset_direction(&mut self, _init: HvDirectionInit) { unimplemented!(); }
-  fn hv_solve_direction(&mut self, _solver: HvDirectionSolver) { unimplemented!(); }
-  fn hv_forward(&mut self, _batch_size: usize) { unimplemented!(); }
-  fn hv_backward(&mut self, _batch_size: usize) { unimplemented!(); }
-  fn hv_update_params(&mut self, _scale: f32) { unimplemented!(); }*/
 }
 
 pub trait InputOperator: Operator {
@@ -197,10 +304,6 @@ pub trait LossOperator: Operator {
   fn backward_loss(&mut self, batch_size: usize);
   fn r_forward_loss(&mut self, batch_size: usize);
   fn r_backward_loss(&mut self, batch_size: usize);*/
-
-  // Requires `HVBackward` capability.
-  /*fn hv_stage_hessian_weight(&mut self, _batch_idx: usize, _h_weight: f32) { unimplemented!(); }
-  fn hv_load_hessian_weights(&mut self, _batch_size: usize) { unimplemented!(); }*/
 }
 
 pub trait CompleteOperator: InputOperator + LossOperator {
@@ -288,7 +391,7 @@ impl OperatorConfig {
         assert_eq!(1, prev_ops.len());
         assert_eq!(0, prev_ops[0].0);
         let prev_op = Some(prev_ops[0].1);
-        OperatorVariant::Hidden(Box::new(Pool2dOperator::new(batch_size, *cfg, prev_op, context)))
+        OperatorVariant::Hidden(Box::new(Pool2dOperator::new(batch_size, capability, *cfg, prev_op, context)))
       }
       &OperatorConfig::Dropout(ref cfg) => {
         assert_eq!(1, prev_ops.len());
@@ -302,7 +405,7 @@ impl OperatorConfig {
       }
       &OperatorConfig::VarData3d(ref cfg) => {
         assert_eq!(0, prev_ops.len());
-        OperatorVariant::Input(Box::new(VarData3dOperator::new(batch_size, cfg.clone(), context)))
+        OperatorVariant::Input(Box::new(VarData3dOperator::new(batch_size, capability, cfg.clone(), context)))
       }
       &OperatorConfig::SoftmaxKLLoss(ref cfg) => {
         assert_eq!(1, prev_ops.len());
@@ -339,7 +442,7 @@ impl OperatorConfig {
         OperatorNode::Hidden(Box::new(ProjStackResConv2dOperator::new(batch_size, capability, params_offset.unwrap(), *cfg, prev_op, /*comm_worker,*/ context)))
       }
       &OperatorConfig::Pool2d(ref cfg) => {
-        OperatorNode::Hidden(Box::new(Pool2dOperator::new(batch_size, *cfg, prev_op, context)))
+        OperatorNode::Hidden(Box::new(Pool2dOperator::new(batch_size, capability, *cfg, prev_op, context)))
       }
       &OperatorConfig::Dropout(ref cfg) => {
         OperatorNode::Hidden(Box::new(DropoutOperator::new(batch_size, *cfg, prev_op, context)))
@@ -348,7 +451,7 @@ impl OperatorConfig {
         OperatorNode::Input(Box::new(Data3dOperator::new(batch_size, cfg.clone(), context)))
       }
       &OperatorConfig::VarData3d(ref cfg) => {
-        OperatorNode::Input(Box::new(VarData3dOperator::new(batch_size, cfg.clone(), context)))
+        OperatorNode::Input(Box::new(VarData3dOperator::new(batch_size, capability, cfg.clone(), context)))
       }
       &OperatorConfig::SoftmaxKLLoss(ref cfg) => {
         OperatorNode::Loss(Box::new(SoftmaxKLLossOperator::new(batch_size, capability, *cfg, prev_op, context)))
@@ -434,16 +537,6 @@ pub enum OpPhase {
 pub enum Regularization {
   L2{l2_reg_coef: f32},
 }
-
-/*#[derive(Clone, Copy, Debug)]
-pub enum HvDirectionInit {
-  Gradient,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum HvDirectionSolver {
-  PrecondConjGrad,
-}*/
 
 #[derive(Clone, Copy, Debug)]
 pub enum ActivationFunction {
@@ -888,10 +981,23 @@ pub struct Pool2dOperator {
   out_delta:    SharedDeviceBuf<f32>,
 
   pooling:      CudnnPoolingOp,
+
+  //backward:     Option<Pool2dBwdOperator>,
+  r_forward:    Option<Pool2dRFwdOperator>,
+}
+
+struct Pool2dBwdOperator {
+  in_delta:     Option<SharedDeviceBuf<f32>>,
+  out_delta:    SharedDeviceBuf<f32>,
+}
+
+struct Pool2dRFwdOperator {
+  in_r_act:     SharedDeviceBuf<f32>,
+  out_r_act:    SharedDeviceBuf<f32>,
 }
 
 impl Pool2dOperator {
-  pub fn new(batch_size: usize, config: Pool2dOperatorConfig, prev_op: Option<&Operator>, context: Rc<DeviceContext>) -> Pool2dOperator {
+  pub fn new(batch_size: usize, capability: OpCapability, config: Pool2dOperatorConfig, prev_op: Option<&Operator>, context: Rc<DeviceContext>) -> Pool2dOperator {
     let in_dims = config.in_dims;
     let (in_width, in_height, in_channels) = in_dims;
     let in_len = in_dims.len();
@@ -916,6 +1022,14 @@ impl Pool2dOperator {
       Ok(pooling) => pooling,
       Err(e) => panic!("Pool2dOperator failed to create CudnnPoolingOp: {:?}", e),
     };
+    let r_forward = if capability.r_forward_enabled() {
+      Some(Pool2dRFwdOperator{
+        in_r_act:   prev_op.unwrap().get_output_r_act(0).unwrap(),
+        out_r_act:  Rc::new(RefCell::new(DeviceBuffer::zeros(out_len * batch_size, ctx))),
+      })
+    } else {
+      None
+    };
     Pool2dOperator{
       batch_cap:    batch_size,
       config:       config,
@@ -925,6 +1039,7 @@ impl Pool2dOperator {
       out_act:      Rc::new(RefCell::new(DeviceBuffer::<f32>::zeros(out_len * batch_size, ctx))),
       out_delta:    Rc::new(RefCell::new(DeviceBuffer::<f32>::zeros(out_len * batch_size, ctx))),
       pooling:      pooling,
+      r_forward:    r_forward,
     }
   }
 }
@@ -952,6 +1067,11 @@ impl Operator for Pool2dOperator {
     Some(self.out_delta.clone())
   }
 
+  fn get_output_r_act(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> {
+    assert_eq!(0, _arm);
+    self.r_forward.as_ref().map(|r_fwd| r_fwd.out_r_act.clone())
+  }
+
   fn forward(&mut self, batch_size: usize, _phase: OpPhase) {
     assert!(batch_size <= self.batch_cap);
     let ctx = &(*self.context).as_ref();
@@ -976,6 +1096,19 @@ impl Operator for Pool2dOperator {
           &*ctx.get_dnn(),
       ) }.unwrap();
     }
+  }
+
+  fn r_forward(&mut self, batch_size: usize) {
+    assert!(self.r_forward.is_some());
+    assert!(batch_size <= self.batch_cap);
+    let ctx = &(*self.context).as_ref();
+    let mut r_forward = self.r_forward.as_mut().unwrap();
+    self.pooling.set_batch_size(batch_size).unwrap();
+    unsafe { self.pooling.forward(
+        r_forward.in_r_act.borrow_mut().as_ref(ctx).as_ptr(),
+        r_forward.out_r_act.borrow_mut().as_ref_mut(ctx).as_mut_ptr(),
+        &*ctx.get_dnn(),
+    ) }.unwrap();
   }
 }
 

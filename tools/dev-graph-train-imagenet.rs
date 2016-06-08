@@ -6,7 +6,6 @@ extern crate log;
 extern crate crossbeam;
 extern crate env_logger;
 extern crate rand;
-//extern crate threadpool;
 
 use array_cuda::device::context::{DeviceContext};
 use crossbeam::{scope};
@@ -30,17 +29,6 @@ use rembrandt::operator::{
   OpCapability,
 };
 use rembrandt::operator::graph::{GraphOperator};
-use rembrandt::operator::comm::{
-  ParameterServerConfig,
-  GossipConfig,
-  DeviceSyncGossipCommWorkerBuilder,
-};
-/*use rembrandt::operator::worker::{
-  OperatorWorkerBuilder,
-  OperatorWorker,
-  SequentialOperatorConfig,
-  SequentialOperatorWorkerBuilder,
-};*/
 use rembrandt::opt::sgd::{
   SgdOptConfig,
   InitBehavior,
@@ -61,10 +49,6 @@ use rembrandt::opt::sgd::parallel::{
 use rembrandt::opt::sgd::parallel::dev_allreduce::{
   DeviceAllreduceSgdOptWorkerBuilder,
 };
-/*use rembrandt::templates::examples::{
-  build_caffenet_var224x224,
-  build_vgga_var224x224,
-};*/
 use rembrandt::templates::resnet_graph::{
   build_resnet18pool_var224x224,
 };
@@ -72,14 +56,6 @@ use rembrandt::templates::resnet_graph::{
   build_resnet18_var224x224,
   build_resnet18pool_var224x224,
 };*/
-/*use rembrandt::templates::resnet::{
-  build_resnet18_warp256x256,
-  build_resnet34_warp256x256,
-};
-use rembrandt::templates::vgg::{
-  build_vgg_a,
-};*/
-//use threadpool::{ThreadPool};
 
 //use rand::{thread_rng};
 use std::cell::{RefCell};
@@ -115,10 +91,9 @@ fn main() {
     display_iters:      5,
     checkpoint_iters:   625,
     save_iters:         625,
-    valid_iters:        625,
+    valid_iters:        125,
 
-    //checkpoint_dir:     PathBuf::from("models/imagenet_maxscale480-sync_x16_resnet18pool_run1"),
-    checkpoint_dir:     PathBuf::from("models/imagenet_maxscale480-sync_x16_resnet18pool_test"),
+    checkpoint_dir:     PathBuf::from("models/imagenet_maxscale480-resnet18pool_dev_x2_test"),
   };
   info!("sgd: {:?}", sgd_opt_cfg);
 

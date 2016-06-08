@@ -6,7 +6,10 @@ use array::{
   Array2d, Array3d,
 };
 use array_cuda::device::{
-  DeviceCtxRef, DeviceArray2d, DeviceArray3d, DeviceBuffer,
+  DeviceCtxRef, DeviceBuffer,
+};
+use array_cuda::device::array::{
+  DeviceArray2d, DeviceArray3d,
 };
 use array_cuda::device::comm::allreduce::{DeviceAllReduceWorker};
 use array_cuda::device::ext::{DeviceCastBytesExt, DeviceNumExt};

@@ -1,6 +1,6 @@
 use data_new::{SampleLabel};
 use operator::{
-  Operator, InputOperator, SharedDeviceBuf, OpPhase,
+  Operator, InputOperator, SharedDeviceBuf, OpPhase, OpCapability,
 };
 use operator::comm::{CommWorker};
 use operator::conv::{
@@ -606,10 +606,16 @@ pub struct VarData3dOperator {
 
   rng:          Xorshiftplus128Rng,
   preprocs:     Vec<VarData3dPreprocState>,
+
+  r_forward:    Option<VarData3dRFwdOperator>,
+}
+
+struct VarData3dRFwdOperator {
+  out_r_buf:    SharedDeviceBuf<f32>,
 }
 
 impl VarData3dOperator {
-  pub fn new(batch_size: usize, config: VarData3dOperatorConfig, context: Rc<DeviceContext>) -> VarData3dOperator {
+  pub fn new(batch_size: usize, capability: OpCapability, config: VarData3dOperatorConfig, context: Rc<DeviceContext>) -> VarData3dOperator {
     let ctx = &(*context).as_ref();
     /*let in_dims = config.max_in_dims;
     let (in_width, in_height, in_channels) = in_dims;
@@ -668,6 +674,14 @@ impl VarData3dOperator {
       }
     }
 
+    let r_forward = if capability.r_forward_enabled() {
+      Some(VarData3dRFwdOperator{
+        out_r_buf:  Rc::new(RefCell::new(DeviceBuffer::zeros(out_frame_len * batch_size, ctx))),
+      })
+    } else {
+      None
+    };
+
     VarData3dOperator{
       batch_cap:    batch_size,
       config:       config,
@@ -688,6 +702,7 @@ impl VarData3dOperator {
       out_buf:      Rc::new(RefCell::new(DeviceBuffer::zeros(in_stride * batch_size, ctx))),
       rng:          Xorshiftplus128Rng::new(&mut thread_rng()),
       preprocs:     preprocs,
+      r_forward:    r_forward,
     }
   }
 }
@@ -709,6 +724,11 @@ impl Operator for VarData3dOperator {
   fn get_output_delta(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> {
     assert_eq!(0, _arm);
     None
+  }
+
+  fn get_output_r_act(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> {
+    assert_eq!(0, _arm);
+    self.r_forward.as_ref().map(|r_fwd| r_fwd.out_r_buf.clone())
   }
 
   fn forward(&mut self, batch_size: usize, phase: OpPhase) {
@@ -934,6 +954,10 @@ impl Operator for VarData3dOperator {
   }
 
   fn backward(&mut self, _batch_size: usize) {
+    // Do nothing.
+  }
+
+  fn r_forward(&mut self, _batch_size: usize) {
     // Do nothing.
   }
 }
