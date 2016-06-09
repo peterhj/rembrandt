@@ -70,9 +70,9 @@ use std::sync::{Arc, Barrier};
 fn main() {
   env_logger::init().unwrap();
 
-  let num_local_workers = 2;
+  let num_local_workers = 4;
   let batch_size = 32;
-  let minibatch_size = 128;
+  let minibatch_size = 64;
   //info!("batch size: {}", batch_size);
   info!("num workers: {} batch size: {}", num_local_workers, batch_size);
 
@@ -91,9 +91,9 @@ fn main() {
     display_iters:      5,
     checkpoint_iters:   625,
     save_iters:         625,
-    valid_iters:        125,
+    valid_iters:        625,
 
-    checkpoint_dir:     PathBuf::from("models/imagenet_maxscale480-resnet18pool_dev_x2_test"),
+    checkpoint_dir:     PathBuf::from("models/imagenet_maxscale480-resnet18pool_dev_x4_test"),
   };
   info!("sgd: {:?}", sgd_opt_cfg);
 
@@ -117,14 +117,15 @@ fn main() {
 
         let mut train_data =
             AsyncQueueDataIter::new(
-            CyclicSampleDataIter::new(
-            //RandomSampleDataIter::new(
+            //CyclicSampleDataIter::new(
+            RandomSampleDataIter::new(
             VarrayDbShard::open_partition(
                 &PathBuf::from("/rscratch/phj/data/ilsvrc2012_multiv2_shuf/ilsvrc2012_maxscale480_shuf_train_data.varraydb"),
                 &PathBuf::from("/rscratch/phj/data/ilsvrc2012_multiv2_shuf/ilsvrc2012_maxscale480_shuf_train_labels.varraydb"),
                 TurboJpegDataCodec::new(),
                 //worker.worker_rank(), worker.num_workers(),
-                tid, num_local_workers,
+                //tid, num_local_workers,
+                0, 1,
             )));
 
         let mut valid_data =

@@ -71,11 +71,11 @@ pub mod seq;
 pub mod worker;
 
 pub trait OpRead {
-  fn read<'ctx>(&mut self, offset: usize, dst: &mut DeviceBufferRefMut<'ctx, f32>) -> usize;
+  fn read<'ctx>(&'ctx mut self, offset: usize, dst: &mut DeviceBufferRefMut<'ctx, f32>) -> usize;
 }
 
 pub trait OpWrite {
-  fn write<'ctx>(&mut self, offset: usize, src: &DeviceBufferRef<'ctx, f32>) -> usize;
+  fn write<'ctx>(&'ctx mut self, offset: usize, src: &DeviceBufferRef<'ctx, f32>) -> usize;
 }
 
 pub trait OpCursorInner {
@@ -86,7 +86,7 @@ pub trait OpCursorInner {
 
 pub struct OpCursor<T> where T: OpCursorInner {
   pub inner:    T,
-  extra:        T::Extra,
+  pub extra:    T::Extra,
 }
 
 impl<T> OpCursor<T> where T: OpCursorInner {
@@ -108,7 +108,7 @@ impl OpCursorInner for DeviceBuffer<f32> {
 }
 
 impl OpRead for OpCursor<DeviceBuffer<f32>> {
-  fn read<'ctx>(&mut self, offset: usize, dst: &mut DeviceBufferRefMut<'ctx, f32>) -> usize {
+  fn read<'ctx>(&'ctx mut self, offset: usize, dst: &mut DeviceBufferRefMut<'ctx, f32>) -> usize {
     let buf_len = dst.len();
     dst.copy(&mut self.inner.as_ref_range(offset, offset + buf_len, dst.ctx));
     buf_len
@@ -116,7 +116,7 @@ impl OpRead for OpCursor<DeviceBuffer<f32>> {
 }
 
 impl OpWrite for OpCursor<DeviceBuffer<f32>> {
-  fn write<'ctx>(&mut self, offset: usize, src: &DeviceBufferRef<'ctx, f32>) -> usize {
+  fn write<'ctx>(&'ctx mut self, offset: usize, src: &DeviceBufferRef<'ctx, f32>) -> usize {
     let buf_len = src.len();
     self.inner.as_ref_mut_range(offset, offset + buf_len, src.ctx).copy(src);
     buf_len
@@ -124,7 +124,7 @@ impl OpWrite for OpCursor<DeviceBuffer<f32>> {
 }
 
 pub struct ExtentMap {
-  offset_map:   BTreeMap<usize, (usize, usize)>,
+  offset_map:   BTreeMap<usize, (usize, usize, usize)>,
 }
 
 impl ExtentMap {
@@ -134,24 +134,45 @@ impl ExtentMap {
     let mut offset = 0;
     for part_idx in 0 .. num_parts {
       let part_len = part_lens[part_idx];
-      offset_map.insert(offset, (part_idx, part_len));
+      offset_map.insert(offset, (offset, part_idx, part_len));
+      offset_map.insert(offset + part_len - 1, (offset, part_idx, part_len));
       offset += part_len;
     }
+    //println!("DEBUG: extent map: part lens: {:?}", part_lens);
+    //println!("DEBUG: extent map: offsets: {:?}", offset_map);
+    //println!("DEBUG: extent map: offset: {:?}", offset);
     ExtentMap{offset_map: offset_map}
   }
 
   pub fn foreach_extent<F>(&self, lower: usize, upper: usize, mut f: F) where F: FnMut(usize, (usize, usize), (usize, usize)) {
     let buf_len = upper - lower;
     let mut tmp_offset = lower;
-    for (&part_offset, &(part_idx, part_len)) in self.offset_map.range(Bound::Included(&lower), Bound::Excluded(&upper)) {
+    //println!("DEBUG: foreach extent: {} {} {}", lower, upper, buf_len);
+    let mut prev_offset = None;
+    for (_, &(part_offset, part_idx, part_len)) in self.offset_map.range(Bound::Included(&lower), Bound::Unbounded) {
+      if tmp_offset >= upper {
+        break;
+      }
+      match prev_offset {
+        None => {}
+        Some(prev_offset) => if prev_offset == part_offset {
+          continue;
+        }
+      }
+      assert!(part_offset <= tmp_offset);
+      assert!(tmp_offset <= part_offset + part_len);
       let start_i = tmp_offset - part_offset;
-      let end_i = min(part_len, tmp_offset + buf_len - part_offset);
+      let end_i = min(part_len, start_i + min(part_len, buf_len - (tmp_offset - lower)));
+      assert!(0 <= start_i);
+      assert!(start_i <= end_i);
+      assert!(end_i <= part_len);
       let tmp_part_len = end_i - start_i;
-      f(part_idx, (start_i, end_i), (tmp_offset, tmp_offset + tmp_part_len));
-      /*dst.mut_range(tmp_offset, tmp_offset + tmp_part_len)
-        .copy(&mut self.inner[part_idx].as_ref_range(start_i, end_i, dst.ctx));*/
+      //println!("DEBUG:   extent: {} {} {} {}", tmp_offset, start_i, end_i, tmp_part_len);
+      f(part_idx, (start_i, end_i), (tmp_offset - lower, tmp_offset - lower + tmp_part_len));
       tmp_offset += tmp_part_len;
+      prev_offset = Some(part_offset)
     }
+    //println!("DEBUG:   offset: {}", tmp_offset);
     assert_eq!(upper, tmp_offset);
   }
 }
@@ -166,7 +187,7 @@ impl OpCursorInner for Vec<DeviceBuffer<f32>> {
 }
 
 impl OpRead for OpCursor<Vec<DeviceBuffer<f32>>> {
-  fn read<'ctx>(&mut self, offset: usize, dst: &mut DeviceBufferRefMut<'ctx, f32>) -> usize {
+  fn read<'ctx>(&'ctx mut self, offset: usize, dst: &mut DeviceBufferRefMut<'ctx, f32>) -> usize {
     let buf_len = dst.len();
     let &mut OpCursor{ref extra, ref mut inner} = self;
     extra.foreach_extent(offset, offset + buf_len, |part_idx, (part_lower, part_upper), (whole_lower, whole_upper)| {
@@ -178,7 +199,7 @@ impl OpRead for OpCursor<Vec<DeviceBuffer<f32>>> {
 }
 
 impl OpWrite for OpCursor<Vec<DeviceBuffer<f32>>> {
-  fn write<'ctx>(&mut self, offset: usize, src: &DeviceBufferRef<'ctx, f32>) -> usize {
+  fn write<'ctx>(&'ctx mut self, offset: usize, src: &DeviceBufferRef<'ctx, f32>) -> usize {
     let buf_len = src.len();
     let &mut OpCursor{ref extra, ref mut inner} = self;
     extra.foreach_extent(offset, offset + buf_len, |part_idx, (part_lower, part_upper), (whole_lower, whole_upper)| {

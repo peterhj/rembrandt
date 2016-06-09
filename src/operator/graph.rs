@@ -510,20 +510,20 @@ impl Operator for GraphOperator {
     }
   }
 
-  fn read_grad(&mut self, offset: usize, reader: &mut OpRead) -> usize {
-    let mut offset = offset;
+  fn read_grad(&mut self, init_offset: usize, reader: &mut OpRead) -> usize {
+    let mut offset = init_offset;
     for &id in self.fwd_toporder.iter() {
       offset += self.operators[id].read_grad(offset, reader);
     }
-    offset
+    offset - init_offset
   }
 
-  fn write_grad(&mut self, offset: usize, writer: &mut OpWrite) -> usize {
-    let mut offset = offset;
+  fn write_grad(&mut self, init_offset: usize, writer: &mut OpWrite) -> usize {
+    let mut offset = init_offset;
     for &id in self.fwd_toporder.iter() {
       offset += self.operators[id].write_grad(offset, writer);
     }
-    offset
+    offset - init_offset
   }
 
   fn regularize(&mut self, reg: Regularization) {

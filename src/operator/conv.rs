@@ -1,6 +1,6 @@
 use data_new::{SampleLabel};
 use operator::{
-  Operator,
+  Operator, OpRead, OpWrite,
   ActivationFunction,
   ParamsInit,
   Regularization,
@@ -399,6 +399,26 @@ impl Operator for Conv2dOperator {
 
     save_update_weights.serialize(blob).unwrap();
     save_update_bias.serialize(blob).unwrap();
+  }
+
+  fn read_grad(&mut self, init_offset: usize, reader: &mut OpRead) -> usize {
+    assert!(self.backward.is_some());
+    let ctx = &(*self.context).as_ref();
+    let mut backward = self.backward.as_mut().unwrap();
+    let mut offset = init_offset;
+    offset += reader.read(offset, &mut backward.grad_weights.as_view_mut(ctx).data);
+    offset += reader.read(offset, &mut backward.grad_bias.as_view_mut(ctx).data);
+    offset - init_offset
+  }
+
+  fn write_grad(&mut self, init_offset: usize, writer: &mut OpWrite) -> usize {
+    assert!(self.backward.is_some());
+    let ctx = &(*self.context).as_ref();
+    let mut backward = self.backward.as_mut().unwrap();
+    let mut offset = init_offset;
+    offset += writer.write(offset, &mut backward.grad_weights.as_view(ctx).data);
+    offset += writer.write(offset, &mut backward.grad_bias.as_view(ctx).data);
+    offset - init_offset
   }
 
   fn forward(&mut self, batch_size: usize, _phase: OpPhase) {
@@ -1230,6 +1250,34 @@ impl Operator for BNormConv2dOperator {
     let mut save_bn_running_ivar1 = Array2d::zeros(bn_running_ivar1.bound());
     bn_running_ivar1.sync_store(&mut save_bn_running_ivar1.as_view_mut());
     save_bn_running_ivar1.serialize(blob).unwrap();
+  }
+
+  fn read_grad(&mut self, init_offset: usize, reader: &mut OpRead) -> usize {
+    assert!(self.backward.is_some());
+    let ctx = &(*self.context).as_ref();
+    let mut backward = self.backward.as_mut().unwrap();
+    let mut offset = init_offset;
+    offset += reader.read(offset, &mut backward.grad_weights.as_view_mut(ctx).data);
+    offset += reader.read(offset, &mut self.bn_scale1_grad.as_view_mut(ctx).data);
+    offset += reader.read(offset, &mut self.bn_bias1_grad.as_view_mut(ctx).data);
+    offset += self.bn_running_mean1.len();
+    offset += self.bn_running_ivar1.len();
+    //offset += reader.read(offset, &mut backward.grad_bias.as_view_mut(ctx).data);
+    offset - init_offset
+  }
+
+  fn write_grad(&mut self, init_offset: usize, writer: &mut OpWrite) -> usize {
+    assert!(self.backward.is_some());
+    let ctx = &(*self.context).as_ref();
+    let mut backward = self.backward.as_mut().unwrap();
+    let mut offset = init_offset;
+    offset += writer.write(offset, &mut backward.grad_weights.as_view(ctx).data);
+    offset += writer.write(offset, &mut self.bn_scale1_grad.as_view(ctx).data);
+    offset += writer.write(offset, &mut self.bn_bias1_grad.as_view(ctx).data);
+    offset += self.bn_running_mean1.len();
+    offset += self.bn_running_ivar1.len();
+    //offset += writer.write(offset, &mut backward.grad_bias.as_view(ctx).data);
+    offset - init_offset
   }
 
   fn forward(&mut self, batch_size: usize, phase: OpPhase) {

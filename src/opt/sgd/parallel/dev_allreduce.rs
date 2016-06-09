@@ -4,7 +4,7 @@ use opt::sgd::parallel::{ParallelSgdOptWorker};
 //use array::{Shape};
 use array_cuda::device::context::{DeviceContext};
 use array_cuda::device::linalg::{VectorExt};
-use array_cuda::device::memory::{DeviceBufferInitExt, DeviceBuffer};
+use array_cuda::device::memory::{DeviceBufferInitExt, DeviceBuffer, DeviceBufferRef, DeviceBufferRefMut, RawDeviceBuffer};
 use comm_cuda::{RingDeviceBufCommBuilder, RingDeviceBufComm};
 use nccl::{NcclUniqueId, NcclComm, NcclSumOp};
 
@@ -149,11 +149,44 @@ impl ParallelSgdOptWorker for DeviceNcclAllreduceSgdOptWorker {
   }
 }
 
+impl OpCursorInner for RingDeviceBufComm<f32> {
+  type Extra = ExtentMap;
+
+  fn extra(&self) -> ExtentMap {
+    let part_lens: Vec<_> = self.bufs[self.worker_rank()].iter().map(|buf| buf.len()).collect();
+    ExtentMap::new(part_lens)
+  }
+}
+
+impl OpRead for OpCursor<RingDeviceBufComm<f32>> {
+  fn read<'ctx>(&'ctx mut self, offset: usize, dst: &mut DeviceBufferRefMut<'ctx, f32>) -> usize {
+    let buf_len = dst.len();
+    let &mut OpCursor{ref extra, ref inner} = self;
+    extra.foreach_extent(offset, offset + buf_len, |part_idx, (part_lower, part_upper), (rel_lower, rel_upper)| {
+      dst.mut_range(rel_lower, rel_upper)
+        .copy_raw(&inner.bufs[inner.worker_rank()][part_idx].as_ref_range(part_lower, part_upper));
+    });
+    buf_len
+  }
+}
+
+impl OpWrite for OpCursor<RingDeviceBufComm<f32>> {
+  fn write<'ctx>(&'ctx mut self, offset: usize, src: &DeviceBufferRef<'ctx, f32>) -> usize {
+    let buf_len = src.len();
+    let &mut OpCursor{ref extra, ref inner} = self;
+    extra.foreach_extent(offset, offset + buf_len, |part_idx, (part_lower, part_upper), (rel_lower, rel_upper)| {
+      inner.bufs[inner.worker_rank()][part_idx].as_ref_range(part_lower, part_upper)
+        .copy(&src.range(rel_lower, rel_upper));
+    });
+    buf_len
+  }
+}
+
 #[derive(Clone)]
 pub struct DeviceAllreduceSgdOptWorkerBuilder {
   num_workers:  usize,
-  comm_id:  NcclUniqueId,
-  barrier:  Arc<Barrier>,
+  //comm_id:  NcclUniqueId,
+  //barrier:  Arc<Barrier>,
   shared:   Arc<DevWorkerSharedData>,
   comm_builder: RingDeviceBufCommBuilder<f32>,
 }
@@ -165,8 +198,8 @@ impl DeviceAllreduceSgdOptWorkerBuilder {
     };
     DeviceAllreduceSgdOptWorkerBuilder{
       num_workers:  num_workers,
-      comm_id:  NcclUniqueId::create().unwrap(),
-      barrier:  Arc::new(Barrier::new(num_workers)),
+      //comm_id:  NcclUniqueId::create().unwrap(),
+      //barrier:  Arc::new(Barrier::new(num_workers)),
       shared:   Arc::new(shared),
       comm_builder: RingDeviceBufCommBuilder::new(num_workers),
     }
@@ -182,7 +215,7 @@ impl DeviceAllreduceSgdOptWorkerBuilder {
       Some(buf_len) => assert_eq!(params_len, buf_len),
       None => self.comm_builder.set_buf_len(params_len),
     }
-    let comm = self.comm_builder.into_comm(worker_rank, context.clone());
+    let comm = OpCursor::new(self.comm_builder.into_comm(worker_rank, context.clone()));
     let pad = self.num_workers * 32;
     let padded_len = (params_len + pad - 1) / pad * pad;
     let ctx = &(*context).as_ref();
@@ -190,26 +223,12 @@ impl DeviceAllreduceSgdOptWorkerBuilder {
       worker_rank:  worker_rank,
       num_workers:  self.num_workers,
       context:      context.clone(),
-      //comm:         comm,
-      barrier:      self.barrier,
       shared:       self.shared,
       comm:         comm,
       operator:     operator,
       saved_param:  OpCursor::new(DeviceBuffer::zeros(padded_len, ctx)),
-      //src_grad:     OpCursor::new(DeviceBuffer::zeros(padded_len, ctx)),
-      //dst_grad:     OpCursor::new(DeviceBuffer::zeros(padded_len, ctx)),
       sig_chkpt:    false,
     }
-  }
-}
-
-impl OpCursorInner for RingDeviceBufComm<f32> {
-  type Extra = ExtentMap;
-
-  fn extra(&self) -> ExtentMap {
-    //let part_lens: Vec<_> = self.iter().map(|buf| buf.len()).collect();
-    let part_lens = vec![];
-    ExtentMap::new(part_lens)
   }
 }
 
@@ -217,18 +236,10 @@ pub struct DeviceAllreduceSgdOptWorker {
   worker_rank:  usize,
   num_workers:  usize,
   context:      Rc<DeviceContext>,
-  //comm:         NcclComm,
-  barrier:      Arc<Barrier>,
   shared:       Arc<DevWorkerSharedData>,
-  comm:         RingDeviceBufComm<f32>,
-  //comm:         OpCursor<RingDeviceBufComm<f32>>,
-
+  comm:         OpCursor<RingDeviceBufComm<f32>>,
   operator:     Box<CompleteOperator>,
-
   saved_param:  OpCursor<DeviceBuffer<f32>>,
-  //src_grad:     OpCursor<DeviceBuffer<f32>>,
-  //dst_grad:     OpCursor<DeviceBuffer<f32>>,
-
   sig_chkpt:    bool,
 }
 
@@ -247,7 +258,8 @@ impl ParallelSgdOptWorker for DeviceAllreduceSgdOptWorker {
 
   fn wait_checkpoint(&mut self) -> bool {
     if self.sig_chkpt {
-      self.barrier.wait();
+      //self.barrier.wait();
+      self.comm.inner.barrier();
       self.sig_chkpt = false;
       true
     } else {
@@ -276,30 +288,15 @@ impl ParallelSgdOptWorker for DeviceAllreduceSgdOptWorker {
   }
 
   fn stage_grad(&mut self) {
-    // FIXME(20160607)
-    //self.operator.write_grad(0, &mut self.src_grad);
+    self.operator.write_grad(0, &mut self.comm);
   }
 
   fn merge_grad(&mut self) {
-    // FIXME(20160607)
-    //self.operator.read_grad(0, &mut self.dst_grad);
+    self.operator.read_grad(0, &mut self.comm);
   }
 
   fn sync_grad(&mut self) {
-    let ctx = &(*self.context).as_ref();
-    // FIXME(20160607)
-    /*//ctx.sync();
-    //self.barrier.wait();
-    let params_len = self.src_grad.inner.len();
-    unsafe { self.comm.allreduce(
-        self.src_grad.inner.as_ref(ctx).as_ptr(), params_len,
-        self.dst_grad.inner.as_ref_mut(ctx).as_mut_ptr(),
-        NcclSumOp,
-        ctx.stream.ptr,
-    ).unwrap() };
-    //ctx.sync();
-    //self.barrier.wait();
-    // FIXME(20160526): assuming all worker batches are evenly sized.
-    self.dst_grad.inner.as_ref_mut(ctx).vector_scale(1.0 / self.num_workers as f32);*/
+    self.comm.inner.barrier();
+    self.comm.inner.allreduce_average();
   }
 }

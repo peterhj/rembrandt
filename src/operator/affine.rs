@@ -1,6 +1,6 @@
 use data_new::{SampleLabel};
 use operator::{
-  Operator,
+  Operator, OpRead, OpWrite,
   ActivationFunction,
   ParamsInit,
   Regularization,
@@ -285,6 +285,26 @@ impl Operator for AffineOperator {
 
     save_update_weights.serialize(blob).unwrap();
     save_update_bias.serialize(blob).unwrap();
+  }
+
+  fn read_grad(&mut self, init_offset: usize, reader: &mut OpRead) -> usize {
+    assert!(self.backward.is_some());
+    let ctx = &(*self.context).as_ref();
+    let mut backward = self.backward.as_mut().unwrap();
+    let mut offset = init_offset;
+    offset += reader.read(offset, &mut backward.grad_weights.as_view_mut(ctx).data);
+    offset += reader.read(offset, &mut backward.grad_bias.as_view_mut(ctx).data);
+    offset - init_offset
+  }
+
+  fn write_grad(&mut self, init_offset: usize, writer: &mut OpWrite) -> usize {
+    assert!(self.backward.is_some());
+    let ctx = &(*self.context).as_ref();
+    let mut backward = self.backward.as_mut().unwrap();
+    let mut offset = init_offset;
+    offset += writer.write(offset, &mut backward.grad_weights.as_view(ctx).data);
+    offset += writer.write(offset, &mut backward.grad_bias.as_view(ctx).data);
+    offset - init_offset
   }
 
   fn forward(&mut self, batch_size: usize, _phase: OpPhase) {
