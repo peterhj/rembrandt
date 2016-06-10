@@ -50,13 +50,14 @@ use rand::{Rng, SeedableRng, thread_rng};
 use rand::distributions::{IndependentSample};
 use rand::distributions::normal::{Normal};
 use rand::distributions::range::{Range};
-use std::cell::{RefCell};
+use std::cell::{RefCell, Ref, RefMut};
 use std::cmp::{max, min};
 use std::collections::{Bound, BTreeMap};
 use std::fs::{File};
 use std::io::{Cursor};
 use std::iter::{repeat};
 use std::marker::{PhantomData};
+//use std::ops::{Deref};
 use std::path::{PathBuf};
 use std::rc::{Rc};
 
@@ -71,11 +72,13 @@ pub mod seq;
 pub mod worker;
 
 pub trait OpRead {
-  fn read<'ctx>(&'ctx mut self, offset: usize, dst: &mut DeviceBufferRefMut<'ctx, f32>) -> usize;
+  fn read<'a>(&'a mut self, offset: usize, dst: &mut DeviceBufferRefMut<'a, f32>) -> usize;
+  fn accumulate_read<'a>(&'a mut self, offset: usize, alpha: f32, beta: f32, dst: &mut DeviceBufferRefMut<'a, f32>) -> usize { unimplemented!(); }
 }
 
 pub trait OpWrite {
-  fn write<'ctx>(&'ctx mut self, offset: usize, src: &DeviceBufferRef<'ctx, f32>) -> usize;
+  fn write<'a>(&'a mut self, offset: usize, src: &DeviceBufferRef<'a, f32>) -> usize;
+  fn accumulate_write<'a>(&'a mut self, offset: usize, alpha: f32, beta: f32, src: &DeviceBufferRef<'a, f32>) -> usize { unimplemented!(); }
 }
 
 pub trait OpCursorInner {
@@ -110,15 +113,31 @@ impl OpCursorInner for DeviceBuffer<f32> {
 impl OpRead for OpCursor<DeviceBuffer<f32>> {
   fn read<'ctx>(&'ctx mut self, offset: usize, dst: &mut DeviceBufferRefMut<'ctx, f32>) -> usize {
     let buf_len = dst.len();
-    dst.copy(&mut self.inner.as_ref_range(offset, offset + buf_len, dst.ctx));
+    dst.copy(&self.inner.as_ref_range(offset, offset + buf_len, dst.ctx));
+    buf_len
+  }
+
+  fn accumulate_read<'a>(&'a mut self, offset: usize, alpha: f32, beta: f32, dst: &mut DeviceBufferRefMut<'a, f32>) -> usize {
+    let buf_len = dst.len();
+    let src = self.inner.as_ref_range(offset, offset + buf_len, dst.ctx);
+    dst.vector_scale(beta);
+    dst.vector_add(alpha, &src);
     buf_len
   }
 }
 
 impl OpWrite for OpCursor<DeviceBuffer<f32>> {
-  fn write<'ctx>(&'ctx mut self, offset: usize, src: &DeviceBufferRef<'ctx, f32>) -> usize {
+  fn write<'a>(&'a mut self, offset: usize, src: &DeviceBufferRef<'a, f32>) -> usize {
     let buf_len = src.len();
     self.inner.as_ref_mut_range(offset, offset + buf_len, src.ctx).copy(src);
+    buf_len
+  }
+
+  fn accumulate_write<'a>(&'a mut self, offset: usize, alpha: f32, beta: f32, src: &DeviceBufferRef<'a, f32>) -> usize {
+    let buf_len = src.len();
+    let mut dst = self.inner.as_ref_mut_range(offset, offset + buf_len, src.ctx);
+    dst.vector_scale(beta);
+    dst.vector_add(alpha, &src);
     buf_len
   }
 }
@@ -210,6 +229,115 @@ impl OpWrite for OpCursor<Vec<DeviceBuffer<f32>>> {
   }
 }
 
+pub struct CowInput<T> {
+  inner:    Rc<CowIoInner<T>>,
+}
+
+impl<T> CowInput<T> {
+  pub fn new(input: T, num_outputs: usize) -> CowInput<T> {
+    let mut outputs = Vec::with_capacity(num_outputs);
+    for _ in 0 .. num_outputs {
+      outputs.push(RefCell::new(CowData::Passthrough));
+    }
+    CowInput{
+      inner:    Rc::new(CowIoInner{
+        input:      RefCell::new(input),
+        outputs:    outputs,
+      }),
+    }
+  }
+
+  pub fn output(&self, out_idx: usize) -> CowOutput<T> {
+    assert!(out_idx < self.inner.outputs.len());
+    CowOutput{
+      inner:    self.inner.clone(),
+      out_idx:  out_idx,
+    }
+  }
+
+  pub fn borrow(&self) -> Ref<T> {
+    self.inner.input.borrow()
+  }
+
+  pub fn borrow_mut(&self) -> RefMut<T> {
+    self.inner.input.borrow_mut()
+  }
+
+  pub fn foreach_owned<F>(&self, mut map: F)
+  where F: FnMut(&T, &mut T) {
+    let input = self.inner.input.borrow();
+    for output in self.inner.outputs.iter() {
+      let output = output.borrow_mut();
+      if output.is_owned() {
+        let mut output = RefMut::map(output, |r| {
+          match r {
+            &mut CowData::Passthrough => panic!(),
+            &mut CowData::Owned(ref mut owned) => owned,
+          }
+        });
+        map(&*input, &mut *output);
+      }
+    }
+  }
+}
+
+pub struct CowOutput<T> {
+  inner:    Rc<CowIoInner<T>>,
+  out_idx:  usize,
+}
+
+impl<T> CowOutput<T> {
+  pub fn borrow(&self) -> Ref<T> {
+    let output = self.inner.outputs[self.out_idx].borrow();
+    if !output.is_owned() {
+      self.inner.input.borrow()
+    } else {
+      Ref::map(output, |r| {
+        match r {
+          &CowData::Passthrough => panic!(),
+          &CowData::Owned(ref owned) => owned,
+        }
+      })
+    }
+  }
+
+  pub fn borrow_mut<F>(&self, construct: F) -> RefMut<T>
+  where F: FnOnce(&T) -> T {
+    let mut output = self.inner.outputs[self.out_idx].borrow_mut();
+    if !output.is_owned() {
+      *output = CowData::Owned(construct(&*self.inner.input.borrow()));
+    }
+    RefMut::map(output, |r| {
+      match r {
+        &mut CowData::Passthrough => panic!(),
+        &mut CowData::Owned(ref mut owned) => owned,
+      }
+    })
+  }
+}
+
+enum CowData<T> {
+  Passthrough,
+  Owned(T),
+}
+
+impl<T> CowData<T> {
+  pub fn is_owned(&self) -> bool {
+    match self {
+      &CowData::Passthrough => false,
+      &CowData::Owned(_) => true,
+    }
+  }
+}
+
+//impl<T> Deref for CowData<T> {
+//}
+
+struct CowIoInner<T> {
+  input:    RefCell<T>,
+  outputs:  Vec<RefCell<CowData<T>>>,
+}
+
 pub trait OperatorState {
 }
 
@@ -243,7 +371,7 @@ pub trait Operator {
   fn upcast_input(&mut self) -> &mut InputOperator { unreachable!(); }
   fn upcast_loss(&mut self) -> &mut LossOperator { unreachable!(); }
 
-  fn reset_batch(&self) { unimplemented!(); }
+  //fn reset_batch(&self) { unimplemented!(); }
   #[deprecated] fn batch_size(&self) -> usize { unimplemented!(); }
   fn params_len(&self) -> usize { 0 }
   fn get_output_act(&self, _arm: usize) -> SharedDeviceBuf<f32> { unimplemented!(); }
@@ -257,16 +385,24 @@ pub trait Operator {
   fn decode_state(&mut self, _blob: &[u8]) -> usize { 0 }
   fn encode_state(&mut self, _blob: &mut Vec<u8>) {}
   fn read_param(&mut self, _offset: usize, _reader: &mut OpRead) -> usize { 0 }
+  fn update_param_(&mut self, _offset: usize, _step_size: f32, _acc_grad_reader: &mut OpRead) -> usize { 0 }
   fn write_param(&mut self, _offset: usize, _writer: &mut OpWrite) -> usize { 0 }
   fn forward(&mut self, batch_size: usize, phase: OpPhase);
 
   // Requires `Backward` capability.
   fn reset(&mut self) {}
   fn reset_grad(&mut self) { unimplemented!(); }
+  fn step_grad(&mut self, _step_size: f32) { unimplemented!(); }
   fn read_grad(&mut self, _offset: usize, _reader: &mut OpRead) -> usize { 0 }
   fn write_grad(&mut self, _offset: usize, _writer: &mut OpWrite) -> usize { 0 }
+  fn accumulate_grad_(&mut self, _offset: usize, _alpha: f32, _mu: f32, _acc_grad_writer: &mut OpWrite) -> usize { 0 }
   fn backward(&mut self, batch_size: usize);
   fn regularize(&mut self, _reg: Regularization) {}
+
+  fn reset_stats(&mut self, _batch_size: usize) {}
+  fn estimate_stats(&mut self, _batch_size: usize) {}
+  fn update_stats(&mut self, _batch_size: usize) {}
+
   fn accumulate_grad(&mut self, _scale: f32, _momentum: f32) {}
   fn update_param(&mut self, _scale: f32) {}
   fn update_param2(&mut self, _grad_scale: f32, _update_scale: f32) {}

@@ -88,7 +88,7 @@ fn main() {
     momentum:       Momentum::UpdateNesterov{mu: 0.9},
     //momentum:       Momentum::GradientNesterov{mu: 0.9},
     l2_reg_coef:    1.0e-4,
-    display_iters:      5,
+    display_iters:      25,
     checkpoint_iters:   625,
     save_iters:         625,
     valid_iters:        625,

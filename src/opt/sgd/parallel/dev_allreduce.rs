@@ -17,7 +17,7 @@ struct DevWorkerSharedData {
   shared_seed:  [u64; 2],
 }
 
-#[derive(Clone)]
+/*#[derive(Clone)]
 pub struct DeviceNcclAllreduceSgdOptWorkerBuilder {
   num_workers:  usize,
   comm_id:  NcclUniqueId,
@@ -147,7 +147,7 @@ impl ParallelSgdOptWorker for DeviceNcclAllreduceSgdOptWorker {
     // FIXME(20160526): assuming all worker batches are evenly sized.
     self.dst_grad.inner.as_ref_mut(ctx).vector_scale(1.0 / self.num_workers as f32);
   }
-}
+}*/
 
 impl OpCursorInner for RingDeviceBufComm<f32> {
   type Extra = ExtentMap;
@@ -244,6 +244,14 @@ pub struct DeviceAllreduceSgdOptWorker {
 }
 
 impl ParallelSgdOptWorker for DeviceAllreduceSgdOptWorker {
+  fn worker_rank(&self) -> usize {
+    self.worker_rank
+  }
+
+  fn num_workers(&self) -> usize {
+    self.num_workers
+  }
+
   fn operator(&mut self) -> &mut CompleteOperator {
     &mut *self.operator
   }

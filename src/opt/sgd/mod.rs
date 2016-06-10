@@ -3,11 +3,11 @@ use data_new::{
   DataIterator,
   SampleDatum, SampleDatumConfig, SampleLabel, SampleLabelConfig, 
 };
-use operator::{Operator, CompleteOperator, OpPhase, Regularization};
+use operator::{Operator, CompleteOperator, OpRead, OpWrite, OpCursor, OpPhase, Regularization};
 use operator::worker::{OperatorWorker};
 
 use array::{Shape};
-//use array_cuda::device::context::{DeviceCtxRef};
+use array_cuda::device::{DeviceCtxRef, DeviceBuffer, DeviceBufferInitExt};
 
 use rand::{Rng, thread_rng};
 use std::fs::{File, OpenOptions, create_dir_all};
@@ -185,6 +185,45 @@ impl OptSharedData {
     fence(Ordering::AcqRel);
   }
 }*/
+
+pub trait SgdOptState {
+  fn accumulated_grad_reader(&mut self) -> &mut OpRead;
+  fn accumulated_grad_writer(&mut self) -> &mut OpWrite;
+  fn saved_param_reader(&mut self) -> &mut OpRead;
+  fn saved_param_writer(&mut self) -> &mut OpWrite;
+}
+
+pub struct DeviceSgdOptState {
+  acc_grad:     OpCursor<DeviceBuffer<f32>>,
+  saved_param:  OpCursor<DeviceBuffer<f32>>,
+}
+
+impl DeviceSgdOptState {
+  pub fn new(params_len: usize, ctx: &DeviceCtxRef) -> DeviceSgdOptState {
+    DeviceSgdOptState{
+      acc_grad:     OpCursor::new(DeviceBuffer::zeros(params_len, ctx)),
+      saved_param:  OpCursor::new(DeviceBuffer::zeros(params_len, ctx)),
+    }
+  }
+}
+
+impl SgdOptState for DeviceSgdOptState {
+  fn accumulated_grad_reader(&mut self) -> &mut OpRead {
+    &mut self.acc_grad
+  }
+
+  fn accumulated_grad_writer(&mut self) -> &mut OpWrite {
+    &mut self.acc_grad
+  }
+
+  fn saved_param_reader(&mut self) -> &mut OpRead {
+    &mut self.saved_param
+  }
+
+  fn saved_param_writer(&mut self) -> &mut OpWrite {
+    &mut self.saved_param
+  }
+}
 
 #[derive(Clone, Debug)]
 pub struct SerialSgdOptConfig {
@@ -501,7 +540,7 @@ impl SerialSgdOpt {
     let acc_correct_count = display_acc_correct_count;
     let acc_total_count = display_acc_total_count;
     let accuracy = acc_correct_count as f32 / acc_total_count as f32;
-    let avg_loss = display_acc_loss / self.config.display_iters as f32;
+    let avg_loss = display_acc_loss;
     info!("SgdOpt: valid: samples: {} loss: {:.06} accuracy: {:.03} elapsed: {:.03} s",
         epoch_size,
         avg_loss,

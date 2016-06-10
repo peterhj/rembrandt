@@ -897,6 +897,10 @@ pub struct BNormConv2dOperator {
   out_delta:    SharedDeviceBuf<f32>,
 
   weights:      DeviceArray2d<f32>,
+  scale:        DeviceBuffer<f32>,
+  bias:         DeviceBuffer<f32>,
+  stats_mean:   DeviceBuffer<f32>,
+  stats_ivar:   DeviceBuffer<f32>,
 
   workspace:    DeviceBuffer<u8>,
   conv_fwd:     CudnnConvFwdOp,
@@ -922,13 +926,16 @@ pub struct BNormConv2dOperator {
   batchnorm1:           CudnnBatchNormOp,
 
   backward:     Option<BNormConv2dBwdOperator>,
-  hv_backward:  Option<BNormConv2dHvBwdOperator>,
+  r_forward:    Option<BNormConv2dRFwdOperator>,
 }
 
 struct BNormConv2dBwdOperator {
   grad_weights: DeviceArray2d<f32>,
   acc_grad_weights: DeviceArray2d<f32>,
   save_weights: DeviceArray2d<f32>,
+
+  stats_mean_batch: DeviceBuffer<f32>,
+  stats_var_batch:  DeviceBuffer<f32>,
 
   conv_bwd_w:   CudnnConvBwdFilterOp,
   conv_bwd_d:   CudnnConvBwdDataOp,
@@ -938,8 +945,7 @@ struct BNormConv2dBwdOperator {
   //comm_worker:  Rc<RefCell<Comm>>,
 }
 
-struct BNormConv2dHvBwdOperator {
-  dir_weights:  DeviceArray2d<f32>,
+struct BNormConv2dRFwdOperator {
 }
 
 impl BNormConv2dOperator {
@@ -992,9 +998,11 @@ impl BNormConv2dOperator {
       workspace_size = max(workspace_size, conv_bwd_d.work_size);
 
       Some(BNormConv2dBwdOperator{
-        grad_weights: DeviceArray2d::<f32>::zeros((conv_size * conv_size * in_channels, out_channels), ctx),
+        grad_weights:     DeviceArray2d::<f32>::zeros((conv_size * conv_size * in_channels, out_channels), ctx),
         acc_grad_weights: DeviceArray2d::<f32>::zeros((conv_size * conv_size * in_channels, out_channels), ctx),
-        save_weights: DeviceArray2d::<f32>::zeros((conv_size * conv_size * in_channels, out_channels), ctx),
+        save_weights:     DeviceArray2d::<f32>::zeros((conv_size * conv_size * in_channels, out_channels), ctx),
+        stats_mean_batch: DeviceBuffer::zeros(out_channels, ctx),
+        stats_var_batch:  DeviceBuffer::zeros(out_channels, ctx),
         conv_bwd_w:   conv_bwd_w,
         conv_bwd_d:   conv_bwd_d,
         first_batch1: true,
@@ -1026,6 +1034,10 @@ impl BNormConv2dOperator {
       out_delta:    Rc::new(RefCell::new(DeviceBuffer::<f32>::zeros(out_length * batch_size, ctx))),
 
       weights:      DeviceArray2d::<f32>::zeros((conv_size * conv_size * in_channels, out_channels), ctx),
+      scale:        DeviceBuffer::zeros(out_channels, ctx),
+      bias:         DeviceBuffer::zeros(out_channels, ctx),
+      stats_mean:   DeviceBuffer::zeros(out_channels, ctx),
+      stats_ivar:   DeviceBuffer::zeros(out_channels, ctx),
 
       workspace:    DeviceBuffer::<u8>::zeros(workspace_size, ctx),
       conv_fwd:     conv_fwd,
@@ -1051,7 +1063,7 @@ impl BNormConv2dOperator {
       batchnorm1:           batchnorm1,
 
       backward:     backward,
-      hv_backward:  None,
+      r_forward:    None,
     }
   }
 }
@@ -1490,6 +1502,14 @@ impl Operator for BNormConv2dOperator {
         _ => unimplemented!(),
       }
     }
+  }
+
+  fn r_forward(&mut self, batch_size: usize) {
+    assert!(self.r_forward.is_some());
+    assert!(batch_size <= self.batch_cap);
+
+    // FIXME(20160609)
+    unimplemented!();
   }
 
   fn regularize(&mut self, reg: Regularization) {
