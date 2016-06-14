@@ -1181,6 +1181,8 @@ impl Operator for BNormConv2dOperator {
     self.bias.as_ref_mut(ctx).set_constant(0.0);
     self.stats_mean.as_ref_mut(ctx).set_constant(0.0);
     self.stats_istd.as_ref_mut(ctx).set_constant(1.0);
+    self.bn_cached_mean1.as_view_mut(ctx).set_constant(0.0);
+    self.bn_cached_ivar1.as_view_mut(ctx).set_constant(1.0);
 
     /*self.bn_scale2.as_view_mut(ctx).set_constant(1.0);
     self.bn_bias2.as_view_mut(ctx).set_constant(0.0);
@@ -1332,14 +1334,14 @@ impl Operator for BNormConv2dOperator {
     let bn_running_mean1 = self.bn_cached_mean1.as_view(ctx);
     let mut save_bn_running_mean1 = Array2d::zeros(bn_running_mean1.bound());
     bn_running_mean1.sync_store(&mut save_bn_running_mean1.as_view_mut());
-    save_bn_running_mean1.serialize(blob).unwrap();*/
-
-    unimplemented!();
+    save_bn_running_mean1.serialize(blob).unwrap();
 
     let bn_running_ivar1 = self.bn_cached_ivar1.as_view(ctx);
     let mut save_bn_running_ivar1 = Array2d::zeros(bn_running_ivar1.bound());
     bn_running_ivar1.sync_store(&mut save_bn_running_ivar1.as_view_mut());
-    save_bn_running_ivar1.serialize(blob).unwrap();
+    save_bn_running_ivar1.serialize(blob).unwrap();*/
+
+    unimplemented!();
   }
 
   fn reset_grad(&mut self) {
@@ -1386,8 +1388,9 @@ impl Operator for BNormConv2dOperator {
     offset += writer.accumulate_write(offset, alpha, mu, &backward.grad_weights.as_view(ctx).data);
     offset += writer.accumulate_write(offset, alpha, mu, &backward.scale_grad.as_ref(ctx));
     offset += writer.accumulate_write(offset, alpha, mu, &backward.bias_grad.as_ref(ctx));
-    offset += writer.write(offset, &backward.stats_mean_batch.as_ref(ctx));
-    offset += writer.write(offset, &backward.stats_var_batch.as_ref(ctx));
+    offset += 2 * self.config.out_channels;
+    /*offset += writer.write(offset, &backward.stats_mean_batch.as_ref(ctx));
+    offset += writer.write(offset, &backward.stats_var_batch.as_ref(ctx));*/
 
     offset - init_offset
   }
@@ -1401,10 +1404,11 @@ impl Operator for BNormConv2dOperator {
     offset += reader.accumulate_read(offset, step_size, 1.0, &mut self.weights.as_view_mut(ctx).data);
     offset += reader.accumulate_read(offset, step_size, 1.0, &mut self.scale.as_ref_mut(ctx));
     offset += reader.accumulate_read(offset, step_size, 1.0, &mut self.bias.as_ref_mut(ctx));
-    offset += reader.read(offset, &mut backward.stats_mean_acc.as_ref_mut(ctx));
-    offset += reader.read(offset, &mut backward.stats_var_acc.as_ref_mut(ctx));
+    offset += 2 * self.config.out_channels;
+    /*offset += reader.read(offset, &mut backward.stats_mean_acc.as_ref_mut(ctx));
+    offset += reader.read(offset, &mut backward.stats_var_acc.as_ref_mut(ctx));*/
 
-    backward.iter_counter += 1;
+    /*backward.iter_counter += 1;
     let factor = match self.config.bnorm_mov_avg {
       BNormMovingAverage::Cumulative => {
         backward.iter_counter as f32
@@ -1424,7 +1428,7 @@ impl Operator for BNormConv2dOperator {
         self.config.bnorm_epsilon as f32,
         self.stats_istd.as_ref_mut(ctx).as_mut_ptr(),
         ctx.stream.ptr,
-    ) };
+    ) };*/
 
     offset - init_offset
   }
@@ -1565,9 +1569,9 @@ impl Operator for BNormConv2dOperator {
       ref mut tmp_act, ref mut tmp_delta,
       .. } = self;
     let mut backward = backward.as_mut().unwrap();
-    let &mut BNormConv2dBwdOperator{
+    /*let &mut BNormConv2dBwdOperator{
       ref mut grad_weights,
-      .. } = backward;
+      .. } = backward;*/
 
     let ctx = &(**context).as_ref();
     //let in_act = in_act.borrow_mut().as_ref(ctx);
@@ -1617,7 +1621,7 @@ impl Operator for BNormConv2dOperator {
         pre_act.as_ref(ctx).as_ptr(),
         tmp_delta.as_ref(ctx).as_ptr(),
         1.0,
-        grad_weights.as_view_mut(ctx).as_mut_ptr(),
+        backward.grad_weights.as_view_mut(ctx).as_mut_ptr(),
         workspace.as_mut_ptr(),
         &*ctx.get_dnn(),
     ).unwrap() };

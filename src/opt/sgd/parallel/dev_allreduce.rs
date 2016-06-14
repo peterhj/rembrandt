@@ -3,7 +3,7 @@ use opt::sgd::parallel::{ParallelSgdOptWorker};
 
 //use array::{Shape};
 use array_cuda::device::context::{DeviceContext};
-use array_cuda::device::linalg::{VectorExt};
+use array_cuda::device::linalg::{VectorExt, AsyncVectorExt};
 use array_cuda::device::memory::{DeviceBufferInitExt, DeviceBuffer, DeviceBufferRef, DeviceBufferRefMut, RawDeviceBuffer};
 use comm_cuda::{RingDeviceBufCommBuilder, RingDeviceBufComm};
 use nccl::{NcclUniqueId, NcclComm, NcclSumOp};
@@ -159,7 +159,7 @@ impl OpCursorInner for RingDeviceBufComm<f32> {
 }
 
 impl OpRead for OpCursor<RingDeviceBufComm<f32>> {
-  fn read<'ctx>(&'ctx mut self, offset: usize, dst: &mut DeviceBufferRefMut<'ctx, f32>) -> usize {
+  fn read<'a>(&'a mut self, offset: usize, dst: &mut DeviceBufferRefMut<'a, f32>) -> usize {
     let buf_len = dst.len();
     let &mut OpCursor{ref extra, ref inner} = self;
     extra.foreach_extent(offset, offset + buf_len, |part_idx, (part_lower, part_upper), (rel_lower, rel_upper)| {
@@ -168,15 +168,37 @@ impl OpRead for OpCursor<RingDeviceBufComm<f32>> {
     });
     buf_len
   }
+
+  fn accumulate_read<'a>(&'a mut self, offset: usize, alpha: f32, beta: f32, dst: &mut DeviceBufferRefMut<'a, f32>) -> usize {
+    let buf_len = dst.len();
+    let &mut OpCursor{ref extra, ref inner} = self;
+    extra.foreach_extent(offset, offset + buf_len, |part_idx, (part_lower, part_upper), (rel_lower, rel_upper)| {
+      let src = inner.bufs[inner.worker_rank()][part_idx].as_ref_range(part_lower, part_upper);
+      dst.mut_range(rel_lower, rel_upper).vector_scale(beta);
+      dst.mut_range(rel_lower, rel_upper).vector_add_raw(alpha, &src);
+    });
+    buf_len
+  }
 }
 
 impl OpWrite for OpCursor<RingDeviceBufComm<f32>> {
-  fn write<'ctx>(&'ctx mut self, offset: usize, src: &DeviceBufferRef<'ctx, f32>) -> usize {
+  fn write<'a>(&'a mut self, offset: usize, src: &DeviceBufferRef<'a, f32>) -> usize {
     let buf_len = src.len();
     let &mut OpCursor{ref extra, ref inner} = self;
     extra.foreach_extent(offset, offset + buf_len, |part_idx, (part_lower, part_upper), (rel_lower, rel_upper)| {
       inner.bufs[inner.worker_rank()][part_idx].as_ref_range(part_lower, part_upper)
         .copy(&src.range(rel_lower, rel_upper));
+    });
+    buf_len
+  }
+
+  fn accumulate_write<'a>(&'a mut self, offset: usize, alpha: f32, beta: f32, src: &DeviceBufferRef<'a, f32>) -> usize {
+    let buf_len = src.len();
+    let &mut OpCursor{ref extra, ref inner} = self;
+    extra.foreach_extent(offset, offset + buf_len, |part_idx, (part_lower, part_upper), (rel_lower, rel_upper)| {
+      let mut dst = inner.bufs[inner.worker_rank()][part_idx].as_ref_range(part_lower, part_upper);
+      dst.async_vector_scale(beta, &src.ctx);
+      dst.async_vector_add(alpha, &src.range(rel_lower, rel_upper));
     });
     buf_len
   }
@@ -226,6 +248,7 @@ impl DeviceAllreduceSgdOptWorkerBuilder {
       shared:       self.shared,
       operator:     operator,
       comm:         comm,
+      grad_acc:     OpCursor::new(DeviceBuffer::zeros(padded_len, ctx)),
       saved_param:  OpCursor::new(DeviceBuffer::zeros(padded_len, ctx)),
       sig_chkpt:    false,
     }
@@ -239,6 +262,7 @@ pub struct DeviceAllreduceSgdOptWorker {
   shared:       Arc<DevWorkerSharedData>,
   operator:     Box<CompleteOperator>,
   comm:         OpCursor<RingDeviceBufComm<f32>>,
+  grad_acc:     OpCursor<DeviceBuffer<f32>>,
   saved_param:  OpCursor<DeviceBuffer<f32>>,
   sig_chkpt:    bool,
 }
@@ -296,23 +320,25 @@ impl ParallelSgdOptWorker for DeviceAllreduceSgdOptWorker {
   }
 
   fn stage_grad(&mut self) {
-    self.operator.write_grad(0, &mut self.comm);
-  }
-
-  fn accumulate_grad(&mut self, alpha: f32, mu: f32) {
-    self.operator.accumulate_grad_(0, alpha, mu, &mut self.comm);
   }
 
   fn sync_grad(&mut self) {
+    self.operator.write_grad(0, &mut self.comm);
     self.comm.inner.barrier();
     self.comm.inner.allreduce_average();
-  }
-
-  fn merge_grad(&mut self) {
     self.operator.read_grad(0, &mut self.comm);
   }
 
+  fn merge_grad(&mut self) {
+  }
+
+  fn accumulate_grad(&mut self, alpha: f32, mu: f32) {
+    /*let ctx = &(*self.context).as_ref();
+    self.comm.accumulate_read(0, alpha, mu, &mut self.grad_acc.inner.as_ref_mut(ctx));*/
+    self.operator.accumulate_grad_(0, alpha, mu, &mut self.grad_acc);
+  }
+
   fn step(&mut self, step_size: f32) {
-    self.operator.step(0, step_size, &mut self.comm);
+    self.operator.step(0, step_size, &mut self.grad_acc);
   }
 }

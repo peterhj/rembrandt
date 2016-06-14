@@ -411,11 +411,11 @@ impl GraphOperator {
     let fwd_toporder = topsort(&bwd_in_edges);
     let bwd_toporder = topsort(&fwd_in_edges);
 
-    println!("DEBUG: key ids:   {:?}", config.key_ids);
+    /*println!("DEBUG: key ids:   {:?}", config.key_ids);
     println!("DEBUG: fwd edges: {:?}", fwd_in_edges);
     println!("DEBUG: bwd edges: {:?}", bwd_in_edges);
     println!("DEBUG: fwd order: {:?}", fwd_toporder);
-    println!("DEBUG: bwd order: {:?}", bwd_toporder);
+    println!("DEBUG: bwd order: {:?}", bwd_toporder);*/
 
     let mut operators_map: BTreeMap<usize, Box<Operator>> = BTreeMap::new();
     let mut input_ops = vec![];
@@ -522,6 +522,22 @@ impl Operator for GraphOperator {
     let mut offset = init_offset;
     for &id in self.fwd_toporder.iter() {
       offset += self.operators[id].write_grad(offset, writer);
+    }
+    offset - init_offset
+  }
+
+  fn accumulate_grad_(&mut self, init_offset: usize, alpha: f32, mu: f32, writer: &mut OpWrite) -> usize {
+    let mut offset = init_offset;
+    for &id in self.fwd_toporder.iter() {
+      offset += self.operators[id].accumulate_grad_(offset, alpha, mu, writer);
+    }
+    offset - init_offset
+  }
+
+  fn step(&mut self, init_offset: usize, step_size: f32, reader: &mut OpRead) -> usize {
+    let mut offset = init_offset;
+    for &id in self.fwd_toporder.iter() {
+      offset += self.operators[id].step(offset, step_size, reader);
     }
     offset - init_offset
   }

@@ -302,8 +302,8 @@ impl Operator for AffineOperator {
     let ctx = &(*self.context).as_ref();
     let mut backward = self.backward.as_mut().unwrap();
     let mut offset = init_offset;
-    offset += writer.write(offset, &mut backward.grad_weights.as_view(ctx).data);
-    offset += writer.write(offset, &mut backward.grad_bias.as_view(ctx).data);
+    offset += writer.write(offset, &backward.grad_weights.as_view(ctx).data);
+    offset += writer.write(offset, &backward.grad_bias.as_view(ctx).data);
     offset - init_offset
   }
 

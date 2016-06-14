@@ -84,9 +84,8 @@ fn main() {
       step1: 0.01,  step1_iters: 150_000,
       step2: 0.001, step2_iters: 300_000,
     },
-    //momentum:       MomentumStyle::Zero,
+    //momentum:       Momentum::Zero,
     momentum:       Momentum::UpdateNesterov{mu: 0.9},
-    //momentum:       Momentum::GradientNesterov{mu: 0.9},
     l2_reg_coef:    1.0e-4,
     display_iters:      25,
     checkpoint_iters:   625,
@@ -111,7 +110,9 @@ fn main() {
       let guard = scope.spawn(move || {
         let context = Rc::new(DeviceContext::new(tid));
         let operator_cfg = build_resnet18pool_var224x224();
-        info!("operator: {:?}", operator_cfg);
+        if tid == 0 {
+          info!("operator: {:?}", operator_cfg);
+        }
         let operator = Box::new(GraphOperator::new(operator_cfg, batch_size, OpCapability::Backward, context.clone()));
         let mut worker = builder.into_worker(tid, context, operator);
 

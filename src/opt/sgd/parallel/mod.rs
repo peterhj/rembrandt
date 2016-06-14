@@ -39,9 +39,9 @@ pub trait ParallelSgdOptWorker {
   fn merge_param(&mut self);
 
   fn stage_grad(&mut self);
-  fn accumulate_grad(&mut self, alpha: f32, mu: f32);
   fn sync_grad(&mut self);
   fn merge_grad(&mut self);
+  fn accumulate_grad(&mut self, alpha: f32, mu: f32);
   fn step(&mut self, step_size: f32);
 }
 
@@ -129,13 +129,16 @@ impl ParallelSgdOpt {
     //let seed = [thread_rng().next_u64(), thread_rng().next_u64()];
     let shared_seed = worker.shared_seed();
     worker.operator().init_param(shared_seed);
+    worker.operator().reset();
 
     // If we are using the standard Nesterov update, apply some extra
     // momentum before the next iteration begins.
     match self.config.momentum {
       Momentum::UpdateNesterov{mu} => {
         if init_t > 0 {
-          worker.operator().update_param(mu);
+          //worker.operator().update_param(mu);
+          let step_size = self.config.step_size.at_iter(init_t);
+          worker.step(-mu * step_size);
         }
       }
       _ => {}
@@ -184,10 +187,10 @@ impl ParallelSgdOpt {
         }
         worker.operator().stage_label(batch_counter, &maybe_label.unwrap());
         worker.operator().stage_weight(batch_counter, minibatch_weight);
+        batch_counter += 1;
         local_counter += 1;
         epoch_counter = local_counter / epoch_size;
         let epoch_offset = local_counter % epoch_size;
-        batch_counter += 1;
 
         // With a full batch of data, compute a full forward/backward pass.
         assert!(batch_counter <= batch_size);
@@ -223,7 +226,8 @@ impl ParallelSgdOpt {
           match self.config.momentum {
             Momentum::UpdateNesterov{mu} => {
               if iter_counter > 0 {
-                worker.operator().update_param(-mu);
+                //worker.operator().update_param(-mu);
+                worker.step(mu * step_size);
               }
             }
             _ => {}
@@ -232,30 +236,29 @@ impl ParallelSgdOpt {
           // Increase the iteration counter _before_ updates and communication.
           iter_counter += 1;
 
-          worker.stage_grad();
+          // Communicate to synchronize the gradient.
           worker.sync_grad();
-          worker.merge_grad();
 
           // Compute the update, possibly with momentum.
           match self.config.momentum {
-            Momentum::Zero                  => worker.operator().accumulate_grad(-step_size, 0.0),
+            Momentum::Zero                  => worker.accumulate_grad(1.0, 0.0),
             Momentum::Update{mu} |
-            Momentum::UpdateNesterov{mu}    => worker.operator().accumulate_grad(-step_size, mu),
+            Momentum::UpdateNesterov{mu}    => worker.accumulate_grad(1.0, mu),
             // XXX(20160422): These are the Torch `optim.sgd`-style update;
             // see: <https://github.com/torch/optim/blob/master/sgd.lua>.
-            Momentum::Gradient{mu}          => worker.operator().accumulate_grad(1.0, mu),
-            Momentum::GradientNesterov{mu}  => worker.operator().accumulate_grad(1.0, mu),
+            Momentum::Gradient{mu}          => unimplemented!(),
+            Momentum::GradientNesterov{mu}  => unimplemented!(),
           }
 
           // Apply the update, possibly with momentum.
           match self.config.momentum {
-            Momentum::Zero                  => worker.operator().update_param(1.0),
+            Momentum::Zero                  => worker.step(-step_size),
             Momentum::Update{mu} |
-            Momentum::UpdateNesterov{mu}    => worker.operator().update_param(1.0),
+            Momentum::UpdateNesterov{mu}    => worker.step(-step_size),
             // XXX(20160422): These are the Torch `optim.sgd`-style update;
             // see: <https://github.com/torch/optim/blob/master/sgd.lua>.
-            Momentum::Gradient{mu}          => worker.operator().update_param(-step_size),
-            Momentum::GradientNesterov{mu}  => worker.operator().update_param2(-step_size, -step_size * mu),
+            Momentum::Gradient{mu}          => unimplemented!(),
+            Momentum::GradientNesterov{mu}  => unimplemented!(),
           }
 
           let minibatch_lap_time = get_time();
@@ -303,6 +306,8 @@ impl ParallelSgdOpt {
           }
 
           worker.operator().reset();
+          //worker.operator().reset_grad();
+          //worker.operator().reset_stats();
 
           // If we are using the standard Nesterov update, apply some extra
           // momentum before the next iteration begins.
@@ -311,7 +316,8 @@ impl ParallelSgdOpt {
           //worker.operator().set_grad_with_param_diff();
           match self.config.momentum {
             Momentum::UpdateNesterov{mu} => {
-              worker.operator().update_param(mu);
+              //worker.operator().update_param(mu);
+              worker.step(-mu * step_size);
             }
             _ => {}
           }
