@@ -307,6 +307,30 @@ impl Operator for AffineOperator {
     offset - init_offset
   }
 
+  fn accumulate_grad_(&mut self, init_offset: usize, alpha: f32, mu: f32, writer: &mut OpWrite) -> usize {
+    assert!(self.backward.is_some());
+    let ctx = &(*self.context).as_ref();
+    let mut backward = self.backward.as_mut().unwrap();
+    let mut offset = init_offset;
+
+    offset += writer.accumulate_write(offset, alpha, mu, &backward.grad_weights.as_view(ctx).data);
+    offset += writer.accumulate_write(offset, alpha, mu, &backward.grad_bias.as_view(ctx).data);
+
+    offset - init_offset
+  }
+
+  fn step(&mut self, init_offset: usize, step_size: f32, reader: &mut OpRead) -> usize {
+    assert!(self.backward.is_some());
+    let ctx = &(*self.context).as_ref();
+    let mut backward = self.backward.as_mut().unwrap();
+    let mut offset = init_offset;
+
+    offset += reader.accumulate_read(offset, step_size, 1.0, &mut self.weights.as_view_mut(ctx).data);
+    offset += reader.accumulate_read(offset, step_size, 1.0, &mut self.bias.as_view_mut(ctx).data);
+
+    offset - init_offset
+  }
+
   fn forward(&mut self, batch_size: usize, _phase: OpPhase) {
     assert!(batch_size <= self.batch_cap);
     let in_channels = self.config.in_channels;

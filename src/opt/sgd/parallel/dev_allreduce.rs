@@ -224,8 +224,8 @@ impl DeviceAllreduceSgdOptWorkerBuilder {
       num_workers:  self.num_workers,
       context:      context.clone(),
       shared:       self.shared,
-      comm:         comm,
       operator:     operator,
+      comm:         comm,
       saved_param:  OpCursor::new(DeviceBuffer::zeros(padded_len, ctx)),
       sig_chkpt:    false,
     }
@@ -237,8 +237,8 @@ pub struct DeviceAllreduceSgdOptWorker {
   num_workers:  usize,
   context:      Rc<DeviceContext>,
   shared:       Arc<DevWorkerSharedData>,
-  comm:         OpCursor<RingDeviceBufComm<f32>>,
   operator:     Box<CompleteOperator>,
+  comm:         OpCursor<RingDeviceBufComm<f32>>,
   saved_param:  OpCursor<DeviceBuffer<f32>>,
   sig_chkpt:    bool,
 }
@@ -287,11 +287,11 @@ impl ParallelSgdOptWorker for DeviceAllreduceSgdOptWorker {
     unimplemented!();
   }
 
-  fn merge_param(&mut self) {
+  fn sync_param(&mut self) {
     unimplemented!();
   }
 
-  fn sync_param(&mut self) {
+  fn merge_param(&mut self) {
     unimplemented!();
   }
 
@@ -299,12 +299,20 @@ impl ParallelSgdOptWorker for DeviceAllreduceSgdOptWorker {
     self.operator.write_grad(0, &mut self.comm);
   }
 
-  fn merge_grad(&mut self) {
-    self.operator.read_grad(0, &mut self.comm);
+  fn accumulate_grad(&mut self, alpha: f32, mu: f32) {
+    self.operator.accumulate_grad_(0, alpha, mu, &mut self.comm);
   }
 
   fn sync_grad(&mut self) {
     self.comm.inner.barrier();
     self.comm.inner.allreduce_average();
+  }
+
+  fn merge_grad(&mut self) {
+    self.operator.read_grad(0, &mut self.comm);
+  }
+
+  fn step(&mut self, step_size: f32) {
+    self.operator.step(0, step_size, &mut self.comm);
   }
 }

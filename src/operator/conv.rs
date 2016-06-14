@@ -20,7 +20,7 @@ use array::{
 use array_cuda::device::array::{DeviceArray2d};
 use array_cuda::device::context::{DeviceContext, DeviceCtxRef};
 use array_cuda::device::ext::{DeviceCastBytesExt, DeviceNumExt};
-use array_cuda::device::linalg::{BlasMatrixExt, BlasVectorExt, Transpose};
+use array_cuda::device::linalg::{VectorExt, BlasMatrixExt, BlasVectorExt, Transpose};
 use array_cuda::device::memory::{DeviceBufferInitExt, DeviceBuffer};
 use array_cuda::device::random::{RandomSampleExt, UniformDist};
 use cuda_dnn::v4::{
@@ -416,8 +416,32 @@ impl Operator for Conv2dOperator {
     let ctx = &(*self.context).as_ref();
     let mut backward = self.backward.as_mut().unwrap();
     let mut offset = init_offset;
-    offset += writer.write(offset, &mut backward.grad_weights.as_view(ctx).data);
-    offset += writer.write(offset, &mut backward.grad_bias.as_view(ctx).data);
+    offset += writer.write(offset, &backward.grad_weights.as_view(ctx).data);
+    offset += writer.write(offset, &backward.grad_bias.as_view(ctx).data);
+    offset - init_offset
+  }
+
+  fn accumulate_grad_(&mut self, init_offset: usize, alpha: f32, mu: f32, writer: &mut OpWrite) -> usize {
+    assert!(self.backward.is_some());
+    let ctx = &(*self.context).as_ref();
+    let mut backward = self.backward.as_mut().unwrap();
+    let mut offset = init_offset;
+
+    offset += writer.accumulate_write(offset, alpha, mu, &backward.grad_weights.as_view(ctx).data);
+    offset += writer.accumulate_write(offset, alpha, mu, &backward.grad_bias.as_view(ctx).data);
+
+    offset - init_offset
+  }
+
+  fn step(&mut self, init_offset: usize, step_size: f32, reader: &mut OpRead) -> usize {
+    assert!(self.backward.is_some());
+    let ctx = &(*self.context).as_ref();
+    let mut backward = self.backward.as_mut().unwrap();
+    let mut offset = init_offset;
+
+    offset += reader.accumulate_read(offset, step_size, 1.0, &mut self.weights.as_view_mut(ctx).data);
+    offset += reader.accumulate_read(offset, step_size, 1.0, &mut self.bias.as_view_mut(ctx).data);
+
     offset - init_offset
   }
 
@@ -900,7 +924,8 @@ pub struct BNormConv2dOperator {
   scale:        DeviceBuffer<f32>,
   bias:         DeviceBuffer<f32>,
   stats_mean:   DeviceBuffer<f32>,
-  stats_ivar:   DeviceBuffer<f32>,
+  stats_var:    DeviceBuffer<f32>,
+  stats_istd:   DeviceBuffer<f32>,
 
   workspace:    DeviceBuffer<u8>,
   conv_fwd:     CudnnConvFwdOp,
@@ -909,17 +934,17 @@ pub struct BNormConv2dOperator {
   tmp_act:      DeviceBuffer<f32>,
   tmp_delta:    DeviceBuffer<f32>,
 
-  bn_scale1:            DeviceArray2d<f32>,
-  bn_scale1_grad:       DeviceArray2d<f32>,
+  //bn_scale1:            DeviceArray2d<f32>,
+  //bn_scale1_grad:       DeviceArray2d<f32>,
   acc_bn_scale1_grad:   DeviceArray2d<f32>,
   save_bn_scale1:       DeviceArray2d<f32>,
-  bn_bias1:             DeviceArray2d<f32>,
-  bn_bias1_grad:        DeviceArray2d<f32>,
+  //bn_bias1:             DeviceArray2d<f32>,
+  //bn_bias1_grad:        DeviceArray2d<f32>,
   acc_bn_bias1_grad:    DeviceArray2d<f32>,
   save_bn_bias1:        DeviceArray2d<f32>,
-  bn_running_mean1:     DeviceArray2d<f32>,
+  //bn_running_mean1:     DeviceArray2d<f32>,
   save_bn_running_mean1:    DeviceArray2d<f32>,
-  bn_running_ivar1:     DeviceArray2d<f32>,
+  //bn_running_ivar1:     DeviceArray2d<f32>,
   save_bn_running_ivar1:    DeviceArray2d<f32>,
   bn_cached_mean1:      DeviceArray2d<f32>,
   bn_cached_ivar1:      DeviceArray2d<f32>,
@@ -934,13 +959,19 @@ struct BNormConv2dBwdOperator {
   acc_grad_weights: DeviceArray2d<f32>,
   save_weights: DeviceArray2d<f32>,
 
+  iter_counter:     usize,
+  //weights_grad:     DeviceArray2d<f32>,
+  scale_grad:       DeviceBuffer<f32>,
+  bias_grad:        DeviceBuffer<f32>,
   stats_mean_batch: DeviceBuffer<f32>,
+  stats_mean_acc:   DeviceBuffer<f32>,
   stats_var_batch:  DeviceBuffer<f32>,
+  stats_var_acc:    DeviceBuffer<f32>,
 
   conv_bwd_w:   CudnnConvBwdFilterOp,
   conv_bwd_d:   CudnnConvBwdDataOp,
 
-  first_batch1: bool,
+  //first_batch1: bool,
 
   //comm_worker:  Rc<RefCell<Comm>>,
 }
@@ -1001,11 +1032,16 @@ impl BNormConv2dOperator {
         grad_weights:     DeviceArray2d::<f32>::zeros((conv_size * conv_size * in_channels, out_channels), ctx),
         acc_grad_weights: DeviceArray2d::<f32>::zeros((conv_size * conv_size * in_channels, out_channels), ctx),
         save_weights:     DeviceArray2d::<f32>::zeros((conv_size * conv_size * in_channels, out_channels), ctx),
+        iter_counter:     0,
+        scale_grad:       DeviceBuffer::zeros(out_channels, ctx),
+        bias_grad:        DeviceBuffer::zeros(out_channels, ctx),
         stats_mean_batch: DeviceBuffer::zeros(out_channels, ctx),
+        stats_mean_acc:   DeviceBuffer::zeros(out_channels, ctx),
         stats_var_batch:  DeviceBuffer::zeros(out_channels, ctx),
+        stats_var_acc:    DeviceBuffer::zeros(out_channels, ctx),
         conv_bwd_w:   conv_bwd_w,
         conv_bwd_d:   conv_bwd_d,
-        first_batch1: true,
+        //first_batch1: true,
         //comm_worker:  comm_worker.unwrap(),
       })
     } else {
@@ -1037,7 +1073,8 @@ impl BNormConv2dOperator {
       scale:        DeviceBuffer::zeros(out_channels, ctx),
       bias:         DeviceBuffer::zeros(out_channels, ctx),
       stats_mean:   DeviceBuffer::zeros(out_channels, ctx),
-      stats_ivar:   DeviceBuffer::zeros(out_channels, ctx),
+      stats_var:    DeviceBuffer::zeros(out_channels, ctx),
+      stats_istd:   DeviceBuffer::zeros(out_channels, ctx),
 
       workspace:    DeviceBuffer::<u8>::zeros(workspace_size, ctx),
       conv_fwd:     conv_fwd,
@@ -1046,17 +1083,17 @@ impl BNormConv2dOperator {
       tmp_act:      DeviceBuffer::<f32>::zeros(out_length * batch_size, ctx),
       tmp_delta:    DeviceBuffer::<f32>::zeros(out_length * batch_size, ctx),
 
-      bn_scale1:            DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
-      bn_scale1_grad:       DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
+      //bn_scale1:            DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
+      //bn_scale1_grad:       DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
       acc_bn_scale1_grad:   DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
       save_bn_scale1:       DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
-      bn_bias1:             DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
-      bn_bias1_grad:        DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
+      //bn_bias1:             DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
+      //bn_bias1_grad:        DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
       acc_bn_bias1_grad:    DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
       save_bn_bias1:        DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
-      bn_running_mean1:     DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
+      //bn_running_mean1:     DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
       save_bn_running_mean1:    DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
-      bn_running_ivar1:     DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
+      //bn_running_ivar1:     DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
       save_bn_running_ivar1:    DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
       bn_cached_mean1:      DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
       bn_cached_ivar1:      DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
@@ -1135,10 +1172,15 @@ impl Operator for BNormConv2dOperator {
     //self.bn_scale1.as_view_mut(ctx).set_constant(1.0);
     //self.bn_running_ivar1.as_view_mut(ctx).set_constant(1.0);
 
-    self.bn_scale1.as_view_mut(ctx).set_constant(1.0);
+    /*self.bn_scale1.as_view_mut(ctx).set_constant(1.0);
     self.bn_bias1.as_view_mut(ctx).set_constant(0.0);
     self.bn_running_mean1.as_view_mut(ctx).set_constant(0.0);
-    self.bn_running_ivar1.as_view_mut(ctx).set_constant(1.0);
+    self.bn_running_ivar1.as_view_mut(ctx).set_constant(1.0);*/
+
+    self.scale.as_ref_mut(ctx).set_constant(1.0);
+    self.bias.as_ref_mut(ctx).set_constant(0.0);
+    self.stats_mean.as_ref_mut(ctx).set_constant(0.0);
+    self.stats_istd.as_ref_mut(ctx).set_constant(1.0);
 
     /*self.bn_scale2.as_view_mut(ctx).set_constant(1.0);
     self.bn_bias2.as_view_mut(ctx).set_constant(0.0);
@@ -1164,19 +1206,30 @@ impl Operator for BNormConv2dOperator {
     unimplemented!();*/
 
     let ctx = &(*self.context).as_ref();
+    let BNormConv2dOperatorConfig{out_channels, ..} = self.config;
+
     let mut reader = Cursor::new(blob);
 
     let load_weights = Array2d::deserialize(&mut reader).unwrap();
     self.weights.as_view_mut(ctx).sync_load(&load_weights.as_view());
 
-    let load_bn_scale1 = Array2d::deserialize(&mut reader).unwrap();
+    /*let load_bn_scale1 = Array2d::deserialize(&mut reader).unwrap();
     self.bn_scale1.as_view_mut(ctx).sync_load(&load_bn_scale1.as_view());
     let load_bn_bias1 = Array2d::deserialize(&mut reader).unwrap();
     self.bn_bias1.as_view_mut(ctx).sync_load(&load_bn_bias1.as_view());
     let load_bn_running_mean1 = Array2d::deserialize(&mut reader).unwrap();
     self.bn_running_mean1.as_view_mut(ctx).sync_load(&load_bn_running_mean1.as_view());
     let load_bn_running_ivar1 = Array2d::deserialize(&mut reader).unwrap();
-    self.bn_running_ivar1.as_view_mut(ctx).sync_load(&load_bn_running_ivar1.as_view());
+    self.bn_running_ivar1.as_view_mut(ctx).sync_load(&load_bn_running_ivar1.as_view());*/
+
+    let load_bn_scale1 = Array2d::deserialize(&mut reader).unwrap();
+    self.scale.as_ref_mut(ctx).into_2d_view_mut((1, out_channels)).sync_load(&load_bn_scale1.as_view());
+    let load_bn_bias1 = Array2d::deserialize(&mut reader).unwrap();
+    self.bias.as_ref_mut(ctx).into_2d_view_mut((1, out_channels)).sync_load(&load_bn_bias1.as_view());
+    let load_bn_running_mean1 = Array2d::deserialize(&mut reader).unwrap();
+    self.stats_mean.as_ref_mut(ctx).into_2d_view_mut((1, out_channels)).sync_load(&load_bn_running_mean1.as_view());
+    let load_bn_running_ivar1 = Array2d::deserialize(&mut reader).unwrap();
+    self.stats_istd.as_ref_mut(ctx).into_2d_view_mut((1, out_channels)).sync_load(&load_bn_running_ivar1.as_view());
 
     let progress = reader.position() as usize;
     progress
@@ -1184,13 +1237,14 @@ impl Operator for BNormConv2dOperator {
 
   fn encode_param(&mut self, blob: &mut Vec<u8>) {
     let ctx = &(*self.context).as_ref();
+    let BNormConv2dOperatorConfig{out_channels, ..} = self.config;
 
     let weights = self.weights.as_view(ctx);
     let mut save_weights = Array2d::zeros(weights.bound());
     weights.sync_store(&mut save_weights.as_view_mut());
     save_weights.serialize(blob).unwrap();
 
-    let bn_scale1 = self.bn_scale1.as_view(ctx);
+    /*let bn_scale1 = self.bn_scale1.as_view(ctx);
     let mut save_bn_scale1 = Array2d::zeros(bn_scale1.bound());
     bn_scale1.sync_store(&mut save_bn_scale1.as_view_mut());
     save_bn_scale1.serialize(blob).unwrap();
@@ -1208,6 +1262,26 @@ impl Operator for BNormConv2dOperator {
     let bn_running_ivar1 = self.bn_running_ivar1.as_view(ctx);
     let mut save_bn_running_ivar1 = Array2d::zeros(bn_running_ivar1.bound());
     bn_running_ivar1.sync_store(&mut save_bn_running_ivar1.as_view_mut());
+    save_bn_running_ivar1.serialize(blob).unwrap();*/
+
+    let bn_scale1 = self.scale.as_ref(ctx);
+    let mut save_bn_scale1 = Array2d::zeros((1, out_channels));
+    bn_scale1.into_2d_view((1, out_channels)).sync_store(&mut save_bn_scale1.as_view_mut());
+    save_bn_scale1.serialize(blob).unwrap();
+
+    let bn_bias1 = self.bias.as_ref(ctx);
+    let mut save_bn_bias1 = Array2d::zeros((1, out_channels));
+    bn_bias1.into_2d_view((1, out_channels)).sync_store(&mut save_bn_bias1.as_view_mut());
+    save_bn_bias1.serialize(blob).unwrap();
+
+    let bn_running_mean1 = self.stats_mean.as_ref(ctx);
+    let mut save_bn_running_mean1 = Array2d::zeros((1, out_channels));
+    bn_running_mean1.into_2d_view((1, out_channels)).sync_store(&mut save_bn_running_mean1.as_view_mut());
+    save_bn_running_mean1.serialize(blob).unwrap();
+
+    let bn_running_ivar1 = self.stats_istd.as_ref(ctx);
+    let mut save_bn_running_ivar1 = Array2d::zeros((1, out_channels));
+    bn_running_ivar1.into_2d_view((1, out_channels)).sync_store(&mut save_bn_running_ivar1.as_view_mut());
     save_bn_running_ivar1.serialize(blob).unwrap();
   }
 
@@ -1220,14 +1294,16 @@ impl Operator for BNormConv2dOperator {
     let load_weights1 = Array2d::deserialize(&mut reader).unwrap();
     backward.acc_grad_weights.as_view_mut(ctx).sync_load(&load_weights1.as_view());
 
-    let load_bn_scale1 = Array2d::deserialize(&mut reader).unwrap();
+    /*let load_bn_scale1 = Array2d::deserialize(&mut reader).unwrap();
     self.acc_bn_scale1_grad.as_view_mut(ctx).sync_load(&load_bn_scale1.as_view());
     let load_bn_bias1 = Array2d::deserialize(&mut reader).unwrap();
     self.acc_bn_bias1_grad.as_view_mut(ctx).sync_load(&load_bn_bias1.as_view());
     let bn_cached_mean1 = Array2d::deserialize(&mut reader).unwrap();
     self.bn_cached_mean1.as_view_mut(ctx).sync_load(&bn_cached_mean1.as_view());
     let bn_cached_ivar1 = Array2d::deserialize(&mut reader).unwrap();
-    self.bn_cached_ivar1.as_view_mut(ctx).sync_load(&bn_cached_ivar1.as_view());
+    self.bn_cached_ivar1.as_view_mut(ctx).sync_load(&bn_cached_ivar1.as_view());*/
+
+    unimplemented!();
 
     let progress = reader.position() as usize;
     progress
@@ -1243,7 +1319,7 @@ impl Operator for BNormConv2dOperator {
     weights1.sync_store(&mut save_weights1.as_view_mut());
     save_weights1.serialize(blob).unwrap();
 
-    let bn_scale1 = self.acc_bn_scale1_grad.as_view(ctx);
+    /*let bn_scale1 = self.acc_bn_scale1_grad.as_view(ctx);
     let mut save_bn_scale1 = Array2d::zeros(bn_scale1.bound());
     bn_scale1.sync_store(&mut save_bn_scale1.as_view_mut());
     save_bn_scale1.serialize(blob).unwrap();
@@ -1256,12 +1332,23 @@ impl Operator for BNormConv2dOperator {
     let bn_running_mean1 = self.bn_cached_mean1.as_view(ctx);
     let mut save_bn_running_mean1 = Array2d::zeros(bn_running_mean1.bound());
     bn_running_mean1.sync_store(&mut save_bn_running_mean1.as_view_mut());
-    save_bn_running_mean1.serialize(blob).unwrap();
+    save_bn_running_mean1.serialize(blob).unwrap();*/
+
+    unimplemented!();
 
     let bn_running_ivar1 = self.bn_cached_ivar1.as_view(ctx);
     let mut save_bn_running_ivar1 = Array2d::zeros(bn_running_ivar1.bound());
     bn_running_ivar1.sync_store(&mut save_bn_running_ivar1.as_view_mut());
     save_bn_running_ivar1.serialize(blob).unwrap();
+  }
+
+  fn reset_grad(&mut self) {
+    assert!(self.backward.is_some());
+    let ctx = &(*self.context).as_ref();
+    let mut backward = self.backward.as_mut().unwrap();
+    backward.grad_weights.as_view_mut(ctx).set_constant(0.0);
+    backward.scale_grad.as_ref_mut(ctx).set_constant(0.0);
+    backward.bias_grad.as_ref_mut(ctx).set_constant(0.0);
   }
 
   fn read_grad(&mut self, init_offset: usize, reader: &mut OpRead) -> usize {
@@ -1270,11 +1357,10 @@ impl Operator for BNormConv2dOperator {
     let mut backward = self.backward.as_mut().unwrap();
     let mut offset = init_offset;
     offset += reader.read(offset, &mut backward.grad_weights.as_view_mut(ctx).data);
-    offset += reader.read(offset, &mut self.bn_scale1_grad.as_view_mut(ctx).data);
-    offset += reader.read(offset, &mut self.bn_bias1_grad.as_view_mut(ctx).data);
-    offset += self.bn_running_mean1.len();
-    offset += self.bn_running_ivar1.len();
-    //offset += reader.read(offset, &mut backward.grad_bias.as_view_mut(ctx).data);
+    offset += reader.read(offset, &mut backward.scale_grad.as_ref_mut(ctx));
+    offset += reader.read(offset, &mut backward.bias_grad.as_ref_mut(ctx));
+    offset += reader.read(offset, &mut backward.stats_mean_acc.as_ref_mut(ctx));
+    offset += reader.read(offset, &mut backward.stats_var_acc.as_ref_mut(ctx));
     offset - init_offset
   }
 
@@ -1283,12 +1369,63 @@ impl Operator for BNormConv2dOperator {
     let ctx = &(*self.context).as_ref();
     let mut backward = self.backward.as_mut().unwrap();
     let mut offset = init_offset;
-    offset += writer.write(offset, &mut backward.grad_weights.as_view(ctx).data);
-    offset += writer.write(offset, &mut self.bn_scale1_grad.as_view(ctx).data);
-    offset += writer.write(offset, &mut self.bn_bias1_grad.as_view(ctx).data);
-    offset += self.bn_running_mean1.len();
-    offset += self.bn_running_ivar1.len();
-    //offset += writer.write(offset, &mut backward.grad_bias.as_view(ctx).data);
+    offset += writer.write(offset, &backward.grad_weights.as_view(ctx).data);
+    offset += writer.write(offset, &backward.scale_grad.as_ref(ctx));
+    offset += writer.write(offset, &backward.bias_grad.as_ref(ctx));
+    offset += writer.write(offset, &backward.stats_mean_acc.as_ref(ctx));
+    offset += writer.write(offset, &backward.stats_var_acc.as_ref(ctx));
+    offset - init_offset
+  }
+
+  fn accumulate_grad_(&mut self, init_offset: usize, alpha: f32, mu: f32, writer: &mut OpWrite) -> usize {
+    assert!(self.backward.is_some());
+    let ctx = &(*self.context).as_ref();
+    let mut backward = self.backward.as_mut().unwrap();
+    let mut offset = init_offset;
+
+    offset += writer.accumulate_write(offset, alpha, mu, &backward.grad_weights.as_view(ctx).data);
+    offset += writer.accumulate_write(offset, alpha, mu, &backward.scale_grad.as_ref(ctx));
+    offset += writer.accumulate_write(offset, alpha, mu, &backward.bias_grad.as_ref(ctx));
+    offset += writer.write(offset, &backward.stats_mean_batch.as_ref(ctx));
+    offset += writer.write(offset, &backward.stats_var_batch.as_ref(ctx));
+
+    offset - init_offset
+  }
+
+  fn step(&mut self, init_offset: usize, step_size: f32, reader: &mut OpRead) -> usize {
+    assert!(self.backward.is_some());
+    let ctx = &(*self.context).as_ref();
+    let mut backward = self.backward.as_mut().unwrap();
+    let mut offset = init_offset;
+
+    offset += reader.accumulate_read(offset, step_size, 1.0, &mut self.weights.as_view_mut(ctx).data);
+    offset += reader.accumulate_read(offset, step_size, 1.0, &mut self.scale.as_ref_mut(ctx));
+    offset += reader.accumulate_read(offset, step_size, 1.0, &mut self.bias.as_ref_mut(ctx));
+    offset += reader.read(offset, &mut backward.stats_mean_acc.as_ref_mut(ctx));
+    offset += reader.read(offset, &mut backward.stats_var_acc.as_ref_mut(ctx));
+
+    backward.iter_counter += 1;
+    let factor = match self.config.bnorm_mov_avg {
+      BNormMovingAverage::Cumulative => {
+        backward.iter_counter as f32
+      }
+      BNormMovingAverage::Exponential{ema_factor} => {
+        ema_factor as f32
+      }
+    };
+    self.stats_mean.as_ref_mut(ctx).vector_scale(1.0 - factor);
+    self.stats_mean.as_ref_mut(ctx).vector_add(factor, &backward.stats_mean_acc.as_ref(ctx));
+    self.stats_var.as_ref_mut(ctx).vector_scale(1.0 - factor);
+    self.stats_var.as_ref_mut(ctx).vector_add(factor, &backward.stats_var_acc.as_ref(ctx));
+    let out_channels = self.config.get_out_dims().2;
+    unsafe { rembrandt_kernel_estimate_invstd(
+        self.stats_var.as_ref(ctx).as_ptr(),
+        out_channels as i32,
+        self.config.bnorm_epsilon as f32,
+        self.stats_istd.as_ref_mut(ctx).as_mut_ptr(),
+        ctx.stream.ptr,
+    ) };
+
     offset - init_offset
   }
 
@@ -1349,10 +1486,14 @@ impl Operator for BNormConv2dOperator {
             0.0,
             out_act.as_mut_ptr(),
             self.config.bnorm_epsilon,
-            self.bn_scale1.as_view(ctx).as_ptr(),
+            /*self.bn_scale1.as_view(ctx).as_ptr(),
             self.bn_bias1.as_view(ctx).as_ptr(),
             self.bn_running_mean1.as_view(ctx).as_ptr(),
-            self.bn_running_ivar1.as_view(ctx).as_ptr(),
+            self.bn_running_ivar1.as_view(ctx).as_ptr(),*/
+            self.scale.as_ref(ctx).as_ptr(),
+            self.bias.as_ref(ctx).as_ptr(),
+            self.stats_mean.as_ref(ctx).as_ptr(),
+            self.stats_istd.as_ref(ctx).as_ptr(),
             &*ctx.get_dnn(),
         ) }.unwrap();
       }
@@ -1377,10 +1518,14 @@ impl Operator for BNormConv2dOperator {
             out_act.as_mut_ptr(),
             ema_factor,
             self.config.bnorm_epsilon,
-            self.bn_scale1.as_view(ctx).as_ptr(),
+            /*self.bn_scale1.as_view(ctx).as_ptr(),
             self.bn_bias1.as_view(ctx).as_ptr(),
             self.bn_running_mean1.as_view_mut(ctx).as_mut_ptr(),
-            self.bn_running_ivar1.as_view_mut(ctx).as_mut_ptr(),
+            self.bn_running_ivar1.as_view_mut(ctx).as_mut_ptr(),*/
+            self.scale.as_ref(ctx).as_ptr(),
+            self.bias.as_ref(ctx).as_ptr(),
+            self.stats_mean.as_ref_mut(ctx).as_mut_ptr(),
+            self.stats_istd.as_ref_mut(ctx).as_mut_ptr(),
             self.bn_cached_mean1.as_view_mut(ctx).as_mut_ptr(),
             self.bn_cached_ivar1.as_view_mut(ctx).as_mut_ptr(),
             &*ctx.get_dnn(),
@@ -1453,9 +1598,12 @@ impl Operator for BNormConv2dOperator {
           tmp_delta.as_ref_mut(ctx).as_mut_ptr(),
           1.0, 1.0,
           self.config.bnorm_epsilon,
-          self.bn_scale1.as_view(ctx).as_ptr(),
+          /*self.bn_scale1.as_view(ctx).as_ptr(),
           self.bn_scale1_grad.as_view_mut(ctx).as_mut_ptr(),
-          self.bn_bias1_grad.as_view_mut(ctx).as_mut_ptr(),
+          self.bn_bias1_grad.as_view_mut(ctx).as_mut_ptr(),*/
+          self.scale.as_ref(ctx).as_ptr(),
+          backward.scale_grad.as_ref_mut(ctx).as_mut_ptr(),
+          backward.bias_grad.as_ref_mut(ctx).as_mut_ptr(),
           self.bn_cached_mean1.as_view(ctx).as_ptr(),
           self.bn_cached_ivar1.as_view(ctx).as_ptr(),
           &*ctx.get_dnn(),
@@ -1528,6 +1676,67 @@ impl Operator for BNormConv2dOperator {
     }
   }
 
+  fn reset_stats(&mut self) {
+    assert!(self.backward.is_some());
+    let ctx = &(*self.context).as_ref();
+    let mut backward = self.backward.as_mut().unwrap();
+    backward.stats_mean_batch.as_ref_mut(ctx).set_constant(0.0);
+    backward.stats_mean_acc.as_ref_mut(ctx).set_constant(0.0);
+    backward.stats_var_batch.as_ref_mut(ctx).set_constant(0.0);
+    backward.stats_var_acc.as_ref_mut(ctx).set_constant(0.0);
+  }
+
+  fn estimate_stats(&mut self, acc_sample_size: usize, batch_size: usize) {
+    assert!(self.backward.is_some());
+    assert!(batch_size <= self.batch_cap);
+    let out_dims = self.config.get_out_dims();
+    let spatial_dim = out_dims.0 * out_dims.1;
+    let num_channels = out_dims.2;
+
+    let ctx = &(*self.context).as_ref();
+    let mut out_act = self.out_act.borrow_mut();
+    let mut backward = self.backward.as_mut().unwrap();
+
+    unsafe { rembrandt_kernel_estimate_conv_mean_batch(
+        out_act.as_ref(ctx).as_ptr(),
+        spatial_dim as i32,
+        num_channels as i32,
+        batch_size as i32,
+        backward.stats_mean_batch.as_ref_mut(ctx).as_mut_ptr(),
+        ctx.stream.ptr,
+    ) };
+    unsafe { rembrandt_kernel_estimate_conv_var_batch(
+        out_act.as_ref(ctx).as_ptr(),
+        spatial_dim as i32,
+        num_channels as i32,
+        batch_size as i32,
+        backward.stats_mean_batch.as_ref(ctx).as_ptr(),
+        backward.stats_var_batch.as_ref_mut(ctx).as_mut_ptr(),
+        ctx.stream.ptr,
+    ) };
+
+    backward.stats_mean_acc.as_ref_mut(ctx).vector_add(1.0, &backward.stats_mean_batch.as_ref(ctx));
+    unsafe { rembrandt_kernel_estimate_online_var(
+        backward.stats_mean_batch.as_ref(ctx).as_ptr(),
+        num_channels as i32,
+        backward.stats_var_batch.as_ref(ctx).as_ptr(),
+        backward.stats_mean_acc.as_ref(ctx).as_ptr(),
+        batch_size as i32,
+        acc_sample_size as i32,
+        backward.stats_var_acc.as_ref_mut(ctx).as_mut_ptr(),
+        ctx.stream.ptr,
+    ) };
+  }
+
+  fn finalize_stats(&mut self, sample_size: usize) {
+    assert!(self.backward.is_some());
+    assert!(sample_size >= 2);
+    let ctx = &(*self.context).as_ref();
+    let mut backward = self.backward.as_mut().unwrap();
+    backward.stats_mean_acc.as_ref_mut(ctx).vector_scale(1.0 / sample_size as f32);
+    backward.stats_var_acc.as_ref_mut(ctx).vector_scale(1.0 / (sample_size - 1) as f32);
+  }
+
   fn accumulate_grad(&mut self, scale: f32, momentum: f32) {
     assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
@@ -1538,14 +1747,23 @@ impl Operator for BNormConv2dOperator {
     backward.acc_grad_weights.as_view_mut(ctx)
       .matrix_sum(scale, &backward.grad_weights.as_view(ctx));
 
-    self.acc_bn_scale1_grad.as_view_mut(ctx)
+    /*self.acc_bn_scale1_grad.as_view_mut(ctx)
       .row_vector_scale(momentum);
     self.acc_bn_scale1_grad.as_view_mut(ctx)
       .row_vector_sum(scale, &self.bn_scale1_grad.as_view(ctx));
     self.acc_bn_bias1_grad.as_view_mut(ctx)
       .row_vector_scale(momentum);
     self.acc_bn_bias1_grad.as_view_mut(ctx)
-      .row_vector_sum(scale, &self.bn_bias1_grad.as_view(ctx));
+      .row_vector_sum(scale, &self.bn_bias1_grad.as_view(ctx));*/
+
+    self.acc_bn_scale1_grad.as_view_mut(ctx)
+      .row_vector_scale(momentum);
+    self.acc_bn_scale1_grad.as_view_mut(ctx).data
+      .vector_add(scale, &backward.scale_grad.as_ref(ctx));
+    self.acc_bn_bias1_grad.as_view_mut(ctx)
+      .row_vector_scale(momentum);
+    self.acc_bn_bias1_grad.as_view_mut(ctx).data
+      .vector_add(scale, &backward.bias_grad.as_ref(ctx));
   }
 
   fn update_param(&mut self, scale: f32) {
@@ -1556,10 +1774,15 @@ impl Operator for BNormConv2dOperator {
     self.weights.as_view_mut(ctx)
       .matrix_sum(scale, &backward.acc_grad_weights.as_view(ctx));
 
-    self.bn_scale1.as_view_mut(ctx)
+    /*self.bn_scale1.as_view_mut(ctx)
       .row_vector_sum(scale, &self.acc_bn_scale1_grad.as_view(ctx));
     self.bn_bias1.as_view_mut(ctx)
-      .row_vector_sum(scale, &self.acc_bn_bias1_grad.as_view(ctx));
+      .row_vector_sum(scale, &self.acc_bn_bias1_grad.as_view(ctx));*/
+
+    self.scale.as_ref_mut(ctx)
+      .vector_add(scale, &self.acc_bn_scale1_grad.as_view(ctx).data);
+    self.bias.as_ref_mut(ctx)
+      .vector_add(scale, &self.acc_bn_bias1_grad.as_view(ctx).data);
   }
 
   fn update_param2(&mut self, grad_scale: f32, update_scale: f32) {
@@ -1567,7 +1790,9 @@ impl Operator for BNormConv2dOperator {
     let ctx = &(*self.context).as_ref();
     let mut backward = self.backward.as_mut().unwrap();
 
-    if grad_scale != 0.0 {
+    unimplemented!();
+
+    /*if grad_scale != 0.0 {
       self.weights.as_view_mut(ctx)
         .matrix_sum(grad_scale, &backward.grad_weights.as_view(ctx));
 
@@ -1585,7 +1810,7 @@ impl Operator for BNormConv2dOperator {
         .row_vector_sum(update_scale, &self.acc_bn_scale1_grad.as_view(ctx));
       self.bn_bias1.as_view_mut(ctx)
         .row_vector_sum(update_scale, &self.acc_bn_bias1_grad.as_view(ctx));
-    }
+    }*/
   }
 
   /*fn reset_params(&mut self, momentum: f32) {
@@ -1624,14 +1849,23 @@ impl Operator for BNormConv2dOperator {
     self.weights.as_view(ctx)
       .send(&mut backward.save_weights.as_view_mut(ctx));
 
-    self.bn_scale1.as_view(ctx)
+    /*self.bn_scale1.as_view(ctx)
       .send(&mut self.save_bn_scale1.as_view_mut(ctx));
     self.bn_bias1.as_view(ctx)
       .send(&mut self.save_bn_bias1.as_view_mut(ctx));
     self.bn_running_mean1.as_view(ctx)
       .send(&mut self.save_bn_running_mean1.as_view_mut(ctx));
     self.bn_running_ivar1.as_view(ctx)
-      .send(&mut self.save_bn_running_ivar1.as_view_mut(ctx));
+      .send(&mut self.save_bn_running_ivar1.as_view_mut(ctx));*/
+
+    self.scale.as_ref(ctx)
+      .send(&mut self.save_bn_scale1.as_view_mut(ctx).data);
+    self.bias.as_ref(ctx)
+      .send(&mut self.save_bn_bias1.as_view_mut(ctx).data);
+    self.stats_mean.as_ref(ctx)
+      .send(&mut self.save_bn_running_mean1.as_view_mut(ctx).data);
+    self.stats_istd.as_ref(ctx)
+      .send(&mut self.save_bn_running_ivar1.as_view_mut(ctx).data);
   }
 
   fn restore_params(&mut self) {
@@ -1642,14 +1876,23 @@ impl Operator for BNormConv2dOperator {
     backward.save_weights.as_view(ctx)
       .send(&mut self.weights.as_view_mut(ctx));
 
-    self.save_bn_scale1.as_view(ctx)
+    /*self.save_bn_scale1.as_view(ctx)
       .send(&mut self.bn_scale1.as_view_mut(ctx));
     self.save_bn_bias1.as_view(ctx)
       .send(&mut self.bn_bias1.as_view_mut(ctx));
     self.save_bn_running_mean1.as_view(ctx)
       .send(&mut self.bn_running_mean1.as_view_mut(ctx));
     self.save_bn_running_ivar1.as_view(ctx)
-      .send(&mut self.bn_running_ivar1.as_view_mut(ctx));
+      .send(&mut self.bn_running_ivar1.as_view_mut(ctx));*/
+
+    self.save_bn_scale1.as_view(ctx).data
+      .send(&mut self.scale.as_ref_mut(ctx));
+    self.save_bn_bias1.as_view(ctx).data
+      .send(&mut self.bias.as_ref_mut(ctx));
+    self.save_bn_running_mean1.as_view(ctx).data
+      .send(&mut self.stats_mean.as_ref_mut(ctx));
+    self.save_bn_running_ivar1.as_view(ctx).data
+      .send(&mut self.stats_istd.as_ref_mut(ctx));
   }
 
   /*fn set_grads_with_params_diff(&mut self) {
@@ -1689,7 +1932,7 @@ impl Operator for BNormConv2dOperator {
     unimplemented!();
   }*/
 
-  fn stage_grads(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
+  /*fn stage_grads(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
     assert!(self.backward.is_some());
     let mut backward = self.backward.as_mut().unwrap();
 
@@ -1761,7 +2004,7 @@ impl Operator for BNormConv2dOperator {
     offset += self.bn_running_ivar1.len();
 
     self.config.params_len()
-  }
+  }*/
 
   /*fn reset_grads(&mut self, scale: f32) {
     /*assert!(self.backward.is_some());
@@ -1782,10 +2025,13 @@ impl Operator for BNormConv2dOperator {
     backward.grad_weights.as_view_mut(ctx)
       .matrix_scale(0.0);
 
-    self.bn_scale1_grad.as_view_mut(ctx)
+    /*self.bn_scale1_grad.as_view_mut(ctx)
       .row_vector_scale(0.0);
     self.bn_bias1_grad.as_view_mut(ctx)
-      .row_vector_scale(0.0);
+      .row_vector_scale(0.0);*/
+
+    backward.scale_grad.as_ref_mut(ctx).set_constant(0.0);
+    backward.bias_grad.as_ref_mut(ctx).set_constant(0.0);
   }
 }
 

@@ -385,23 +385,22 @@ pub trait Operator {
   fn decode_state(&mut self, _blob: &[u8]) -> usize { 0 }
   fn encode_state(&mut self, _blob: &mut Vec<u8>) {}
   fn read_param(&mut self, _offset: usize, _reader: &mut OpRead) -> usize { 0 }
-  fn update_param_(&mut self, _offset: usize, _step_size: f32, _acc_grad_reader: &mut OpRead) -> usize { 0 }
   fn write_param(&mut self, _offset: usize, _writer: &mut OpWrite) -> usize { 0 }
   fn forward(&mut self, batch_size: usize, phase: OpPhase);
 
   // Requires `Backward` capability.
   fn reset(&mut self) {}
   fn reset_grad(&mut self) { unimplemented!(); }
-  fn step_grad(&mut self, _step_size: f32) { unimplemented!(); }
   fn read_grad(&mut self, _offset: usize, _reader: &mut OpRead) -> usize { 0 }
   fn write_grad(&mut self, _offset: usize, _writer: &mut OpWrite) -> usize { 0 }
-  fn accumulate_grad_(&mut self, _offset: usize, _alpha: f32, _mu: f32, _acc_grad_writer: &mut OpWrite) -> usize { 0 }
+  fn accumulate_grad_(&mut self, _offset: usize, _alpha: f32, _mu: f32, _grad_acc_writer: &mut OpWrite) -> usize { 0 }
+  fn step(&mut self, _offset: usize, _step_size: f32, _grad_acc_reader: &mut OpRead) -> usize { 0 }
   fn backward(&mut self, batch_size: usize);
   fn regularize(&mut self, _reg: Regularization) {}
 
-  fn reset_stats(&mut self, _batch_size: usize) {}
-  fn estimate_stats(&mut self, _batch_size: usize) {}
-  fn update_stats(&mut self, _batch_size: usize) {}
+  fn reset_stats(&mut self) {}
+  fn estimate_stats(&mut self, _acc_sample_size: usize, _batch_size: usize) {}
+  fn finalize_stats(&mut self, _sample_size: usize) {}
 
   fn accumulate_grad(&mut self, _scale: f32, _momentum: f32) {}
   fn update_param(&mut self, _scale: f32) {}

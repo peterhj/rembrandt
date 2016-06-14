@@ -35,12 +35,14 @@ pub trait ParallelSgdOptWorker {
   fn restore_param(&mut self);
 
   fn stage_param(&mut self);
-  fn merge_param(&mut self);
   fn sync_param(&mut self);
+  fn merge_param(&mut self);
 
   fn stage_grad(&mut self);
-  fn merge_grad(&mut self);
+  fn accumulate_grad(&mut self, alpha: f32, mu: f32);
   fn sync_grad(&mut self);
+  fn merge_grad(&mut self);
+  fn step(&mut self, step_size: f32);
 }
 
 #[derive(Clone, Debug)]
