@@ -510,6 +510,12 @@ impl Operator for GraphOperator {
     }
   }
 
+  fn reset_grad(&mut self) {
+    for &id in self.fwd_toporder.iter() {
+      self.operators[id].reset_grad();
+    }
+  }
+
   fn read_grad(&mut self, init_offset: usize, reader: &mut OpRead) -> usize {
     let mut offset = init_offset;
     for &id in self.fwd_toporder.iter() {
@@ -545,6 +551,24 @@ impl Operator for GraphOperator {
   fn regularize(&mut self, reg: Regularization) {
     for &id in self.fwd_toporder.iter() {
       self.operators[id].regularize(reg);
+    }
+  }
+
+  fn reset_stats(&mut self) {
+    for &id in self.fwd_toporder.iter() {
+      self.operators[id].reset_stats();
+    }
+  }
+
+  fn estimate_stats(&mut self, acc_sample_size: usize, batch_size: usize) {
+    for &id in self.fwd_toporder.iter() {
+      self.operators[id].estimate_stats(acc_sample_size, batch_size);
+    }
+  }
+
+  fn finalize_stats(&mut self, minibatch_size: usize) {
+    for &id in self.fwd_toporder.iter() {
+      self.operators[id].finalize_stats(minibatch_size);
     }
   }
 

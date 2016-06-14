@@ -130,6 +130,7 @@ impl ParallelSgdOpt {
     let shared_seed = worker.shared_seed();
     worker.operator().init_param(shared_seed);
     worker.operator().reset();
+    worker.operator().reset_stats();
 
     // If we are using the standard Nesterov update, apply some extra
     // momentum before the next iteration begins.
@@ -137,8 +138,8 @@ impl ParallelSgdOpt {
       Momentum::UpdateNesterov{mu} => {
         if init_t > 0 {
           //worker.operator().update_param(mu);
-          let step_size = self.config.step_size.at_iter(init_t);
-          worker.step(-mu * step_size);
+          //let step_size = self.config.step_size.at_iter(init_t);
+          worker.step(mu);
         }
       }
       _ => {}
@@ -160,6 +161,7 @@ impl ParallelSgdOpt {
     let mut iter_counter = init_t;
     let mut local_counter = 0;
     let mut batch_counter = 0;
+    let mut acc_batch_size = 0;
 
     loop {
       train_data.reset();
@@ -201,6 +203,7 @@ impl ParallelSgdOpt {
           worker.operator().load_labels(batch_size);
           worker.operator().load_weights(batch_size);
           worker.operator().forward(batch_size, OpPhase::Training{t: iter_counter});
+          worker.operator().estimate_stats(acc_batch_size, batch_size);
           worker.operator().backward(batch_size);
           worker.operator().store_output_categories(batch_size);
           let local_loss = worker.operator().store_loss(batch_size);
@@ -212,11 +215,15 @@ impl ParallelSgdOpt {
           minibatch_acc_total_count += batch_size;
           minibatch_acc_loss += local_loss;
           batch_counter = 0;
+          acc_batch_size += batch_size;
         }
 
         if local_counter % minibatch_size == 0 {
           let l2_reg_coef = self.config.l2_reg_coef;
           let step_size = self.config.step_size.at_iter(iter_counter);
+
+          worker.operator().finalize_stats(minibatch_size);
+          acc_batch_size = 0;
 
           // Apply regularization to the current gradient.
           worker.operator().regularize(Regularization::L2{l2_reg_coef: l2_reg_coef});
@@ -227,7 +234,7 @@ impl ParallelSgdOpt {
             Momentum::UpdateNesterov{mu} => {
               if iter_counter > 0 {
                 //worker.operator().update_param(-mu);
-                worker.step(mu * step_size);
+                worker.step(-mu);
               }
             }
             _ => {}
@@ -243,7 +250,7 @@ impl ParallelSgdOpt {
           match self.config.momentum {
             Momentum::Zero                  => worker.accumulate_grad(1.0, 0.0),
             Momentum::Update{mu} |
-            Momentum::UpdateNesterov{mu}    => worker.accumulate_grad(1.0, mu),
+            Momentum::UpdateNesterov{mu}    => worker.accumulate_grad(-step_size, mu),
             // XXX(20160422): These are the Torch `optim.sgd`-style update;
             // see: <https://github.com/torch/optim/blob/master/sgd.lua>.
             Momentum::Gradient{mu}          => unimplemented!(),
@@ -254,7 +261,7 @@ impl ParallelSgdOpt {
           match self.config.momentum {
             Momentum::Zero                  => worker.step(-step_size),
             Momentum::Update{mu} |
-            Momentum::UpdateNesterov{mu}    => worker.step(-step_size),
+            Momentum::UpdateNesterov{mu}    => worker.step(1.0),
             // XXX(20160422): These are the Torch `optim.sgd`-style update;
             // see: <https://github.com/torch/optim/blob/master/sgd.lua>.
             Momentum::Gradient{mu}          => unimplemented!(),
@@ -307,7 +314,7 @@ impl ParallelSgdOpt {
 
           worker.operator().reset();
           //worker.operator().reset_grad();
-          //worker.operator().reset_stats();
+          worker.operator().reset_stats();
 
           // If we are using the standard Nesterov update, apply some extra
           // momentum before the next iteration begins.
@@ -317,7 +324,7 @@ impl ParallelSgdOpt {
           match self.config.momentum {
             Momentum::UpdateNesterov{mu} => {
               //worker.operator().update_param(mu);
-              worker.step(-mu * step_size);
+              worker.step(mu);
             }
             _ => {}
           }
@@ -405,13 +412,13 @@ impl ParallelSgdOpt {
     let accuracy = acc_correct_count as f32 / acc_total_count as f32;
     // FIXME(20160609): need to all-reduce the loss and accuracy.
     let avg_loss = display_acc_loss;
-    if worker.worker_rank() == 0 {
+    //if worker.worker_rank() == 0 {
       info!("SgdOpt: valid: samples: {} loss: {:.06} accuracy: {:.03} elapsed: {:.03} s",
           total_size,
           avg_loss,
           accuracy,
           elapsed_ms as f32 * 0.001,
       );
-    }
+    //}
   }
 }

@@ -1695,24 +1695,24 @@ impl Operator for BNormConv2dOperator {
     assert!(batch_size <= self.batch_cap);
     let out_dims = self.config.get_out_dims();
     let spatial_dim = out_dims.0 * out_dims.1;
-    let num_channels = out_dims.2;
+    let out_channels = out_dims.2;
 
     let ctx = &(*self.context).as_ref();
     let mut out_act = self.out_act.borrow_mut();
     let mut backward = self.backward.as_mut().unwrap();
 
-    unsafe { rembrandt_kernel_estimate_conv_mean_batch(
+    unsafe { rembrandt_kernel_estimate_conv_mean_fast_batch(
         out_act.as_ref(ctx).as_ptr(),
         spatial_dim as i32,
-        num_channels as i32,
+        out_channels as i32,
         batch_size as i32,
         backward.stats_mean_batch.as_ref_mut(ctx).as_mut_ptr(),
         ctx.stream.ptr,
     ) };
-    unsafe { rembrandt_kernel_estimate_conv_var_batch(
+    unsafe { rembrandt_kernel_estimate_conv_var_fast_batch(
         out_act.as_ref(ctx).as_ptr(),
         spatial_dim as i32,
-        num_channels as i32,
+        out_channels as i32,
         batch_size as i32,
         backward.stats_mean_batch.as_ref(ctx).as_ptr(),
         backward.stats_var_batch.as_ref_mut(ctx).as_mut_ptr(),
@@ -1722,7 +1722,7 @@ impl Operator for BNormConv2dOperator {
     backward.stats_mean_acc.as_ref_mut(ctx).vector_add(1.0, &backward.stats_mean_batch.as_ref(ctx));
     unsafe { rembrandt_kernel_estimate_online_var(
         backward.stats_mean_batch.as_ref(ctx).as_ptr(),
-        num_channels as i32,
+        out_channels as i32,
         backward.stats_var_batch.as_ref(ctx).as_ptr(),
         backward.stats_mean_acc.as_ref(ctx).as_ptr(),
         batch_size as i32,
