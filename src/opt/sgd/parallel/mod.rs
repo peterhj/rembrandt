@@ -203,7 +203,7 @@ impl ParallelSgdOpt {
           worker.operator().load_labels(batch_size);
           worker.operator().load_weights(batch_size);
           worker.operator().forward(batch_size, OpPhase::Training{t: iter_counter});
-          worker.operator().estimate_stats(acc_batch_size, batch_size);
+          //worker.operator().estimate_stats(acc_batch_size, batch_size);
           worker.operator().backward(batch_size);
           worker.operator().store_output_categories(batch_size);
           let local_loss = worker.operator().store_loss(batch_size);
@@ -222,7 +222,8 @@ impl ParallelSgdOpt {
           let l2_reg_coef = self.config.l2_reg_coef;
           let step_size = self.config.step_size.at_iter(iter_counter);
 
-          worker.operator().finalize_stats(minibatch_size);
+          assert_eq!(acc_batch_size, minibatch_size);
+          //worker.operator().finalize_stats(minibatch_size);
           acc_batch_size = 0;
 
           // Apply regularization to the current gradient.
