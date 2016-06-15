@@ -315,7 +315,7 @@ impl ParallelSgdOpt {
 
           worker.operator().reset();
           //worker.operator().reset_grad();
-          worker.operator().reset_stats();
+          //worker.operator().reset_stats();
 
           // If we are using the standard Nesterov update, apply some extra
           // momentum before the next iteration begins.

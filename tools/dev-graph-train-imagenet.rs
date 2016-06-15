@@ -89,9 +89,9 @@ fn main() {
     momentum:       Momentum::UpdateNesterov{mu: 0.9},
     l2_reg_coef:    1.0e-4,
     display_iters:      25,
-    checkpoint_iters:   250,
-    save_iters:         250,
-    valid_iters:        250,
+    checkpoint_iters:   625,
+    save_iters:         625,
+    valid_iters:        625,
 
     checkpoint_dir:     PathBuf::from("models/imagenet_maxscale480-resnet18pool_dev_x4_test"),
   };
