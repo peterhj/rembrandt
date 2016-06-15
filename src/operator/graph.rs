@@ -16,6 +16,10 @@ use operator::affine::{
   AffineOperatorConfig,
 };
 use operator::conv::{
+  Conv2dFwdBackend,
+  Conv2dBwdBackend,
+  Conv2dBwdFilterBackend,
+  Conv2dBwdDataBackend,
   Conv2dOperatorConfig,
   BNormConv2dOperatorConfig,
   StackResConv2dOperatorConfig,
@@ -184,7 +188,8 @@ impl GraphOperatorConfig {
       act_func:         ActivationFunction::Rect,
       init_weights:     cfg.init_weights,
       fwd_backend:      cfg.fwd_backend,
-      bwd_backend:      cfg.bwd_backend,
+      bwd_filt_backend: cfg.bwd_filt_backend,
+      bwd_data_backend: cfg.bwd_data_backend,
     };
     let conv2_cfg = BNormConv2dOperatorConfig{
       in_dims:          cfg.in_dims,
@@ -198,7 +203,8 @@ impl GraphOperatorConfig {
       act_func:         ActivationFunction::Identity,
       init_weights:     cfg.init_weights,
       fwd_backend:      cfg.fwd_backend,
-      bwd_backend:      cfg.bwd_backend,
+      bwd_filt_backend: cfg.bwd_filt_backend,
+      bwd_data_backend: cfg.bwd_data_backend,
     };
     let join_cfg = JoinOperatorConfig{
       num_in_arms:  2,
@@ -246,8 +252,11 @@ impl GraphOperatorConfig {
       pre_act_func:     ActivationFunction::Identity,
       act_func:         ActivationFunction::Identity,
       init_weights:     cfg.init_weights,
-      fwd_backend:      cfg.fwd_backend,
-      bwd_backend:      cfg.bwd_backend,
+      //fwd_backend:      cfg.fwd_backend,
+      //bwd_backend:      cfg.bwd_backend,
+      fwd_backend:      Conv2dFwdBackend::CudnnImplicitPrecompGemm,
+      bwd_filt_backend: Conv2dBwdFilterBackend::CudnnNonDeterministic,
+      bwd_data_backend: Conv2dBwdDataBackend::CudnnDeterministic,
     };
     let conv1_cfg = BNormConv2dOperatorConfig{
       in_dims:          cfg.in_dims,
@@ -261,7 +270,9 @@ impl GraphOperatorConfig {
       act_func:         ActivationFunction::Rect,
       init_weights:     cfg.init_weights,
       fwd_backend:      cfg.fwd_backend,
-      bwd_backend:      cfg.bwd_backend,
+      //bwd_backend:      cfg.bwd_backend,
+      bwd_filt_backend: cfg.bwd_filt_backend,
+      bwd_data_backend: cfg.bwd_data_backend,
     };
     let conv2_cfg = BNormConv2dOperatorConfig{
       in_dims:          cfg.out_dims,
@@ -275,7 +286,9 @@ impl GraphOperatorConfig {
       act_func:         ActivationFunction::Identity,
       init_weights:     cfg.init_weights,
       fwd_backend:      cfg.fwd_backend,
-      bwd_backend:      cfg.bwd_backend,
+      //bwd_backend:      cfg.bwd_backend,
+      bwd_filt_backend: cfg.bwd_filt_backend,
+      bwd_data_backend: cfg.bwd_data_backend,
     };
     let join_cfg = JoinOperatorConfig{
       num_in_arms:  2,

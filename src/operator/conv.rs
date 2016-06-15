@@ -28,7 +28,10 @@ use cuda_dnn::v4::{
   CudnnConvFwdOp, CudnnConvBwdFilterOp, CudnnConvBwdDataOp,
   CudnnAddOp, CudnnActKind, CudnnActOp, CudnnSoftmaxOp, CudnnPoolingOp, CudnnTransformOp, CudnnBatchNormOp,
 };
-use cuda_dnn::v4::ffi::{cudnnConvolutionFwdAlgo_t, cudnnPoolingMode_t, cudnnBatchNormMode_t};
+use cuda_dnn::v4::ffi::{
+  cudnnConvolutionFwdAlgo_t, cudnnConvolutionBwdFilterAlgo_t, cudnnConvolutionBwdDataAlgo_t,
+  cudnnPoolingMode_t, cudnnBatchNormMode_t,
+};
 use rembrandt_kernels::*;
 use rembrandt_kernels::ffi::*;
 use rng::xorshift::{Xorshiftplus128Rng};
@@ -48,13 +51,34 @@ use std::rc::{Rc};
 pub enum Conv2dFwdBackend {
   CudnnFastest,
   CudnnImplicitPrecompGemm,
+  CudnnDirect,
+  CudnnFft,
   CudnnFftTiling,
 }
 
+#[deprecated]
 #[derive(Clone, Copy, Debug)]
 pub enum Conv2dBwdBackend {
   CudnnFastest,
+  CudnnNonDeterministic,
   CudnnDeterministic,
+  CudnnFft,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum Conv2dBwdFilterBackend {
+  CudnnFastest,
+  CudnnNonDeterministic,
+  CudnnDeterministic,
+  CudnnFft,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum Conv2dBwdDataBackend {
+  CudnnFastest,
+  CudnnNonDeterministic,
+  CudnnDeterministic,
+  CudnnFft,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -66,8 +90,9 @@ pub struct Conv2dOperatorConfig {
   pub out_channels: usize,
   pub act_func:     ActivationFunction,
   pub init_weights: ParamsInit,
-  pub fwd_backend:  Conv2dFwdBackend,
-  pub bwd_backend:  Conv2dBwdBackend,
+  pub fwd_backend:      Conv2dFwdBackend,
+  pub bwd_filt_backend: Conv2dBwdFilterBackend,
+  pub bwd_data_backend: Conv2dBwdDataBackend,
 }
 
 impl Conv2dOperatorConfig {
@@ -152,8 +177,10 @@ impl Conv2dOperator {
 
     let mut workspace_size = 0;
     let fwd_algo = match config.fwd_backend {
-      Conv2dFwdBackend::CudnnImplicitPrecompGemm => cudnnConvolutionFwdAlgo_t::ImplicitPrecompGemm,
-      Conv2dFwdBackend::CudnnFftTiling           => cudnnConvolutionFwdAlgo_t::FftTiling,
+      Conv2dFwdBackend::CudnnImplicitPrecompGemm  => cudnnConvolutionFwdAlgo_t::ImplicitPrecompGemm,
+      Conv2dFwdBackend::CudnnDirect               => cudnnConvolutionFwdAlgo_t::Direct,
+      Conv2dFwdBackend::CudnnFft                  => cudnnConvolutionFwdAlgo_t::Fft,
+      Conv2dFwdBackend::CudnnFftTiling            => cudnnConvolutionFwdAlgo_t::FftTiling,
       _ => unimplemented!(),
     };
     let conv_fwd = CudnnConvFwdOp::create_algo(
@@ -164,6 +191,7 @@ impl Conv2dOperator {
         CudnnTensorDesc::<f32>::create_4d(out_width, out_height, out_channels, batch_size).unwrap(),
         &*ctx.get_dnn(),
     ).unwrap();
+    //println!("DEBUG: conv2d: {} {:?} {:?} fwd algo: {:?}", conv_size, in_dims, out_dims, conv_fwd.algo);
     workspace_size = max(workspace_size, conv_fwd.work_size);
 
     let add_bias = CudnnAddOp::new(
@@ -172,7 +200,28 @@ impl Conv2dOperator {
     );
 
     let backward = if capability.backward_enabled() {
-      let conv_bwd_w = CudnnConvBwdFilterOp::create_fastest(
+      /*let (bwd_w_algo, bwd_d_algo) = match config.bwd_backend {
+        Conv2dBwdBackend::CudnnNonDeterministic => (cudnnConvolutionBwdFilterAlgo_t::NonDeterministic,          cudnnConvolutionBwdDataAlgo_t::NonDeterministic),
+        //Conv2dBwdBackend::CudnnNonDeterministic => (cudnnConvolutionBwdFilterAlgo_t::NonDeterministicWorkspace, cudnnConvolutionBwdDataAlgo_t::NonDeterministic),
+        Conv2dBwdBackend::CudnnDeterministic    => (cudnnConvolutionBwdFilterAlgo_t::Deterministic,             cudnnConvolutionBwdDataAlgo_t::Deterministic),
+        Conv2dBwdBackend::CudnnFft              => (cudnnConvolutionBwdFilterAlgo_t::Fft,                       cudnnConvolutionBwdDataAlgo_t::Fft),
+        _ => unimplemented!(),
+      };*/
+      let bwd_w_algo = match config.bwd_filt_backend {
+        Conv2dBwdFilterBackend::CudnnNonDeterministic => cudnnConvolutionBwdFilterAlgo_t::NonDeterministicWorkspace,
+        Conv2dBwdFilterBackend::CudnnDeterministic    => cudnnConvolutionBwdFilterAlgo_t::Deterministic,
+        Conv2dBwdFilterBackend::CudnnFft              => cudnnConvolutionBwdFilterAlgo_t::Fft,
+        _ => unimplemented!(),
+      };
+      let bwd_d_algo = match config.bwd_data_backend {
+        Conv2dBwdDataBackend::CudnnNonDeterministic   => cudnnConvolutionBwdDataAlgo_t::NonDeterministic,
+        Conv2dBwdDataBackend::CudnnDeterministic      => cudnnConvolutionBwdDataAlgo_t::Deterministic,
+        Conv2dBwdDataBackend::CudnnFft                => cudnnConvolutionBwdDataAlgo_t::Fft,
+        _ => unimplemented!(),
+      };
+
+      let conv_bwd_w = CudnnConvBwdFilterOp::create_algo(
+          bwd_w_algo,
           CudnnTensorDesc::<f32>::create_4d(in_width, in_height, in_channels, batch_size).unwrap(),
           CudnnTensorDesc::<f32>::create_4d(out_width, out_height, out_channels, batch_size).unwrap(),
           CudnnConvDesc::create_2d_symmetric(conv_stride, conv_pad).unwrap(),
@@ -180,15 +229,20 @@ impl Conv2dOperator {
           CudnnTensorDesc::<f32>::create_4d(1, 1, out_channels, 1).unwrap(),
           &*ctx.get_dnn(),
       ).unwrap();
+      //println!("DEBUG: conv2d: {} {:?} {:?} bwd w algo: {:?}", conv_size, in_dims, out_dims, conv_bwd_w.algo);
       workspace_size = max(workspace_size, conv_bwd_w.work_size);
-      let conv_bwd_d = CudnnConvBwdDataOp::create_fastest(
+
+      let conv_bwd_d = CudnnConvBwdDataOp::create_algo(
+          bwd_d_algo,
           CudnnFilterDesc::<f32>::create_4d(conv_size, conv_size, in_channels, out_channels).unwrap(),
           CudnnTensorDesc::<f32>::create_4d(out_width, out_height, out_channels, batch_size).unwrap(),
           CudnnConvDesc::create_2d_symmetric(conv_stride, conv_pad).unwrap(),
           CudnnTensorDesc::<f32>::create_4d(in_width, in_height, in_channels, batch_size).unwrap(),
           &*ctx.get_dnn(),
       ).unwrap();
+      //println!("DEBUG: conv2d: {} {:?} {:?} bwd d algo: {:?}", conv_size, in_dims, out_dims, conv_bwd_d.algo);
       workspace_size = max(workspace_size, conv_bwd_d.work_size);
+
       Some(Conv2dBwdOperator{
         grad_weights: DeviceArray2d::<f32>::zeros((conv_size * conv_size * in_channels, out_channels), ctx),
         grad_bias:    DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
@@ -887,8 +941,9 @@ pub struct BNormConv2dOperatorConfig {
   pub pre_act_func: ActivationFunction,
   pub act_func:     ActivationFunction,
   pub init_weights: ParamsInit,
-  pub fwd_backend:  Conv2dFwdBackend,
-  pub bwd_backend:  Conv2dBwdBackend,
+  pub fwd_backend:      Conv2dFwdBackend,
+  pub bwd_filt_backend: Conv2dBwdFilterBackend,
+  pub bwd_data_backend: Conv2dBwdDataBackend,
 }
 
 impl BNormConv2dOperatorConfig {
@@ -998,8 +1053,10 @@ impl BNormConv2dOperator {
 
     let mut workspace_size = 0;
     let fwd_algo = match config.fwd_backend {
-      Conv2dFwdBackend::CudnnImplicitPrecompGemm => cudnnConvolutionFwdAlgo_t::ImplicitPrecompGemm,
-      Conv2dFwdBackend::CudnnFftTiling           => cudnnConvolutionFwdAlgo_t::FftTiling,
+      Conv2dFwdBackend::CudnnImplicitPrecompGemm  => cudnnConvolutionFwdAlgo_t::ImplicitPrecompGemm,
+      Conv2dFwdBackend::CudnnDirect               => cudnnConvolutionFwdAlgo_t::Direct,
+      Conv2dFwdBackend::CudnnFft                  => cudnnConvolutionFwdAlgo_t::Fft,
+      Conv2dFwdBackend::CudnnFftTiling            => cudnnConvolutionFwdAlgo_t::FftTiling,
       _ => unimplemented!(),
     };
     let conv_fwd = CudnnConvFwdOp::create_algo(
@@ -1010,10 +1067,31 @@ impl BNormConv2dOperator {
         CudnnTensorDesc::<f32>::create_4d(out_width, out_height, out_channels, batch_size).unwrap(),
         &*ctx.get_dnn(),
     ).unwrap();
+    //println!("DEBUG: conv2d: {} {:?} {:?} fwd algo: {:?}", conv_size, in_dims, out_dims, conv_fwd.algo);
     workspace_size = max(workspace_size, conv_fwd.work_size);
 
     let backward = if capability.backward_enabled() {
-      let conv_bwd_w = CudnnConvBwdFilterOp::create_fastest(
+      /*let (bwd_w_algo, bwd_d_algo) = match config.bwd_backend {
+        Conv2dBwdBackend::CudnnNonDeterministic => (cudnnConvolutionBwdFilterAlgo_t::NonDeterministicWorkspace, cudnnConvolutionBwdDataAlgo_t::NonDeterministic),
+        Conv2dBwdBackend::CudnnDeterministic    => (cudnnConvolutionBwdFilterAlgo_t::Deterministic,             cudnnConvolutionBwdDataAlgo_t::Deterministic),
+        Conv2dBwdBackend::CudnnFft              => (cudnnConvolutionBwdFilterAlgo_t::Fft,                       cudnnConvolutionBwdDataAlgo_t::Fft),
+        _ => unimplemented!(),
+      };*/
+      let bwd_w_algo = match config.bwd_filt_backend {
+        Conv2dBwdFilterBackend::CudnnNonDeterministic => cudnnConvolutionBwdFilterAlgo_t::NonDeterministicWorkspace,
+        Conv2dBwdFilterBackend::CudnnDeterministic    => cudnnConvolutionBwdFilterAlgo_t::Deterministic,
+        Conv2dBwdFilterBackend::CudnnFft              => cudnnConvolutionBwdFilterAlgo_t::Fft,
+        _ => unimplemented!(),
+      };
+      let bwd_d_algo = match config.bwd_data_backend {
+        Conv2dBwdDataBackend::CudnnNonDeterministic   => cudnnConvolutionBwdDataAlgo_t::NonDeterministic,
+        Conv2dBwdDataBackend::CudnnDeterministic      => cudnnConvolutionBwdDataAlgo_t::Deterministic,
+        Conv2dBwdDataBackend::CudnnFft                => cudnnConvolutionBwdDataAlgo_t::Fft,
+        _ => unimplemented!(),
+      };
+
+      let conv_bwd_w = CudnnConvBwdFilterOp::create_algo(
+          bwd_w_algo,
           CudnnTensorDesc::<f32>::create_4d(in_width, in_height, in_channels, batch_size).unwrap(),
           CudnnTensorDesc::<f32>::create_4d(out_width, out_height, out_channels, batch_size).unwrap(),
           CudnnConvDesc::create_2d_symmetric(conv_stride, conv_pad).unwrap(),
@@ -1021,15 +1099,18 @@ impl BNormConv2dOperator {
           CudnnTensorDesc::<f32>::create_4d(1, 1, out_channels, 1).unwrap(),
           &*ctx.get_dnn(),
       ).unwrap();
+      //println!("DEBUG: conv2d: {} {:?} {:?} bwd w algo: {:?}", conv_size, in_dims, out_dims, conv_bwd_w.algo);
       workspace_size = max(workspace_size, conv_bwd_w.work_size);
 
-      let conv_bwd_d = CudnnConvBwdDataOp::create_fastest(
+      let conv_bwd_d = CudnnConvBwdDataOp::create_algo(
+          bwd_d_algo,
           CudnnFilterDesc::<f32>::create_4d(conv_size, conv_size, in_channels, out_channels).unwrap(),
           CudnnTensorDesc::<f32>::create_4d(out_width, out_height, out_channels, batch_size).unwrap(),
           CudnnConvDesc::create_2d_symmetric(conv_stride, conv_pad).unwrap(),
           CudnnTensorDesc::<f32>::create_4d(in_width, in_height, in_channels, batch_size).unwrap(),
           &*ctx.get_dnn(),
       ).unwrap();
+      //println!("DEBUG: conv2d: {} {:?} {:?} bwd d algo: {:?}", conv_size, in_dims, out_dims, conv_bwd_d.algo);
       workspace_size = max(workspace_size, conv_bwd_d.work_size);
 
       Some(BNormConv2dBwdOperator{
@@ -1512,14 +1593,16 @@ impl Operator for BNormConv2dOperator {
             &*ctx.get_dnn(),
         ) }.unwrap();*/
 
-        unsafe { rembrandt_conv_diag_affine_white_fwd_batch(
+        //assert!(self.backward.is_some());
+        //let mut backward = self.backward.as_mut().unwrap();
+        unsafe { rembrandt_conv_diag_affine_white_var_fwd_batch(
             tmp_act.as_ref(ctx).as_ptr(),
             (out_dims.0 * out_dims.1) as i32,
             out_dims.2 as i32,
             batch_size as i32,
             self.stats_mean.as_ref(ctx).as_ptr(),
-            self.stats_istd.as_ref(ctx).as_ptr(),
-            //out_act.as_mut_ptr(),
+            self.stats_var.as_ref(ctx).as_ptr(),
+            self.config.bnorm_epsilon as f32,
             tmp2_act.as_ref_mut(ctx).as_mut_ptr(),
             ctx.stream.ptr,
         ) };
@@ -1590,6 +1673,12 @@ impl Operator for BNormConv2dOperator {
             backward.stats_var_batch.as_ref_mut(ctx).as_mut_ptr(),
             ctx.stream.ptr,
         ) };
+
+        let factor = self.config.bnorm_mov_avg.at_iter(t) as f32;
+        //self.stats_mean.as_ref_mut(ctx).vector_scale(1.0 - factor);
+        self.stats_mean.as_ref_mut(ctx).vector_add(factor, &backward.stats_mean_batch.as_ref(ctx), 1.0 - factor);
+        //self.stats_var.as_ref_mut(ctx).vector_scale(1.0 - factor);
+        self.stats_var.as_ref_mut(ctx).vector_add(factor, &backward.stats_var_batch.as_ref(ctx), 1.0 - factor);
 
         unsafe { rembrandt_conv_diag_affine_white_var_fwd_batch(
             tmp_act.as_ref(ctx).as_ptr(),
@@ -1840,7 +1929,7 @@ impl Operator for BNormConv2dOperator {
         backward.stats_var_acc.as_ref_mut(ctx).as_mut_ptr(),
         ctx.stream.ptr,
     ) };
-    backward.stats_mean_acc.as_ref_mut(ctx).vector_add(1.0, &backward.stats_mean_batch.as_ref(ctx));
+    backward.stats_mean_acc.as_ref_mut(ctx).vector_add(1.0, &backward.stats_mean_batch.as_ref(ctx), 1.0);
   }
 
   fn finalize_stats(&mut self, sample_size: usize) {
@@ -1861,10 +1950,10 @@ impl Operator for BNormConv2dOperator {
       }
     };
     //let factor = 0.01;
-    self.stats_mean.as_ref_mut(ctx).vector_scale(1.0 - factor);
-    self.stats_mean.as_ref_mut(ctx).vector_add(factor, &backward.stats_mean_acc.as_ref(ctx));
-    self.stats_var.as_ref_mut(ctx).vector_scale(1.0 - factor);
-    self.stats_var.as_ref_mut(ctx).vector_add(factor, &backward.stats_var_acc.as_ref(ctx));
+    //self.stats_mean.as_ref_mut(ctx).vector_scale(1.0 - factor);
+    self.stats_mean.as_ref_mut(ctx).vector_add(factor, &backward.stats_mean_acc.as_ref(ctx), 1.0 - factor);
+    //self.stats_var.as_ref_mut(ctx).vector_scale(1.0 - factor);
+    self.stats_var.as_ref_mut(ctx).vector_add(factor, &backward.stats_var_acc.as_ref(ctx), 1.0 - factor);
     let out_channels = self.config.get_out_dims().2;
     unsafe { rembrandt_kernel_estimate_invstd(
         self.stats_var.as_ref(ctx).as_ptr(),
@@ -1897,11 +1986,11 @@ impl Operator for BNormConv2dOperator {
     self.acc_bn_scale1_grad.as_view_mut(ctx)
       .row_vector_scale(momentum);
     self.acc_bn_scale1_grad.as_view_mut(ctx).data
-      .vector_add(scale, &backward.scale_grad.as_ref(ctx));
+      .vector_add(scale, &backward.scale_grad.as_ref(ctx), 1.0);
     self.acc_bn_bias1_grad.as_view_mut(ctx)
       .row_vector_scale(momentum);
     self.acc_bn_bias1_grad.as_view_mut(ctx).data
-      .vector_add(scale, &backward.bias_grad.as_ref(ctx));
+      .vector_add(scale, &backward.bias_grad.as_ref(ctx), 1.0);
   }
 
   fn update_param(&mut self, scale: f32) {
@@ -1918,9 +2007,9 @@ impl Operator for BNormConv2dOperator {
       .row_vector_sum(scale, &self.acc_bn_bias1_grad.as_view(ctx));*/
 
     self.scale.as_ref_mut(ctx)
-      .vector_add(scale, &self.acc_bn_scale1_grad.as_view(ctx).data);
+      .vector_add(scale, &self.acc_bn_scale1_grad.as_view(ctx).data, 1.0);
     self.bias.as_ref_mut(ctx)
-      .vector_add(scale, &self.acc_bn_bias1_grad.as_view(ctx).data);
+      .vector_add(scale, &self.acc_bn_bias1_grad.as_view(ctx).data, 1.0);
   }
 
   fn update_param2(&mut self, grad_scale: f32, update_scale: f32) {
@@ -2181,8 +2270,10 @@ pub struct StackResConv2dOperatorConfig {
   pub bnorm_epsilon:    f64,
   pub act_func:     ActivationFunction,
   pub init_weights: ParamsInit,
-  pub fwd_backend:  Conv2dFwdBackend,
-  pub bwd_backend:  Conv2dBwdBackend,
+  pub fwd_backend:      Conv2dFwdBackend,
+  //pub bwd_backend:  Conv2dBwdBackend,
+  pub bwd_filt_backend: Conv2dBwdFilterBackend,
+  pub bwd_data_backend: Conv2dBwdDataBackend,
 }
 
 impl StackResConv2dOperatorConfig {
@@ -3462,8 +3553,10 @@ pub struct ProjStackResConv2dOperatorConfig {
   pub bnorm_epsilon:    f64,
   pub act_func:     ActivationFunction,
   pub init_weights: ParamsInit,
-  pub fwd_backend:  Conv2dFwdBackend,
-  pub bwd_backend:  Conv2dBwdBackend,
+  pub fwd_backend:      Conv2dFwdBackend,
+  //pub bwd_backend:  Conv2dBwdBackend,
+  pub bwd_filt_backend: Conv2dBwdFilterBackend,
+  pub bwd_data_backend: Conv2dBwdDataBackend,
 }
 
 impl ProjStackResConv2dOperatorConfig {

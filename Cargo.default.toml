@@ -72,9 +72,9 @@ path = "tools/calculate-cifar10-mean.rs"
 #name = "new-dist-train-imagenet"
 #path = "tools/new-dist-train-imagenet.rs"
 
-[[bin]]
-name = "seq-train-imagenet"
-path = "tools/seq-train-imagenet.rs"
+#[[bin]]
+#name = "seq-train-imagenet"
+#path = "tools/seq-train-imagenet.rs"
 
 [[bin]]
 name = "graph-train-imagenet"

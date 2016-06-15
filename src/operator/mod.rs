@@ -120,8 +120,8 @@ impl OpRead for OpCursor<DeviceBuffer<f32>> {
   fn accumulate_read<'a>(&'a mut self, offset: usize, alpha: f32, beta: f32, dst: &mut DeviceBufferRefMut<'a, f32>) -> usize {
     let buf_len = dst.len();
     let src = self.inner.as_ref_range(offset, offset + buf_len, dst.ctx);
-    dst.vector_scale(beta);
-    dst.vector_add(alpha, &src);
+    //dst.vector_scale(beta);
+    dst.vector_add(alpha, &src, beta);
     buf_len
   }
 }
@@ -136,8 +136,8 @@ impl OpWrite for OpCursor<DeviceBuffer<f32>> {
   fn accumulate_write<'a>(&'a mut self, offset: usize, alpha: f32, beta: f32, src: &DeviceBufferRef<'a, f32>) -> usize {
     let buf_len = src.len();
     let mut dst = self.inner.as_ref_mut_range(offset, offset + buf_len, src.ctx);
-    dst.vector_scale(beta);
-    dst.vector_add(alpha, &src);
+    //dst.vector_scale(beta);
+    dst.vector_add(alpha, &src, beta);
     buf_len
   }
 }
@@ -895,7 +895,7 @@ impl Operator for CopySplitOperator {
       let mut in_delta = in_delta.borrow_mut().as_ref_mut(ctx);
       in_delta.copy(&backward.out_deltas[0].as_mut().unwrap().borrow_mut().as_ref(ctx));
       for arm in 1 .. self.config.num_out_arms {
-        in_delta.vector_add(1.0, &backward.out_deltas[arm].as_mut().unwrap().borrow_mut().as_ref(ctx));
+        in_delta.vector_add(1.0, &backward.out_deltas[arm].as_mut().unwrap().borrow_mut().as_ref(ctx), 1.0);
       }
     }
   }
@@ -1031,7 +1031,7 @@ impl Operator for AddJoinOperator {
 
     out_act.copy(&self.in_acts[0].borrow_mut().as_ref(ctx));
     for arm in 1 .. self.config.num_in_arms {
-      out_act.vector_add(1.0, &self.in_acts[arm].borrow_mut().as_ref(ctx));
+      out_act.vector_add(1.0, &self.in_acts[arm].borrow_mut().as_ref(ctx), 1.0);
     }
 
     match self.config.act_func {
@@ -1091,7 +1091,7 @@ impl Operator for AddJoinOperator {
 
     out_r_act.copy(&r_forward.in_r_acts[0].borrow_mut().as_ref(ctx));
     for arm in 1 .. self.config.num_in_arms {
-      out_r_act.vector_add(1.0, &r_forward.in_r_acts[arm].borrow_mut().as_ref(ctx));
+      out_r_act.vector_add(1.0, &r_forward.in_r_acts[arm].borrow_mut().as_ref(ctx), 1.0);
     }
   }
 }
