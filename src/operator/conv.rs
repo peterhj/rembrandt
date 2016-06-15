@@ -23,12 +23,12 @@ use array_cuda::device::ext::{DeviceCastBytesExt, DeviceNumExt};
 use array_cuda::device::linalg::{VectorExt, BlasMatrixExt, BlasVectorExt, Transpose};
 use array_cuda::device::memory::{DeviceBufferInitExt, DeviceBuffer};
 use array_cuda::device::random::{RandomSampleExt, UniformDist};
-use cuda_dnn::v4::{
+use cuda_dnn::v5::{
   CudnnTensorDesc, CudnnFilterDesc, CudnnConvDesc,
   CudnnConvFwdOp, CudnnConvBwdFilterOp, CudnnConvBwdDataOp,
   CudnnAddOp, CudnnActKind, CudnnActOp, CudnnSoftmaxOp, CudnnPoolingOp, CudnnTransformOp, CudnnBatchNormOp,
 };
-use cuda_dnn::v4::ffi::{
+use cuda_dnn::v5::ffi::{
   cudnnConvolutionFwdAlgo_t, cudnnConvolutionBwdFilterAlgo_t, cudnnConvolutionBwdDataAlgo_t,
   cudnnPoolingMode_t, cudnnBatchNormMode_t,
 };
@@ -54,6 +54,7 @@ pub enum Conv2dFwdBackend {
   CudnnDirect,
   CudnnFft,
   CudnnFftTiling,
+  CudnnWinograd,
 }
 
 #[deprecated]
@@ -79,6 +80,7 @@ pub enum Conv2dBwdDataBackend {
   CudnnNonDeterministic,
   CudnnDeterministic,
   CudnnFft,
+  CudnnWinograd,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -181,6 +183,7 @@ impl Conv2dOperator {
       Conv2dFwdBackend::CudnnDirect               => cudnnConvolutionFwdAlgo_t::Direct,
       Conv2dFwdBackend::CudnnFft                  => cudnnConvolutionFwdAlgo_t::Fft,
       Conv2dFwdBackend::CudnnFftTiling            => cudnnConvolutionFwdAlgo_t::FftTiling,
+      Conv2dFwdBackend::CudnnWinograd             => cudnnConvolutionFwdAlgo_t::Winograd,
       _ => unimplemented!(),
     };
     let conv_fwd = CudnnConvFwdOp::create_algo(
@@ -217,6 +220,7 @@ impl Conv2dOperator {
         Conv2dBwdDataBackend::CudnnNonDeterministic   => cudnnConvolutionBwdDataAlgo_t::NonDeterministic,
         Conv2dBwdDataBackend::CudnnDeterministic      => cudnnConvolutionBwdDataAlgo_t::Deterministic,
         Conv2dBwdDataBackend::CudnnFft                => cudnnConvolutionBwdDataAlgo_t::Fft,
+        Conv2dBwdDataBackend::CudnnWinograd           => cudnnConvolutionBwdDataAlgo_t::Winograd,
         _ => unimplemented!(),
       };
 
@@ -1057,6 +1061,7 @@ impl BNormConv2dOperator {
       Conv2dFwdBackend::CudnnDirect               => cudnnConvolutionFwdAlgo_t::Direct,
       Conv2dFwdBackend::CudnnFft                  => cudnnConvolutionFwdAlgo_t::Fft,
       Conv2dFwdBackend::CudnnFftTiling            => cudnnConvolutionFwdAlgo_t::FftTiling,
+      Conv2dFwdBackend::CudnnWinograd             => cudnnConvolutionFwdAlgo_t::Winograd,
       _ => unimplemented!(),
     };
     let conv_fwd = CudnnConvFwdOp::create_algo(
@@ -1087,6 +1092,7 @@ impl BNormConv2dOperator {
         Conv2dBwdDataBackend::CudnnNonDeterministic   => cudnnConvolutionBwdDataAlgo_t::NonDeterministic,
         Conv2dBwdDataBackend::CudnnDeterministic      => cudnnConvolutionBwdDataAlgo_t::Deterministic,
         Conv2dBwdDataBackend::CudnnFft                => cudnnConvolutionBwdDataAlgo_t::Fft,
+        Conv2dBwdDataBackend::CudnnWinograd           => cudnnConvolutionBwdDataAlgo_t::Winograd,
         _ => unimplemented!(),
       };
 

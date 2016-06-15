@@ -36,12 +36,12 @@ use array_cuda::device::ext::{DeviceCastBytesExt, DeviceNumExt};
 use array_cuda::device::linalg::{VectorExt, BlasMatrixExt, BlasVectorExt, Transpose};
 use array_cuda::device::memory::{DeviceBufferInitExt, DeviceBuffer, DeviceBufferRef, DeviceBufferRefMut};
 use array_cuda::device::random::{RandomSampleExt, UniformDist, GaussianDist};
-use cuda_dnn::v4::{
+use cuda_dnn::v5::{
   CudnnConvFwdOp, CudnnConvBwdFilterOp, CudnnConvBwdDataOp,
   CudnnAddOp, CudnnActKind, CudnnActOp, CudnnSoftmaxOp, CudnnPoolingOp, CudnnTransformOp,
   CudnnTensorDesc, CudnnFilterDesc, CudnnConvDesc,
 };
-use cuda_dnn::v4::ffi::{cudnnConvolutionFwdAlgo_t, cudnnPoolingMode_t};
+use cuda_dnn::v5::ffi::{cudnnConvolutionFwdAlgo_t, cudnnPoolingMode_t};
 use rembrandt_kernels::*;
 use rembrandt_kernels::ffi::*;
 use rng::xorshift::{Xorshiftplus128Rng};

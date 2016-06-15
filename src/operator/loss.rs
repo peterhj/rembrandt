@@ -9,7 +9,7 @@ use array_cuda::device::array::{DeviceArray2d};
 use array_cuda::device::context::{DeviceContext};
 use array_cuda::device::ext::{DeviceNumExt};
 use array_cuda::device::memory::{DeviceBufferInitExt, DeviceBuffer};
-use cuda_dnn::v4::{
+use cuda_dnn::v5::{
   CudnnSoftmaxOp,
   CudnnTensorDesc, //CudnnFilterDesc, CudnnConvDesc,
 };

@@ -87,7 +87,6 @@ pub fn build_resnet18pool_var224x224() -> GraphOperatorConfig {
     act_func:       ActivationFunction::Rect,
     init_weights:   ParamsInit::KaimingFwd,
     fwd_backend:        Conv2dFwdBackend::CudnnImplicitPrecompGemm,
-    //bwd_backend:    Conv2dBwdBackend::CudnnNonDeterministic,
     bwd_filt_backend:   Conv2dBwdFilterBackend::CudnnDeterministic,
     bwd_data_backend:   Conv2dBwdDataBackend::CudnnNonDeterministic,
   };
@@ -105,10 +104,9 @@ pub fn build_resnet18pool_var224x224() -> GraphOperatorConfig {
     bnorm_epsilon:  BNORM_EPSILON,
     act_func:       ActivationFunction::Rect,
     init_weights:   ParamsInit::KaimingFwd,
-    fwd_backend:        Conv2dFwdBackend::CudnnImplicitPrecompGemm,
-    //bwd_backend:    Conv2dBwdBackend::CudnnNonDeterministic,
+    fwd_backend:        Conv2dFwdBackend::CudnnWinograd,
     bwd_filt_backend:   Conv2dBwdFilterBackend::CudnnNonDeterministic,
-    bwd_data_backend:   Conv2dBwdDataBackend::CudnnDeterministic,
+    bwd_data_backend:   Conv2dBwdDataBackend::CudnnWinograd,
   };
   let pool2_op_cfg = Pool2dOperatorConfig{
     in_dims:        (56, 56, 64),
@@ -125,10 +123,9 @@ pub fn build_resnet18pool_var224x224() -> GraphOperatorConfig {
     bnorm_epsilon:  BNORM_EPSILON,
     act_func:       ActivationFunction::Rect,
     init_weights:   ParamsInit::KaimingFwd,
-    fwd_backend:        Conv2dFwdBackend::CudnnImplicitPrecompGemm,
-    //bwd_backend:    Conv2dBwdBackend::CudnnNonDeterministic,
+    fwd_backend:        Conv2dFwdBackend::CudnnWinograd,
     bwd_filt_backend:   Conv2dBwdFilterBackend::CudnnNonDeterministic,
-    bwd_data_backend:   Conv2dBwdDataBackend::CudnnDeterministic,
+    bwd_data_backend:   Conv2dBwdDataBackend::CudnnWinograd,
   };
   let res_conv3_op_cfg = StackResConv2dOperatorConfig{
     in_dims:        (28, 28, 128),
@@ -136,10 +133,9 @@ pub fn build_resnet18pool_var224x224() -> GraphOperatorConfig {
     bnorm_epsilon:  BNORM_EPSILON,
     act_func:       ActivationFunction::Rect,
     init_weights:   ParamsInit::KaimingFwd,
-    fwd_backend:        Conv2dFwdBackend::CudnnImplicitPrecompGemm,
-    //bwd_backend:    Conv2dBwdBackend::CudnnNonDeterministic,
+    fwd_backend:        Conv2dFwdBackend::CudnnWinograd,
     bwd_filt_backend:   Conv2dBwdFilterBackend::CudnnDeterministic,
-    bwd_data_backend:   Conv2dBwdDataBackend::CudnnDeterministic,
+    bwd_data_backend:   Conv2dBwdDataBackend::CudnnWinograd,
   };
   let pool3_op_cfg = Pool2dOperatorConfig{
     in_dims:        (28, 28, 128),
@@ -156,10 +152,9 @@ pub fn build_resnet18pool_var224x224() -> GraphOperatorConfig {
     bnorm_epsilon:  BNORM_EPSILON,
     act_func:       ActivationFunction::Rect,
     init_weights:   ParamsInit::KaimingFwd,
-    fwd_backend:        Conv2dFwdBackend::CudnnImplicitPrecompGemm,
-    //bwd_backend:    Conv2dBwdBackend::CudnnNonDeterministic,
+    fwd_backend:        Conv2dFwdBackend::CudnnWinograd,
     bwd_filt_backend:   Conv2dBwdFilterBackend::CudnnDeterministic,
-    bwd_data_backend:   Conv2dBwdDataBackend::CudnnDeterministic,
+    bwd_data_backend:   Conv2dBwdDataBackend::CudnnWinograd,
   };
   let res_conv4_op_cfg = StackResConv2dOperatorConfig{
     in_dims:        (14, 14, 256),
@@ -168,7 +163,6 @@ pub fn build_resnet18pool_var224x224() -> GraphOperatorConfig {
     act_func:       ActivationFunction::Rect,
     init_weights:   ParamsInit::KaimingFwd,
     fwd_backend:        Conv2dFwdBackend::CudnnFft,
-    //bwd_backend:    Conv2dBwdBackend::CudnnNonDeterministic,
     bwd_filt_backend:   Conv2dBwdFilterBackend::CudnnFft,
     bwd_data_backend:   Conv2dBwdDataBackend::CudnnFft,
   };
@@ -187,10 +181,9 @@ pub fn build_resnet18pool_var224x224() -> GraphOperatorConfig {
     bnorm_epsilon:  BNORM_EPSILON,
     act_func:       ActivationFunction::Rect,
     init_weights:   ParamsInit::KaimingFwd,
-    fwd_backend:        Conv2dFwdBackend::CudnnImplicitPrecompGemm,
-    //bwd_backend:    Conv2dBwdBackend::CudnnNonDeterministic,
+    fwd_backend:        Conv2dFwdBackend::CudnnWinograd,
     bwd_filt_backend:   Conv2dBwdFilterBackend::CudnnNonDeterministic,
-    bwd_data_backend:   Conv2dBwdDataBackend::CudnnDeterministic,
+    bwd_data_backend:   Conv2dBwdDataBackend::CudnnWinograd,
   };
   let res_conv5_op_cfg = StackResConv2dOperatorConfig{
     in_dims:        (7, 7, 512),
@@ -198,10 +191,9 @@ pub fn build_resnet18pool_var224x224() -> GraphOperatorConfig {
     bnorm_epsilon:  BNORM_EPSILON,
     act_func:       ActivationFunction::Rect,
     init_weights:   ParamsInit::KaimingFwd,
-    fwd_backend:        Conv2dFwdBackend::CudnnImplicitPrecompGemm,
-    //bwd_backend:    Conv2dBwdBackend::CudnnNonDeterministic,
+    fwd_backend:        Conv2dFwdBackend::CudnnWinograd,
     bwd_filt_backend:   Conv2dBwdFilterBackend::CudnnNonDeterministic,
-    bwd_data_backend:   Conv2dBwdDataBackend::CudnnDeterministic,
+    bwd_data_backend:   Conv2dBwdDataBackend::CudnnWinograd,
   };
   let global_pool_op_cfg = Pool2dOperatorConfig{
     in_dims:        (7, 7, 512),

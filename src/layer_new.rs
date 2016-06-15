@@ -16,12 +16,12 @@ use array_cuda::device::ext::{DeviceCastBytesExt, DeviceNumExt};
 use array_cuda::device::linalg::{BlasVectorExt, BlasMatrixExt, Transpose};
 use array_cuda::device::memory::{DeviceBufferInitExt};
 //use array_dist::comm::{DistAllReduceWorker};
-use cuda_dnn::v4::{
+use cuda_dnn::v5::{
   CudnnConvFwdOp, CudnnConvBwdFilterOp, CudnnConvBwdDataOp,
   CudnnAddOp, CudnnActKind, CudnnActOp, CudnnSoftmaxOp,
   CudnnTensorDesc, CudnnFilterDesc, CudnnConvDesc,
 };
-use cuda_dnn::v4::ffi::{cudnnConvolutionFwdAlgo_t};
+use cuda_dnn::v5::ffi::{cudnnConvolutionFwdAlgo_t};
 //use float::ord::{F32InfNan};
 use rembrandt_kernels::ffi::*;
 use rng::xorshift::{Xorshiftplus128Rng};
