@@ -124,6 +124,7 @@ pub struct Conv2dOperator {
   in_act:       SharedDeviceBuf<f32>,
   in_delta:     Option<SharedDeviceBuf<f32>>,
   tmp_act:      DeviceBuffer<f32>,
+  post_act:     DeviceBuffer<f32>,
   out_act:      SharedDeviceBuf<f32>,
   out_delta:    SharedDeviceBuf<f32>,
 
@@ -142,6 +143,7 @@ pub struct Conv2dOperator {
 struct Conv2dBwdOperator {
   //in_delta:     Option<SharedDeviceBuf<f32>>,
   //out_delta:    SharedDeviceBuf<f32>,
+  post_delta:   DeviceBuffer<f32>,
 
   grad_weights: DeviceArray2d<f32>,
   grad_bias:    DeviceArray2d<f32>,
@@ -156,6 +158,7 @@ struct Conv2dBwdOperator {
 
 struct Conv2dRFwdOperator {
   in_r_act:     SharedDeviceBuf<f32>,
+  post_r_act:   DeviceBuffer<f32>,
   out_r_act:    SharedDeviceBuf<f32>,
 
   dir_weights:  DeviceArray2d<f32>,
@@ -248,6 +251,7 @@ impl Conv2dOperator {
       workspace_size = max(workspace_size, conv_bwd_d.work_size);
 
       Some(Conv2dBwdOperator{
+        post_delta:   DeviceBuffer::zeros(out_length * batch_size, ctx),
         grad_weights: DeviceArray2d::<f32>::zeros((conv_size * conv_size * in_channels, out_channels), ctx),
         grad_bias:    DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
         acc_grad_weights: DeviceArray2d::<f32>::zeros((conv_size * conv_size * in_channels, out_channels), ctx),
@@ -271,10 +275,11 @@ impl Conv2dOperator {
       let dir_weights = DeviceArray2d::<f32>::zeros((conv_size * conv_size * in_channels, out_channels), ctx);
       let dir_bias = DeviceArray2d::<f32>::zeros((1, out_channels), ctx);
       Some(Conv2dRFwdOperator{
-        in_r_act:   in_r_act,
-        out_r_act:  out_r_act,
-        dir_weights:    dir_weights,
-        dir_bias:       dir_bias,
+        post_r_act:   DeviceBuffer::zeros(out_length * batch_size, ctx),
+        in_r_act:     in_r_act,
+        out_r_act:    out_r_act,
+        dir_weights:  dir_weights,
+        dir_bias:     dir_bias,
       })
     } else {
       None
@@ -288,7 +293,8 @@ impl Conv2dOperator {
       context:      context.clone(),
       in_act:       prev_op.unwrap().get_output_act(0),
       in_delta:     prev_op.unwrap().get_output_delta(0),
-      tmp_act:      DeviceBuffer::<f32>::zeros(out_length * batch_size, ctx),
+      tmp_act:      DeviceBuffer::zeros(out_length * batch_size, ctx),
+      post_act:     DeviceBuffer::zeros(out_length * batch_size, ctx),
       out_act:      Rc::new(RefCell::new(DeviceBuffer::<f32>::zeros(out_length * batch_size, ctx))),
       out_delta:    Rc::new(RefCell::new(DeviceBuffer::<f32>::zeros(out_length * batch_size, ctx))),
       weights:      DeviceArray2d::<f32>::zeros((conv_size * conv_size * in_channels, out_channels), ctx),
@@ -511,12 +517,13 @@ impl Operator for Conv2dOperator {
     let &mut Conv2dOperator{
       ref context,
       ref mut in_act, ref mut out_act,
+      ref mut post_act,
       ref mut weights, ref mut bias,
       ref mut workspace,
       .. } = self;
 
     let ctx = &(**context).as_ref();
-    let mut out_act = out_act.borrow_mut().as_ref_mut(ctx);
+    let mut out_act = out_act.borrow_mut();
 
     self.conv_fwd.set_batch_size(batch_size).unwrap();
     match unsafe { self.conv_fwd.forward(
@@ -524,7 +531,7 @@ impl Operator for Conv2dOperator {
         in_act.borrow_mut().as_ref(ctx).as_ptr(),
         weights.as_view(ctx).as_ptr(),
         0.0,
-        out_act.as_mut_ptr(),
+        post_act.as_ref_mut(ctx).as_mut_ptr(),
         workspace.as_ref_mut(ctx).as_mut_ptr(),
         &*ctx.get_dnn(),
     ) } {
@@ -536,17 +543,25 @@ impl Operator for Conv2dOperator {
         1.0,
         bias.as_view(ctx).as_ptr(),
         1.0,
-        out_act.as_mut_ptr(),
+        post_act.as_ref_mut(ctx).as_mut_ptr(),
         &*ctx.get_dnn(),
     ).unwrap() };
 
     match self.config.act_func {
-      ActivationFunction::Identity => {}
+      ActivationFunction::Identity => {
+        out_act.as_ref_mut(ctx).copy(&post_act.as_ref(ctx));
+      }
       ActivationFunction::Rect => {
-        unsafe { rembrandt_kernel_batch_map_rect_inplace(
+        /*unsafe { rembrandt_kernel_batch_map_rect_inplace(
             out_act.as_mut_ptr(),
             out_length as i32,
             batch_size as i32,
+            ctx.stream.ptr,
+        ) };*/
+        unsafe { rembrandt_rect_fwd(
+            post_act.as_ref(ctx).as_ptr(),
+            (out_length * batch_size) as i32,
+            out_act.as_ref_mut(ctx).as_mut_ptr(),
             ctx.stream.ptr,
         ) };
       }
@@ -570,6 +585,7 @@ impl Operator for Conv2dOperator {
       ref context,
       ref mut in_act, ref mut in_delta,
       ref mut out_act, ref mut out_delta,
+      ref mut post_act,
       ref mut weights, //ref mut bias,
       ref mut workspace,
       ref mut backward,
@@ -580,19 +596,28 @@ impl Operator for Conv2dOperator {
       .. } = backward;
 
     let ctx = &(**context).as_ref();
-    let in_act = in_act.borrow_mut().as_ref(ctx);
-    let out_act = out_act.borrow_mut().as_ref(ctx);
-    let mut out_delta = out_delta.borrow_mut().as_ref_mut(ctx);
+    let mut in_act = in_act.borrow_mut();
+    //let out_act = out_act.borrow_mut().as_ref(ctx);
+    let mut out_delta = out_delta.borrow_mut();
     let mut workspace = workspace.as_ref_mut(ctx);
 
     match self.config.act_func {
-      ActivationFunction::Identity => {}
+      ActivationFunction::Identity => {
+        backward.post_delta.as_ref_mut(ctx).copy(&out_delta.as_ref(ctx));
+      }
       ActivationFunction::Rect => {
-        unsafe { rembrandt_kernel_batch_map_rect_backprop_inplace(
+        /*unsafe { rembrandt_kernel_batch_map_rect_backprop_inplace(
             out_act.as_ptr(),
             out_length as i32,
             batch_size as i32,
             out_delta.as_mut_ptr(),
+            ctx.stream.ptr,
+        ) };*/
+        unsafe { rembrandt_rect_bwd(
+            post_act.as_ref(ctx).as_ptr(),
+            (out_length * batch_size) as i32,
+            out_delta.as_ref(ctx).as_ptr(),
+            backward.post_delta.as_ref_mut(ctx).as_mut_ptr(),
             ctx.stream.ptr,
         ) };
       }
@@ -602,8 +627,8 @@ impl Operator for Conv2dOperator {
     backward.conv_bwd_w.set_batch_size(batch_size).unwrap();
     unsafe { backward.conv_bwd_w.backward_filter(
         1.0,
-        in_act.as_ptr(),
-        out_delta.as_ptr(),
+        in_act.as_ref(ctx).as_ptr(),
+        backward.post_delta.as_ref(ctx).as_ptr(),
         1.0,
         grad_weights.as_view_mut(ctx).as_mut_ptr(),
         workspace.as_mut_ptr(),
@@ -611,7 +636,7 @@ impl Operator for Conv2dOperator {
     ).unwrap() };
     unsafe { backward.conv_bwd_w.backward_bias(
         1.0,
-        out_delta.as_ptr(),
+        backward.post_delta.as_ref(ctx).as_ptr(),
         1.0,
         grad_bias.as_view_mut(ctx).as_mut_ptr(),
         &*ctx.get_dnn(),
@@ -622,7 +647,7 @@ impl Operator for Conv2dOperator {
       unsafe { backward.conv_bwd_d.backward_data(
           1.0,
           weights.as_view(ctx).as_ptr(),
-          out_delta.as_ptr(),
+          backward.post_delta.as_ref(ctx).as_ptr(),
           0.0,
           in_delta.as_mut_ptr(),
           workspace.as_mut_ptr(),
@@ -643,6 +668,7 @@ impl Operator for Conv2dOperator {
     let &mut Conv2dOperator{
       ref context,
       ref mut in_act, ref mut tmp_act, ref mut out_act,
+      ref mut post_act,
       ref mut weights, ref mut bias,
       ref mut workspace,
       ref mut r_forward,
@@ -664,7 +690,7 @@ impl Operator for Conv2dOperator {
         in_r_act.borrow_mut().as_ref(ctx).as_ptr(),
         weights.as_view(ctx).as_ptr(),
         0.0,
-        out_r_act.as_ref_mut(ctx).as_mut_ptr(),
+        r_forward.post_r_act.as_ref_mut(ctx).as_mut_ptr(),
         workspace.as_ref_mut(ctx).as_mut_ptr(),
         &*ctx.get_dnn(),
     ).unwrap() };
@@ -673,7 +699,7 @@ impl Operator for Conv2dOperator {
         in_act.borrow_mut().as_ref(ctx).as_ptr(),
         dir_weights.as_view(ctx).as_ptr(),
         1.0,
-        out_r_act.as_ref_mut(ctx).as_mut_ptr(),
+        r_forward.post_r_act.as_ref_mut(ctx).as_mut_ptr(),
         workspace.as_ref_mut(ctx).as_mut_ptr(),
         &*ctx.get_dnn(),
     ).unwrap() };
@@ -682,18 +708,27 @@ impl Operator for Conv2dOperator {
         1.0,
         dir_bias.as_view(ctx).as_ptr(),
         1.0,
-        out_r_act.as_ref_mut(ctx).as_mut_ptr(),
+        r_forward.post_r_act.as_ref_mut(ctx).as_mut_ptr(),
         &*ctx.get_dnn(),
     ).unwrap() };
 
     match self.config.act_func {
-      ActivationFunction::Identity => {}
+      ActivationFunction::Identity => {
+        out_r_act.as_ref_mut(ctx).copy(&post_act.as_ref(ctx));
+      }
       ActivationFunction::Rect => {
-        // FIXME(20160526): in-place activation function is not sufficient!
+        /*// FIXME(20160526): in-place activation function is not sufficient!
         unsafe { rembrandt_kernel_batch_map_rect_backprop_inplace(
             out_act.as_ref(ctx).as_ptr(),
             out_length as i32,
             batch_size as i32,
+            out_r_act.as_ref_mut(ctx).as_mut_ptr(),
+            ctx.stream.ptr,
+        ) };*/
+        unsafe { rembrandt_rect_bwd(
+            post_act.as_ref(ctx).as_ptr(),
+            (out_length * batch_size) as i32,
+            r_forward.post_r_act.as_ref(ctx).as_ptr(),
             out_r_act.as_ref_mut(ctx).as_mut_ptr(),
             ctx.stream.ptr,
         ) };
@@ -995,6 +1030,7 @@ pub struct BNormConv2dOperator {
   tmp_delta:    DeviceBuffer<f32>,
   tmp2_act:     DeviceBuffer<f32>,
   tmp2_delta:   DeviceBuffer<f32>,
+  post_act:     DeviceBuffer<f32>,
 
   stats_mean_batch: DeviceBuffer<f32>,
   stats_var_batch:  DeviceBuffer<f32>,
@@ -1021,7 +1057,9 @@ pub struct BNormConv2dOperator {
 
 struct BNormConv2dBwdOperator {
   acc_grad_weights: DeviceArray2d<f32>,
-  save_weights: DeviceArray2d<f32>,
+  save_weights:     DeviceArray2d<f32>,
+
+  post_delta:       DeviceBuffer<f32>,
 
   //iter_counter:     usize,
   grad_weights: DeviceArray2d<f32>,
@@ -1048,6 +1086,7 @@ struct BNormConv2dRFwdOperator {
   //pre_r_act:    DeviceBuffer<f32>,
   tmp_r_act:    DeviceBuffer<f32>,
   tmp2_r_act:   DeviceBuffer<f32>,
+  post_r_act:   DeviceBuffer<f32>,
 
   stats_r_mean: DeviceBuffer<f32>,
   stats_r_var:  DeviceBuffer<f32>,
@@ -1138,6 +1177,7 @@ impl BNormConv2dOperator {
         grad_weights:     DeviceArray2d::<f32>::zeros((conv_size * conv_size * in_channels, out_channels), ctx),
         acc_grad_weights: DeviceArray2d::<f32>::zeros((conv_size * conv_size * in_channels, out_channels), ctx),
         save_weights:     DeviceArray2d::<f32>::zeros((conv_size * conv_size * in_channels, out_channels), ctx),
+        post_delta:       DeviceBuffer::zeros(out_length * batch_size, ctx),
         //iter_counter:     0,
         scale_grad:       DeviceBuffer::zeros(out_channels, ctx),
         bias_grad:        DeviceBuffer::zeros(out_channels, ctx),
@@ -1164,6 +1204,7 @@ impl BNormConv2dOperator {
         out_r_act:        Rc::new(RefCell::new(DeviceBuffer::<f32>::zeros(out_length * batch_size, ctx))),
         tmp_r_act:        DeviceBuffer::zeros(out_length * batch_size, ctx),
         tmp2_r_act:       DeviceBuffer::zeros(out_length * batch_size, ctx),
+        post_r_act:       DeviceBuffer::zeros(out_length * batch_size, ctx),
         stats_r_mean:     DeviceBuffer::zeros(out_channels, ctx),
         stats_r_var:      DeviceBuffer::zeros(out_channels, ctx),
         dir_weights:      DeviceArray2d::<f32>::zeros((conv_size * conv_size * in_channels, out_channels), ctx),
@@ -1210,6 +1251,7 @@ impl BNormConv2dOperator {
       tmp_delta:    DeviceBuffer::<f32>::zeros(out_length * batch_size, ctx),
       tmp2_act:     DeviceBuffer::<f32>::zeros(out_length * batch_size, ctx),
       tmp2_delta:   DeviceBuffer::<f32>::zeros(out_length * batch_size, ctx),
+      post_act:     DeviceBuffer::zeros(out_length * batch_size, ctx),
 
       stats_mean_batch: DeviceBuffer::zeros(out_channels, ctx),
       stats_var_batch:  DeviceBuffer::zeros(out_channels, ctx),
@@ -1574,12 +1616,14 @@ impl Operator for BNormConv2dOperator {
 
     let &mut BNormConv2dOperator{
       ref context,
-      ref mut in_act, ref mut out_act,
+      ref mut in_act,
+      ref mut out_act,
       ref mut weights,
       ref mut workspace,
       ref mut pre_act,
       ref mut tmp_act,
       ref mut tmp2_act,
+      ref mut post_act,
       .. } = self;
 
     let ctx = &(**context).as_ref();
@@ -1655,7 +1699,7 @@ impl Operator for BNormConv2dOperator {
             batch_size as i32,
             self.scale.as_ref(ctx).as_ptr(),
             self.bias.as_ref(ctx).as_ptr(),
-            out_act.as_ref_mut(ctx).as_mut_ptr(),
+            post_act.as_ref_mut(ctx).as_mut_ptr(),
             ctx.stream.ptr,
         ) };
       }
@@ -1740,19 +1784,27 @@ impl Operator for BNormConv2dOperator {
             batch_size as i32,
             self.scale.as_ref(ctx).as_ptr(),
             self.bias.as_ref(ctx).as_ptr(),
-            out_act.as_ref_mut(ctx).as_mut_ptr(),
+            post_act.as_ref_mut(ctx).as_mut_ptr(),
             ctx.stream.ptr,
         ) };
       }
     }
 
     match self.config.act_func {
-      ActivationFunction::Identity => {}
+      ActivationFunction::Identity => {
+        out_act.as_ref_mut(ctx).copy(&post_act.as_ref(ctx));
+      }
       ActivationFunction::Rect => {
-        unsafe { rembrandt_kernel_batch_map_rect_inplace(
+        /*unsafe { rembrandt_kernel_batch_map_rect_inplace(
             out_act.as_ref_mut(ctx).as_mut_ptr(),
             out_length as i32,
             batch_size as i32,
+            ctx.stream.ptr,
+        ) };*/
+        unsafe { rembrandt_rect_fwd(
+            post_act.as_ref(ctx).as_ptr(),
+            (out_length * batch_size) as i32,
+            out_act.as_ref_mut(ctx).as_mut_ptr(),
             ctx.stream.ptr,
         ) };
       }
@@ -1777,6 +1829,7 @@ impl Operator for BNormConv2dOperator {
       ref mut pre_act, //ref mut pre_delta,
       ref mut tmp_act, ref mut tmp_delta,
       ref mut tmp2_act, ref mut tmp2_delta,
+      ref mut post_act,
       .. } = self;
     let mut backward = backward.as_mut().unwrap();
     /*let &mut BNormConv2dBwdOperator{
@@ -1784,21 +1837,30 @@ impl Operator for BNormConv2dOperator {
       .. } = backward;*/
 
     let ctx = &(**context).as_ref();
-    //let in_act = in_act.borrow_mut().as_ref(ctx);
+    let in_act = in_act.borrow_mut();
     //let out_act = out_act.borrow_mut().as_ref(ctx);
     //let mut out_delta = out_delta.borrow_mut().as_ref_mut(ctx);
-    let mut out_act = out_act.borrow_mut();
+    //let mut out_act = out_act.borrow_mut();
     let mut out_delta = out_delta.borrow_mut();
     let mut workspace = workspace.as_ref_mut(ctx);
 
     match self.config.act_func {
-      ActivationFunction::Identity => {}
+      ActivationFunction::Identity => {
+        backward.post_delta.as_ref_mut(ctx).copy(&out_delta.as_ref(ctx));
+      }
       ActivationFunction::Rect => {
-        unsafe { rembrandt_kernel_batch_map_rect_backprop_inplace(
+        /*unsafe { rembrandt_kernel_batch_map_rect_backprop_inplace(
             out_act.as_ref(ctx).as_ptr(),
             out_length as i32,
             batch_size as i32,
             out_delta.as_ref_mut(ctx).as_mut_ptr(),
+            ctx.stream.ptr,
+        ) };*/
+        unsafe { rembrandt_rect_bwd(
+            post_act.as_ref(ctx).as_ptr(),
+            (out_length * batch_size) as i32,
+            out_delta.as_ref(ctx).as_ptr(),
+            backward.post_delta.as_ref_mut(ctx).as_mut_ptr(),
             ctx.stream.ptr,
         ) };
       }
@@ -1832,7 +1894,7 @@ impl Operator for BNormConv2dOperator {
         (out_dims.0 * out_dims.1) as i32,
         out_dims.2 as i32,
         batch_size as i32,
-        out_delta.as_ref(ctx).as_ptr(),
+        backward.post_delta.as_ref(ctx).as_ptr(),
         self.scale.as_ref(ctx).as_ptr(),
         backward.scale_grad.as_ref_mut(ctx).as_mut_ptr(),
         backward.bias_grad.as_ref_mut(ctx).as_mut_ptr(),
@@ -1910,6 +1972,7 @@ impl Operator for BNormConv2dOperator {
       ref mut in_act,
       ref mut tmp_act,
       ref mut tmp2_act,
+      ref mut post_act,
       ref mut out_act,
       ref mut weights,
       ref mut scale,
@@ -1988,7 +2051,7 @@ impl Operator for BNormConv2dOperator {
         out_dims.2 as i32,
         batch_size as i32,
         scale.as_ref(ctx).as_ptr(),
-        out_r_act.as_ref_mut(ctx).as_mut_ptr(),
+        r_forward.post_r_act.as_ref_mut(ctx).as_mut_ptr(),
         ctx.stream.ptr,
     ) };
     unsafe { rembrandt_conv_diag_affine_fwd_batch(
@@ -1998,18 +2061,27 @@ impl Operator for BNormConv2dOperator {
         batch_size as i32,
         r_forward.dir_scale.as_ref(ctx).as_ptr(),
         r_forward.dir_bias.as_ref(ctx).as_ptr(),
-        out_r_act.as_ref_mut(ctx).as_mut_ptr(),
+        r_forward.post_r_act.as_ref_mut(ctx).as_mut_ptr(),
         ctx.stream.ptr,
     ) };
 
     match self.config.act_func {
-      ActivationFunction::Identity => {}
+      ActivationFunction::Identity => {
+        out_r_act.as_ref_mut(ctx).copy(&r_forward.post_r_act.as_ref(ctx));
+      }
       ActivationFunction::Rect => {
-        // FIXME(20160526): in-place activation function is not sufficient!
+        /*// FIXME(20160526): in-place activation function is not sufficient!
         unsafe { rembrandt_kernel_batch_map_rect_backprop_inplace(
             out_act.as_ref(ctx).as_ptr(),
             out_length as i32,
             batch_size as i32,
+            out_r_act.as_ref_mut(ctx).as_mut_ptr(),
+            ctx.stream.ptr,
+        ) };*/
+        unsafe { rembrandt_rect_bwd(
+            post_act.as_ref(ctx).as_ptr(),
+            (out_length * batch_size) as i32,
+            r_forward.post_r_act.as_ref(ctx).as_ptr(),
             out_r_act.as_ref_mut(ctx).as_mut_ptr(),
             ctx.stream.ptr,
         ) };
