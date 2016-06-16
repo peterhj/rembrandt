@@ -11,10 +11,11 @@ use nccl::{NcclUniqueId, NcclComm, NcclSumOp};
 use rand::{Rng, thread_rng};
 use std::ops::{Deref, DerefMut};
 use std::rc::{Rc};
-use std::sync::{Arc, Barrier};
+use std::sync::{Arc, Barrier, Mutex};
 
 struct DevWorkerSharedData {
   shared_seed:  [u64; 2],
+  reduce_buf:   Mutex<f32>,
 }
 
 /*#[derive(Clone)]
@@ -217,6 +218,7 @@ impl DeviceAllreduceSgdOptWorkerBuilder {
   pub fn new(num_workers: usize) -> DeviceAllreduceSgdOptWorkerBuilder {
     let shared = DevWorkerSharedData{
       shared_seed:  [thread_rng().next_u64(), thread_rng().next_u64()],
+      reduce_buf:   Mutex::new(0.0),
     };
     DeviceAllreduceSgdOptWorkerBuilder{
       num_workers:  num_workers,

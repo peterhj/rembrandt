@@ -75,10 +75,18 @@ pub fn build_resnet18pool_var224x224() -> GraphOperatorConfig {
       },
     ],
   };
-  let bnorm_conv1_op_cfg = BNormConv2dOperatorConfig{
+  let pre_pool1_op_cfg = Pool2dOperatorConfig{
     in_dims:        (224, 224, 3),
+    pool_size:      2,
+    pool_stride:    2,
+    pool_pad:       0,
+    pool_op:        PoolOperation::Average,
+    act_func:       ActivationFunction::Identity,
+  };
+  let bnorm_conv1_op_cfg = BNormConv2dOperatorConfig{
+    in_dims:        (112, 112, 3),
     conv_size:      7,
-    conv_stride:    2,
+    conv_stride:    1,
     conv_pad:       3,
     out_channels:   64,
     bnorm_mov_avg:  BNormMovingAverage::Exponential{ema_factor: BNORM_EMA_FACTOR},
@@ -92,10 +100,10 @@ pub fn build_resnet18pool_var224x224() -> GraphOperatorConfig {
   };
   let pool1_op_cfg = Pool2dOperatorConfig{
     in_dims:        (112, 112, 64),
-    pool_size:      3,
+    pool_size:      2,
     pool_stride:    2,
-    pool_pad:       1,
-    pool_op:        PoolOperation::Max,
+    pool_pad:       0,
+    pool_op:        PoolOperation::Average,
     act_func:       ActivationFunction::Identity,
   };
   let res_conv2_op_cfg = StackResConv2dOperatorConfig{
@@ -220,7 +228,8 @@ pub fn build_resnet18pool_var224x224() -> GraphOperatorConfig {
   let mut graph_cfg = GraphOperatorConfig::new();
   graph_cfg
     .var_data3d(            "data",                 data_op_cfg)
-    .bnorm_conv2d(          "conv1",    "data",     bnorm_conv1_op_cfg)
+    .pool2d(                "prepool1", "data",     pre_pool1_op_cfg)
+    .bnorm_conv2d(          "conv1",    "prepool1", bnorm_conv1_op_cfg)
     .pool2d(                "pool1",    "conv1",    pool1_op_cfg)
     .stack_res_conv2d(      "conv2_1",  "pool1",    res_conv2_op_cfg)
     .stack_res_conv2d(      "conv2_2",  "conv2_1",  res_conv2_op_cfg)

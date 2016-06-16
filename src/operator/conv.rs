@@ -655,8 +655,8 @@ impl Operator for Conv2dOperator {
       .. } = r_forward;
 
     let ctx = &(**context).as_ref();
-    //let mut out_act = out_act.borrow_mut().as_ref_mut(ctx);
-    let mut out_r_act = out_r_act.borrow_mut().as_ref_mut(ctx);
+    let mut out_act = out_act.borrow_mut();
+    let mut out_r_act = out_r_act.borrow_mut();
 
     self.conv_fwd.set_batch_size(batch_size).unwrap();
     unsafe { self.conv_fwd.forward(
@@ -664,7 +664,7 @@ impl Operator for Conv2dOperator {
         in_r_act.borrow_mut().as_ref(ctx).as_ptr(),
         weights.as_view(ctx).as_ptr(),
         0.0,
-        out_r_act.as_mut_ptr(),
+        out_r_act.as_ref_mut(ctx).as_mut_ptr(),
         workspace.as_ref_mut(ctx).as_mut_ptr(),
         &*ctx.get_dnn(),
     ).unwrap() };
@@ -673,7 +673,7 @@ impl Operator for Conv2dOperator {
         in_act.borrow_mut().as_ref(ctx).as_ptr(),
         dir_weights.as_view(ctx).as_ptr(),
         1.0,
-        out_r_act.as_mut_ptr(),
+        out_r_act.as_ref_mut(ctx).as_mut_ptr(),
         workspace.as_ref_mut(ctx).as_mut_ptr(),
         &*ctx.get_dnn(),
     ).unwrap() };
@@ -682,7 +682,7 @@ impl Operator for Conv2dOperator {
         1.0,
         dir_bias.as_view(ctx).as_ptr(),
         1.0,
-        out_r_act.as_mut_ptr(),
+        out_r_act.as_ref_mut(ctx).as_mut_ptr(),
         &*ctx.get_dnn(),
     ).unwrap() };
 
@@ -691,10 +691,10 @@ impl Operator for Conv2dOperator {
       ActivationFunction::Rect => {
         // FIXME(20160526): in-place activation function is not sufficient!
         unsafe { rembrandt_kernel_batch_map_rect_backprop_inplace(
-            tmp_act.as_ref(ctx).as_ptr(),
+            out_act.as_ref(ctx).as_ptr(),
             out_length as i32,
             batch_size as i32,
-            out_r_act.as_mut_ptr(),
+            out_r_act.as_ref_mut(ctx).as_mut_ptr(),
             ctx.stream.ptr,
         ) };
       }
@@ -982,6 +982,7 @@ pub struct BNormConv2dOperator {
   weights:      DeviceArray2d<f32>,
   scale:        DeviceBuffer<f32>,
   bias:         DeviceBuffer<f32>,
+
   stats_mean:   DeviceBuffer<f32>,
   stats_var:    DeviceBuffer<f32>,
   stats_istd:   DeviceBuffer<f32>,
@@ -994,6 +995,9 @@ pub struct BNormConv2dOperator {
   tmp_delta:    DeviceBuffer<f32>,
   tmp2_act:     DeviceBuffer<f32>,
   tmp2_delta:   DeviceBuffer<f32>,
+
+  stats_mean_batch: DeviceBuffer<f32>,
+  stats_var_batch:  DeviceBuffer<f32>,
 
   //bn_scale1:            DeviceArray2d<f32>,
   //bn_scale1_grad:       DeviceArray2d<f32>,
@@ -1016,18 +1020,16 @@ pub struct BNormConv2dOperator {
 }
 
 struct BNormConv2dBwdOperator {
-  grad_weights: DeviceArray2d<f32>,
   acc_grad_weights: DeviceArray2d<f32>,
   save_weights: DeviceArray2d<f32>,
 
-  iter_counter:     usize,
+  //iter_counter:     usize,
+  grad_weights: DeviceArray2d<f32>,
   //weights_grad:     DeviceArray2d<f32>,
   scale_grad:       DeviceBuffer<f32>,
   bias_grad:        DeviceBuffer<f32>,
-  stats_mean_batch: DeviceBuffer<f32>,
   stats_mean_grad:  DeviceBuffer<f32>,
   stats_mean_acc:   DeviceBuffer<f32>,
-  stats_var_batch:  DeviceBuffer<f32>,
   stats_var_grad:   DeviceBuffer<f32>,
   stats_var_acc:    DeviceBuffer<f32>,
 
@@ -1040,6 +1042,19 @@ struct BNormConv2dBwdOperator {
 }
 
 struct BNormConv2dRFwdOperator {
+  in_r_act:     SharedDeviceBuf<f32>,
+  out_r_act:    SharedDeviceBuf<f32>,
+
+  //pre_r_act:    DeviceBuffer<f32>,
+  tmp_r_act:    DeviceBuffer<f32>,
+  tmp2_r_act:   DeviceBuffer<f32>,
+
+  stats_r_mean: DeviceBuffer<f32>,
+  stats_r_var:  DeviceBuffer<f32>,
+
+  dir_weights:  DeviceArray2d<f32>,
+  dir_scale:    DeviceBuffer<f32>,
+  dir_bias:     DeviceBuffer<f32>,
 }
 
 impl BNormConv2dOperator {
@@ -1123,19 +1138,37 @@ impl BNormConv2dOperator {
         grad_weights:     DeviceArray2d::<f32>::zeros((conv_size * conv_size * in_channels, out_channels), ctx),
         acc_grad_weights: DeviceArray2d::<f32>::zeros((conv_size * conv_size * in_channels, out_channels), ctx),
         save_weights:     DeviceArray2d::<f32>::zeros((conv_size * conv_size * in_channels, out_channels), ctx),
-        iter_counter:     0,
+        //iter_counter:     0,
         scale_grad:       DeviceBuffer::zeros(out_channels, ctx),
         bias_grad:        DeviceBuffer::zeros(out_channels, ctx),
-        stats_mean_batch: DeviceBuffer::zeros(out_channels, ctx),
         stats_mean_grad:  DeviceBuffer::zeros(out_channels, ctx),
         stats_mean_acc:   DeviceBuffer::zeros(out_channels, ctx),
-        stats_var_batch:  DeviceBuffer::zeros(out_channels, ctx),
         stats_var_grad:   DeviceBuffer::zeros(out_channels, ctx),
         stats_var_acc:    DeviceBuffer::zeros(out_channels, ctx),
         conv_bwd_w:   conv_bwd_w,
         conv_bwd_d:   conv_bwd_d,
         //first_batch1: true,
         //comm_worker:  comm_worker.unwrap(),
+      })
+    } else {
+      None
+    };
+
+    let r_forward = if capability.r_forward_enabled() {
+      let in_r_act = match prev_op.get_output_r_act(0) {
+        Some(r_act) => r_act,
+        None => panic!("BNormConv2dOperator missing required prev operator output r act"),
+      };
+      Some(BNormConv2dRFwdOperator{
+        in_r_act:         in_r_act,
+        out_r_act:        Rc::new(RefCell::new(DeviceBuffer::<f32>::zeros(out_length * batch_size, ctx))),
+        tmp_r_act:        DeviceBuffer::zeros(out_length * batch_size, ctx),
+        tmp2_r_act:       DeviceBuffer::zeros(out_length * batch_size, ctx),
+        stats_r_mean:     DeviceBuffer::zeros(out_channels, ctx),
+        stats_r_var:      DeviceBuffer::zeros(out_channels, ctx),
+        dir_weights:      DeviceArray2d::<f32>::zeros((conv_size * conv_size * in_channels, out_channels), ctx),
+        dir_scale:        DeviceBuffer::zeros(out_channels, ctx),
+        dir_bias:         DeviceBuffer::zeros(out_channels, ctx),
       })
     } else {
       None
@@ -1178,6 +1211,9 @@ impl BNormConv2dOperator {
       tmp2_act:     DeviceBuffer::<f32>::zeros(out_length * batch_size, ctx),
       tmp2_delta:   DeviceBuffer::<f32>::zeros(out_length * batch_size, ctx),
 
+      stats_mean_batch: DeviceBuffer::zeros(out_channels, ctx),
+      stats_var_batch:  DeviceBuffer::zeros(out_channels, ctx),
+
       //bn_scale1:            DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
       //bn_scale1_grad:       DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
       acc_bn_scale1_grad:   DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
@@ -1195,7 +1231,7 @@ impl BNormConv2dOperator {
       batchnorm1:           batchnorm1,
 
       backward:     backward,
-      r_forward:    None,
+      r_forward:    r_forward,
     }
   }
 }
@@ -1657,17 +1693,17 @@ impl Operator for BNormConv2dOperator {
             &*ctx.get_dnn(),
         ) }.unwrap();*/
 
-        assert!(self.backward.is_some());
-        let mut backward = self.backward.as_mut().unwrap();
+        //assert!(self.backward.is_some());
+        //let mut backward = self.backward.as_mut().unwrap();
 
-        backward.stats_mean_batch.as_ref_mut(ctx).set_constant(0.0);
-        backward.stats_var_batch.as_ref_mut(ctx).set_constant(0.0);
+        self.stats_mean_batch.as_ref_mut(ctx).set_constant(0.0);
+        self.stats_var_batch.as_ref_mut(ctx).set_constant(0.0);
         unsafe { rembrandt_kernel_estimate_conv_mean_fast_batch(
             tmp_act.as_ref(ctx).as_ptr(),
             (out_dims.0 * out_dims.1) as i32,
             out_dims.2 as i32,
             batch_size as i32,
-            backward.stats_mean_batch.as_ref_mut(ctx).as_mut_ptr(),
+            self.stats_mean_batch.as_ref_mut(ctx).as_mut_ptr(),
             ctx.stream.ptr,
         ) };
         unsafe { rembrandt_kernel_estimate_conv_var_fast_batch(
@@ -1675,24 +1711,24 @@ impl Operator for BNormConv2dOperator {
             (out_dims.0 * out_dims.1) as i32,
             out_dims.2 as i32,
             batch_size as i32,
-            backward.stats_mean_batch.as_ref(ctx).as_ptr(),
-            backward.stats_var_batch.as_ref_mut(ctx).as_mut_ptr(),
+            self.stats_mean_batch.as_ref(ctx).as_ptr(),
+            self.stats_var_batch.as_ref_mut(ctx).as_mut_ptr(),
             ctx.stream.ptr,
         ) };
 
         let factor = self.config.bnorm_mov_avg.at_iter(t) as f32;
         //self.stats_mean.as_ref_mut(ctx).vector_scale(1.0 - factor);
-        self.stats_mean.as_ref_mut(ctx).vector_add(factor, &backward.stats_mean_batch.as_ref(ctx), 1.0 - factor);
+        self.stats_mean.as_ref_mut(ctx).vector_add(factor, &self.stats_mean_batch.as_ref(ctx), 1.0 - factor);
         //self.stats_var.as_ref_mut(ctx).vector_scale(1.0 - factor);
-        self.stats_var.as_ref_mut(ctx).vector_add(factor, &backward.stats_var_batch.as_ref(ctx), 1.0 - factor);
+        self.stats_var.as_ref_mut(ctx).vector_add(factor, &self.stats_var_batch.as_ref(ctx), 1.0 - factor);
 
         unsafe { rembrandt_conv_diag_affine_white_var_fwd_batch(
             tmp_act.as_ref(ctx).as_ptr(),
             (out_dims.0 * out_dims.1) as i32,
             out_dims.2 as i32,
             batch_size as i32,
-            backward.stats_mean_batch.as_ref(ctx).as_ptr(),
-            backward.stats_var_batch.as_ref(ctx).as_ptr(),
+            self.stats_mean_batch.as_ref(ctx).as_ptr(),
+            self.stats_var_batch.as_ref(ctx).as_ptr(),
             self.config.bnorm_epsilon as f32,
             tmp2_act.as_ref_mut(ctx).as_mut_ptr(),
             ctx.stream.ptr,
@@ -1811,8 +1847,8 @@ impl Operator for BNormConv2dOperator {
         out_dims.2 as i32,
         batch_size as i32,
         tmp2_delta.as_ref(ctx).as_ptr(),
-        backward.stats_mean_batch.as_ref(ctx).as_ptr(),
-        backward.stats_var_batch.as_ref(ctx).as_ptr(),
+        self.stats_mean_batch.as_ref(ctx).as_ptr(),
+        self.stats_var_batch.as_ref(ctx).as_ptr(),
         self.config.bnorm_epsilon as f32,
         backward.stats_mean_grad.as_ref_mut(ctx).as_mut_ptr(),
         backward.stats_var_grad.as_ref_mut(ctx).as_mut_ptr(),
@@ -1866,8 +1902,120 @@ impl Operator for BNormConv2dOperator {
     assert!(self.r_forward.is_some());
     assert!(batch_size <= self.batch_cap);
 
-    // FIXME(20160609)
-    unimplemented!();
+    let out_dims = self.config.get_out_dims();
+    let out_length = out_dims.len();
+
+    let &mut BNormConv2dOperator{
+      ref context,
+      ref mut in_act,
+      ref mut tmp_act,
+      ref mut tmp2_act,
+      ref mut out_act,
+      ref mut weights,
+      ref mut scale,
+      ref mut bias,
+      ref mut workspace,
+      ref mut r_forward,
+      .. } = self;
+
+    let mut r_forward = r_forward.as_mut().unwrap();
+
+    let ctx = &(**context).as_ref();
+    let mut in_act = in_act.borrow_mut();
+    let mut out_act = out_act.borrow_mut();
+    let mut in_r_act = r_forward.in_r_act.borrow_mut();
+    let mut out_r_act = r_forward.out_r_act.borrow_mut();
+
+    self.conv_fwd.set_batch_size(batch_size).unwrap();
+    unsafe { self.conv_fwd.forward(
+        1.0,
+        in_r_act.as_ref(ctx).as_ptr(),
+        weights.as_view(ctx).as_ptr(),
+        0.0,
+        r_forward.tmp_r_act.as_ref_mut(ctx).as_mut_ptr(),
+        workspace.as_ref_mut(ctx).as_mut_ptr(),
+        &*ctx.get_dnn(),
+    ).unwrap() };
+    unsafe { self.conv_fwd.forward(
+        1.0,
+        in_act.as_ref(ctx).as_ptr(),
+        r_forward.dir_weights.as_view(ctx).as_ptr(),
+        1.0,
+        r_forward.tmp_r_act.as_ref_mut(ctx).as_mut_ptr(),
+        workspace.as_ref_mut(ctx).as_mut_ptr(),
+        &*ctx.get_dnn(),
+    ).unwrap() };
+
+    r_forward.stats_r_mean.as_ref_mut(ctx).set_constant(0.0);
+    r_forward.stats_r_var.as_ref_mut(ctx).set_constant(0.0);
+    unsafe { rembrandt_kernel_estimate_conv_mean_fast_batch(
+        r_forward.tmp_r_act.as_ref(ctx).as_ptr(),
+        (out_dims.0 * out_dims.1) as i32,
+        out_dims.2 as i32,
+        batch_size as i32,
+        r_forward.stats_r_mean.as_ref_mut(ctx).as_mut_ptr(),
+        ctx.stream.ptr,
+    ) };
+    unsafe { rembrandt_conv_bnorm_rfwd_var_batch(
+        tmp_act.as_ref(ctx).as_ptr(),
+        (out_dims.0 * out_dims.1) as i32,
+        out_dims.2 as i32,
+        batch_size as i32,
+        r_forward.tmp_r_act.as_ref(ctx).as_ptr(),
+        self.stats_mean_batch.as_ref(ctx).as_ptr(),
+        r_forward.stats_r_mean.as_ref(ctx).as_ptr(),
+        r_forward.stats_r_var.as_ref_mut(ctx).as_mut_ptr(),
+        ctx.stream.ptr,
+    ) };
+    unsafe { rembrandt_conv_bnorm_rfwd_batch(
+        tmp_act.as_ref(ctx).as_ptr(),
+        (out_dims.0 * out_dims.1) as i32,
+        out_dims.2 as i32,
+        batch_size as i32,
+        r_forward.tmp_r_act.as_ref(ctx).as_ptr(),
+        self.stats_mean_batch.as_ref(ctx).as_ptr(),
+        r_forward.stats_r_mean.as_ref(ctx).as_ptr(),
+        self.stats_var_batch.as_ref(ctx).as_ptr(),
+        r_forward.stats_r_var.as_ref(ctx).as_ptr(),
+        self.config.bnorm_epsilon as f32,
+        r_forward.tmp2_r_act.as_ref_mut(ctx).as_mut_ptr(),
+        ctx.stream.ptr,
+    ) };
+
+    unsafe { rembrandt_conv_diag_linear_fwd_batch(
+        r_forward.tmp2_r_act.as_ref(ctx).as_ptr(),
+        (out_dims.0 * out_dims.1) as i32,
+        out_dims.2 as i32,
+        batch_size as i32,
+        scale.as_ref(ctx).as_ptr(),
+        out_r_act.as_ref_mut(ctx).as_mut_ptr(),
+        ctx.stream.ptr,
+    ) };
+    unsafe { rembrandt_conv_diag_affine_fwd_batch(
+        tmp2_act.as_ref(ctx).as_ptr(),
+        (out_dims.0 * out_dims.1) as i32,
+        out_dims.2 as i32,
+        batch_size as i32,
+        r_forward.dir_scale.as_ref(ctx).as_ptr(),
+        r_forward.dir_bias.as_ref(ctx).as_ptr(),
+        out_r_act.as_ref_mut(ctx).as_mut_ptr(),
+        ctx.stream.ptr,
+    ) };
+
+    match self.config.act_func {
+      ActivationFunction::Identity => {}
+      ActivationFunction::Rect => {
+        // FIXME(20160526): in-place activation function is not sufficient!
+        unsafe { rembrandt_kernel_batch_map_rect_backprop_inplace(
+            out_act.as_ref(ctx).as_ptr(),
+            out_length as i32,
+            batch_size as i32,
+            out_r_act.as_ref_mut(ctx).as_mut_ptr(),
+            ctx.stream.ptr,
+        ) };
+      }
+      _ => unimplemented!(),
+    }
   }
 
   fn regularize(&mut self, reg: Regularization) {
@@ -1905,37 +2053,37 @@ impl Operator for BNormConv2dOperator {
     //let mut out_act = self.out_act.borrow_mut();
     let mut backward = self.backward.as_mut().unwrap();
 
-    backward.stats_mean_batch.as_ref_mut(ctx).set_constant(0.0);
+    self.stats_mean_batch.as_ref_mut(ctx).set_constant(0.0);
     unsafe { rembrandt_kernel_estimate_conv_mean_fast_batch(
         self.tmp_act.as_ref(ctx).as_ptr(),
         spatial_dim as i32,
         out_channels as i32,
         batch_size as i32,
-        backward.stats_mean_batch.as_ref_mut(ctx).as_mut_ptr(),
+        self.stats_mean_batch.as_ref_mut(ctx).as_mut_ptr(),
         ctx.stream.ptr,
     ) };
-    backward.stats_var_batch.as_ref_mut(ctx).set_constant(0.0);
+    self.stats_var_batch.as_ref_mut(ctx).set_constant(0.0);
     unsafe { rembrandt_kernel_estimate_conv_var_fast_batch(
         self.tmp_act.as_ref(ctx).as_ptr(),
         spatial_dim as i32,
         out_channels as i32,
         batch_size as i32,
-        backward.stats_mean_batch.as_ref(ctx).as_ptr(),
-        backward.stats_var_batch.as_ref_mut(ctx).as_mut_ptr(),
+        self.stats_mean_batch.as_ref(ctx).as_ptr(),
+        self.stats_var_batch.as_ref_mut(ctx).as_mut_ptr(),
         ctx.stream.ptr,
     ) };
 
     unsafe { rembrandt_kernel_estimate_online_var(
-        backward.stats_mean_batch.as_ref(ctx).as_ptr(),
+        self.stats_mean_batch.as_ref(ctx).as_ptr(),
         out_channels as i32,
-        backward.stats_var_batch.as_ref(ctx).as_ptr(),
+        self.stats_var_batch.as_ref(ctx).as_ptr(),
         backward.stats_mean_acc.as_ref(ctx).as_ptr(),
         batch_size as i32,
         acc_sample_size as i32,
         backward.stats_var_acc.as_ref_mut(ctx).as_mut_ptr(),
         ctx.stream.ptr,
     ) };
-    backward.stats_mean_acc.as_ref_mut(ctx).vector_add(1.0, &backward.stats_mean_batch.as_ref(ctx), 1.0);
+    backward.stats_mean_acc.as_ref_mut(ctx).vector_add(1.0, &self.stats_mean_batch.as_ref(ctx), 1.0);
   }
 
   fn finalize_stats(&mut self, sample_size: usize) {
@@ -1946,7 +2094,7 @@ impl Operator for BNormConv2dOperator {
     backward.stats_mean_acc.as_ref_mut(ctx).vector_scale(1.0 / sample_size as f32);
     backward.stats_var_acc.as_ref_mut(ctx).vector_scale(1.0 / (sample_size - 1) as f32);
 
-    backward.iter_counter += 1;
+    /*backward.iter_counter += 1;
     let factor = match self.config.bnorm_mov_avg {
       BNormMovingAverage::Cumulative => {
         backward.iter_counter as f32
@@ -1967,7 +2115,7 @@ impl Operator for BNormConv2dOperator {
         self.config.bnorm_epsilon as f32,
         self.stats_istd.as_ref_mut(ctx).as_mut_ptr(),
         ctx.stream.ptr,
-    ) };
+    ) };*/
   }
 
   fn accumulate_grad(&mut self, scale: f32, momentum: f32) {
