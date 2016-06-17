@@ -6,7 +6,7 @@ use array_cuda::device::context::{DeviceContext};
 use array_cuda::device::linalg::{VectorExt, AsyncVectorExt};
 use array_cuda::device::memory::{DeviceBufferInitExt, DeviceBuffer, DeviceBufferRef, DeviceBufferRefMut, RawDeviceBuffer};
 use comm_cuda::{RingDeviceBufCommBuilder, RingDeviceBufComm};
-use nccl::{NcclUniqueId, NcclComm, NcclSumOp};
+//use nccl::{NcclUniqueId, NcclComm, NcclSumOp};
 
 use rand::{Rng, thread_rng};
 use std::ops::{Deref, DerefMut};

@@ -517,6 +517,24 @@ impl Operator for GraphOperator {
     }
   }
 
+  fn r_forward(&mut self, batch_size: usize) {
+    for &id in self.fwd_toporder.iter() {
+      self.operators[id].r_forward(batch_size);
+    }
+  }
+
+  fn r_backward(&mut self, batch_size: usize) {
+    for &id in self.bwd_toporder.iter() {
+      self.operators[id].r_backward(batch_size);
+    }
+  }
+
+  fn regularize(&mut self, reg: Regularization) {
+    for &id in self.fwd_toporder.iter() {
+      self.operators[id].regularize(reg);
+    }
+  }
+
   fn reset(&mut self) {
     for &id in self.fwd_toporder.iter() {
       self.operators[id].reset();
@@ -561,13 +579,23 @@ impl Operator for GraphOperator {
     offset - init_offset
   }
 
-  fn regularize(&mut self, reg: Regularization) {
+  fn read_direction(&mut self, init_offset: usize, reader: &mut OpRead) -> usize {
+    let mut offset = init_offset;
     for &id in self.fwd_toporder.iter() {
-      self.operators[id].regularize(reg);
+      offset += self.operators[id].read_direction(offset, reader);
     }
+    offset - init_offset
   }
 
-  fn reset_stats(&mut self) {
+  fn write_direction(&mut self, init_offset: usize, writer: &mut OpWrite) -> usize {
+    let mut offset = init_offset;
+    for &id in self.fwd_toporder.iter() {
+      offset += self.operators[id].write_direction(offset, writer);
+    }
+    offset - init_offset
+  }
+
+  /*fn reset_stats(&mut self) {
     for &id in self.fwd_toporder.iter() {
       self.operators[id].reset_stats();
     }
@@ -601,7 +629,7 @@ impl Operator for GraphOperator {
     for &id in self.fwd_toporder.iter() {
       self.operators[id].update_param2(grad_scale, update_scale);
     }
-  }
+  }*/
 }
 
 impl InputOperator for GraphOperator {

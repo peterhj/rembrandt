@@ -552,12 +552,6 @@ impl Operator for Conv2dOperator {
         out_act.as_ref_mut(ctx).copy(&post_act.as_ref(ctx));
       }
       ActivationFunction::Rect => {
-        /*unsafe { rembrandt_kernel_batch_map_rect_inplace(
-            out_act.as_mut_ptr(),
-            out_length as i32,
-            batch_size as i32,
-            ctx.stream.ptr,
-        ) };*/
         unsafe { rembrandt_rect_fwd(
             post_act.as_ref(ctx).as_ptr(),
             (out_length * batch_size) as i32,
@@ -606,13 +600,6 @@ impl Operator for Conv2dOperator {
         backward.post_delta.as_ref_mut(ctx).copy(&out_delta.as_ref(ctx));
       }
       ActivationFunction::Rect => {
-        /*unsafe { rembrandt_kernel_batch_map_rect_backprop_inplace(
-            out_act.as_ptr(),
-            out_length as i32,
-            batch_size as i32,
-            out_delta.as_mut_ptr(),
-            ctx.stream.ptr,
-        ) };*/
         unsafe { rembrandt_rect_bwd(
             post_act.as_ref(ctx).as_ptr(),
             (out_length * batch_size) as i32,
@@ -717,14 +704,6 @@ impl Operator for Conv2dOperator {
         out_r_act.as_ref_mut(ctx).copy(&post_act.as_ref(ctx));
       }
       ActivationFunction::Rect => {
-        /*// FIXME(20160526): in-place activation function is not sufficient!
-        unsafe { rembrandt_kernel_batch_map_rect_backprop_inplace(
-            out_act.as_ref(ctx).as_ptr(),
-            out_length as i32,
-            batch_size as i32,
-            out_r_act.as_ref_mut(ctx).as_mut_ptr(),
-            ctx.stream.ptr,
-        ) };*/
         unsafe { rembrandt_rect_bwd(
             post_act.as_ref(ctx).as_ptr(),
             (out_length * batch_size) as i32,
@@ -1679,9 +1658,7 @@ impl Operator for BNormConv2dOperator {
             &*ctx.get_dnn(),
         ) }.unwrap();*/
 
-        //assert!(self.backward.is_some());
-        //let mut backward = self.backward.as_mut().unwrap();
-        unsafe { rembrandt_conv_diag_affine_white_var_fwd_batch(
+        /*unsafe { rembrandt_conv_diag_affine_white_var_fwd_batch(
             tmp_act.as_ref(ctx).as_ptr(),
             (out_dims.0 * out_dims.1) as i32,
             out_dims.2 as i32,
@@ -1701,8 +1678,23 @@ impl Operator for BNormConv2dOperator {
             self.bias.as_ref(ctx).as_ptr(),
             post_act.as_ref_mut(ctx).as_mut_ptr(),
             ctx.stream.ptr,
+        ) };*/
+
+        unsafe { rembrandt_conv_bnorm_inferfwd_batch(
+            tmp_act.as_ref(ctx).as_ptr(),
+            (out_dims.0 * out_dims.1) as i32,
+            out_dims.2 as i32,
+            batch_size as i32,
+            self.stats_mean.as_ref(ctx).as_ptr(),
+            self.stats_var.as_ref(ctx).as_ptr(),
+            self.scale.as_ref(ctx).as_ptr(),
+            self.bias.as_ref(ctx).as_ptr(),
+            self.config.bnorm_epsilon as f32,
+            post_act.as_ref_mut(ctx).as_mut_ptr(),
+            ctx.stream.ptr,
         ) };
       }
+
       OpPhase::Training{t} => {
         /*let mut backward = match self.backward.as_mut() {
           Some(backward) => backward,
@@ -1761,9 +1753,7 @@ impl Operator for BNormConv2dOperator {
         ) };
 
         let factor = self.config.bnorm_mov_avg.at_iter(t) as f32;
-        //self.stats_mean.as_ref_mut(ctx).vector_scale(1.0 - factor);
         self.stats_mean.as_ref_mut(ctx).vector_add(factor, &self.stats_mean_batch.as_ref(ctx), 1.0 - factor);
-        //self.stats_var.as_ref_mut(ctx).vector_scale(1.0 - factor);
         self.stats_var.as_ref_mut(ctx).vector_add(factor, &self.stats_var_batch.as_ref(ctx), 1.0 - factor);
 
         unsafe { rembrandt_conv_diag_affine_white_var_fwd_batch(
@@ -1795,12 +1785,6 @@ impl Operator for BNormConv2dOperator {
         out_act.as_ref_mut(ctx).copy(&post_act.as_ref(ctx));
       }
       ActivationFunction::Rect => {
-        /*unsafe { rembrandt_kernel_batch_map_rect_inplace(
-            out_act.as_ref_mut(ctx).as_mut_ptr(),
-            out_length as i32,
-            batch_size as i32,
-            ctx.stream.ptr,
-        ) };*/
         unsafe { rembrandt_rect_fwd(
             post_act.as_ref(ctx).as_ptr(),
             (out_length * batch_size) as i32,
@@ -1849,13 +1833,6 @@ impl Operator for BNormConv2dOperator {
         backward.post_delta.as_ref_mut(ctx).copy(&out_delta.as_ref(ctx));
       }
       ActivationFunction::Rect => {
-        /*unsafe { rembrandt_kernel_batch_map_rect_backprop_inplace(
-            out_act.as_ref(ctx).as_ptr(),
-            out_length as i32,
-            batch_size as i32,
-            out_delta.as_ref_mut(ctx).as_mut_ptr(),
-            ctx.stream.ptr,
-        ) };*/
         unsafe { rembrandt_rect_bwd(
             post_act.as_ref(ctx).as_ptr(),
             (out_length * batch_size) as i32,
@@ -1947,13 +1924,14 @@ impl Operator for BNormConv2dOperator {
       match self.config.pre_act_func {
         ActivationFunction::Identity => {}
         ActivationFunction::Rect => {
-          unsafe { rembrandt_kernel_batch_map_rect_backprop_inplace(
+          unimplemented!();
+          /*unsafe { rembrandt_kernel_batch_map_rect_backprop_inplace(
               pre_act.as_ref(ctx).as_ptr(),
               in_length as i32,
               batch_size as i32,
               in_delta.as_mut_ptr(),
               ctx.stream.ptr,
-          ) };
+          ) };*/
         }
         _ => unimplemented!(),
       }
@@ -2070,14 +2048,6 @@ impl Operator for BNormConv2dOperator {
         out_r_act.as_ref_mut(ctx).copy(&r_forward.post_r_act.as_ref(ctx));
       }
       ActivationFunction::Rect => {
-        /*// FIXME(20160526): in-place activation function is not sufficient!
-        unsafe { rembrandt_kernel_batch_map_rect_backprop_inplace(
-            out_act.as_ref(ctx).as_ptr(),
-            out_length as i32,
-            batch_size as i32,
-            out_r_act.as_ref_mut(ctx).as_mut_ptr(),
-            ctx.stream.ptr,
-        ) };*/
         unsafe { rembrandt_rect_bwd(
             post_act.as_ref(ctx).as_ptr(),
             (out_length * batch_size) as i32,
