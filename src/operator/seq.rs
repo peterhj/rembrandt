@@ -1,4 +1,4 @@
-use data_new::{SampleDatum, SampleLabel};
+use data::{SampleLabel};
 use operator::{
   Operator, InputOperator, LossOperator, CompleteOperator,
   OperatorNode, OperatorConfig,
@@ -220,7 +220,7 @@ impl Operator for SequentialOperator {
     }
   }
 
-  fn accumulate_grad(&mut self, scale: f32, momentum: f32) {
+  /*fn accumulate_grad(&mut self, scale: f32, momentum: f32) {
     for op in self.hidden_ops.iter_mut() {
       op.accumulate_grad(scale, momentum);
     }
@@ -248,7 +248,7 @@ impl Operator for SequentialOperator {
     for op in self.hidden_ops.iter_mut() {
       op.restore_params();
     }
-  }
+  }*/
 
   fn reset(&mut self) {
     for op in self.hidden_ops.iter_mut() {

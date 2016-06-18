@@ -1,4 +1,3 @@
-use data_new::{SampleLabel};
 use operator::{
   Operator, OpRead, OpWrite,
   ActivationFunction,
@@ -11,7 +10,7 @@ use operator::{
   SharedDeviceBuf,
   //Conv2dOperatorConfig,
 };
-use operator::comm::{CommWorker};
+//use operator::comm::{CommWorker};
 
 use array::{
   Array, AsyncArray, ArrayView, ArrayViewMut, ArrayZeroExt, NdArraySerialize,
@@ -19,9 +18,9 @@ use array::{
 };
 use array_cuda::device::array::{DeviceArray2d};
 use array_cuda::device::context::{DeviceContext, DeviceCtxRef};
-use array_cuda::device::ext::{DeviceCastBytesExt, DeviceNumExt};
 use array_cuda::device::linalg::{VectorExt, BlasMatrixExt, BlasVectorExt, Transpose};
 use array_cuda::device::memory::{DeviceBufferInitExt, DeviceBuffer};
+use array_cuda::device::num::{CastBytesExt, NumExt};
 use array_cuda::device::random::{RandomSampleExt, UniformDist};
 use cuda_dnn::v5::{
   CudnnTensorDesc, CudnnFilterDesc, CudnnConvDesc,
@@ -733,7 +732,7 @@ impl Operator for Conv2dOperator {
     }
   }
 
-  fn accumulate_grad(&mut self, scale: f32, momentum: f32) {
+  /*fn accumulate_grad(&mut self, scale: f32, momentum: f32) {
     assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
     let mut backward = self.backward.as_mut().unwrap();
@@ -821,7 +820,7 @@ impl Operator for Conv2dOperator {
       .send(&mut self.weights.as_view_mut(ctx));
     backward.save_bias.as_view(ctx)
       .send(&mut self.bias.as_view_mut(ctx));
-  }
+  }*/
 
   /*fn set_grads_with_params_diff(&mut self) {
     assert!(self.backward.is_some());
@@ -863,7 +862,7 @@ impl Operator for Conv2dOperator {
     unimplemented!();
   }*/
 
-  fn stage_grads(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
+  /*fn stage_grads(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
     assert!(self.backward.is_some());
     let mut backward = self.backward.as_mut().unwrap();
     let mut offset = offset;
@@ -901,7 +900,7 @@ impl Operator for Conv2dOperator {
     comm_worker.store(offset, &mut self.bias);
     offset += self.bias.len();
     self.config.params_len()
-  }
+  }*/
 
   /*fn reset_grads(&mut self, scale: f32) {
     assert!(self.backward.is_some());
@@ -2160,7 +2159,7 @@ impl Operator for BNormConv2dOperator {
     ) };*/
   }
 
-  fn accumulate_grad(&mut self, scale: f32, momentum: f32) {
+  /*fn accumulate_grad(&mut self, scale: f32, momentum: f32) {
     assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
     let mut backward = self.backward.as_mut().unwrap();
@@ -2316,7 +2315,7 @@ impl Operator for BNormConv2dOperator {
       .send(&mut self.stats_mean.as_ref_mut(ctx));
     self.save_bn_running_ivar1.as_view(ctx).data
       .send(&mut self.stats_istd.as_ref_mut(ctx));
-  }
+  }*/
 
   /*fn set_grads_with_params_diff(&mut self) {
     /*assert!(self.backward.is_some());
@@ -3410,7 +3409,7 @@ impl Operator for StackResConv2dOperator {
     }
   }
 
-  fn accumulate_grad(&mut self, scale: f32, momentum: f32) {
+  /*fn accumulate_grad(&mut self, scale: f32, momentum: f32) {
     assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
     let mut backward = self.backward.as_mut().unwrap();
@@ -3566,7 +3565,7 @@ impl Operator for StackResConv2dOperator {
       .send(&mut self.bn_running_mean2.as_view_mut(ctx));
     self.save_bn_running_ivar2.as_view(ctx)
       .send(&mut self.bn_running_ivar2.as_view_mut(ctx));
-  }
+  }*/
 
   /*fn set_grads_with_params_diff(&mut self) {
     unimplemented!();
@@ -3596,7 +3595,7 @@ impl Operator for StackResConv2dOperator {
     unimplemented!();
   }*/
 
-  fn stage_grads(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
+  /*fn stage_grads(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
     assert!(self.backward.is_some());
     let mut backward = self.backward.as_mut().unwrap();
 
@@ -3712,7 +3711,7 @@ impl Operator for StackResConv2dOperator {
     offset += self.bn_running_ivar2.len();
 
     self.config.params_len()
-  }
+  }*/
 
   /*fn reset_grads(&mut self, scale: f32) {
     unimplemented!();
@@ -4977,7 +4976,7 @@ impl Operator for ProjStackResConv2dOperator {
     }
   }
 
-  fn accumulate_grad(&mut self, scale: f32, momentum: f32) {
+  /*fn accumulate_grad(&mut self, scale: f32, momentum: f32) {
     assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
     let mut backward = self.backward.as_mut().unwrap();
@@ -5195,7 +5194,7 @@ impl Operator for ProjStackResConv2dOperator {
       .send(&mut self.bn_running_mean3.as_view_mut(ctx));
     self.save_bn_running_ivar3.as_view(ctx)
       .send(&mut self.bn_running_ivar3.as_view_mut(ctx));
-  }
+  }*/
 
   /*fn set_grads_with_params_diff(&mut self) {
     unimplemented!();
@@ -5227,7 +5226,7 @@ impl Operator for ProjStackResConv2dOperator {
     unimplemented!();
   }*/
 
-  fn stage_grads(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
+  /*fn stage_grads(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
     assert!(self.backward.is_some());
     let mut backward = self.backward.as_mut().unwrap();
 
@@ -5387,7 +5386,7 @@ impl Operator for ProjStackResConv2dOperator {
     offset += self.bn_running_ivar3.len();
 
     self.config.params_len()
-  }
+  }*/
 
   /*fn reset_grads(&mut self, scale: f32) {
     unimplemented!();

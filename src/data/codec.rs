@@ -1,4 +1,4 @@
-use data_new::{SampleDatum};
+use data::{SampleDatum};
 
 use array::{ArrayZeroExt, NdArraySerialize, Array3d};
 //use image::{GenericImage, DynamicImage, ImageFormat, load};

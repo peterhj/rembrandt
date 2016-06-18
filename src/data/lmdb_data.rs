@@ -1,7 +1,6 @@
 use caffe_proto::{Datum};
-use data::{DataShard, DataIter};
+use data::{SampleDatum, SampleLabel, DataShard, DataIter};
 use data::codec::{DataCodec};
-use data_new::{SampleDatum, SampleLabel};
 use util::{partition_range};
 
 use array::{Array3d};

@@ -1,5 +1,5 @@
-use data_new::{SampleLabel};
-use operator::comm::{CommWorker};
+use data::{SampleLabel};
+//use operator::comm::{CommWorker};
 use operator::input::{
   Data3dOperatorConfig,
   Data3dOperator,
@@ -32,9 +32,9 @@ use array::{
 };
 use array_cuda::device::array::{DeviceArray2d};
 use array_cuda::device::context::{DeviceContext, DeviceCtxRef};
-use array_cuda::device::ext::{DeviceCastBytesExt, DeviceNumExt};
 use array_cuda::device::linalg::{VectorExt, BlasMatrixExt, BlasVectorExt, Transpose};
 use array_cuda::device::memory::{DeviceBufferInitExt, DeviceBuffer, DeviceBufferRef, DeviceBufferRefMut};
+use array_cuda::device::num::{CastBytesExt, NumExt};
 use array_cuda::device::random::{RandomSampleExt, UniformDist, GaussianDist};
 use cuda_dnn::v5::{
   CudnnConvFwdOp, CudnnConvBwdFilterOp, CudnnConvBwdDataOp,
@@ -57,19 +57,19 @@ use std::fs::{File};
 use std::io::{Cursor};
 use std::iter::{repeat};
 use std::marker::{PhantomData};
-//use std::ops::{Deref};
+use std::ops::{Deref, DerefMut};
 use std::path::{PathBuf};
 use std::rc::{Rc};
 
 pub mod affine;
-pub mod comm;
+//pub mod comm;
 pub mod conv;
 pub mod graph;
 pub mod input;
 pub mod loss;
 pub mod pool;
 pub mod seq;
-pub mod worker;
+//pub mod worker;
 
 pub trait OpRead {
   fn read<'a>(&'a mut self, offset: usize, dst: &mut DeviceBufferRefMut<'a, f32>) -> usize;
@@ -107,6 +107,20 @@ impl OpCursorInner for DeviceBuffer<f32> {
 
   fn extra(&self) -> () {
     ()
+  }
+}
+
+impl Deref for OpCursor<DeviceBuffer<f32>> {
+  type Target = DeviceBuffer<f32>;
+
+  fn deref(&self) -> &DeviceBuffer<f32> {
+    &self.inner
+  }
+}
+
+impl DerefMut for OpCursor<DeviceBuffer<f32>> {
+  fn deref_mut(&mut self) -> &mut DeviceBuffer<f32> {
+    &mut self.inner
   }
 }
 
@@ -402,7 +416,7 @@ pub trait Operator {
   fn estimate_stats(&mut self, _acc_sample_size: usize, _batch_size: usize) {}
   fn finalize_stats(&mut self, _sample_size: usize) {}
 
-  fn accumulate_grad(&mut self, _scale: f32, _momentum: f32) {}
+  /*fn accumulate_grad(&mut self, _scale: f32, _momentum: f32) {}
   fn update_param(&mut self, _scale: f32) {}
   fn update_param2(&mut self, _grad_scale: f32, _update_scale: f32) {}
   #[deprecated] fn save_params(&mut self) {}
@@ -411,7 +425,7 @@ pub trait Operator {
   #[deprecated] fn stage_grads(&mut self, _offset: usize, _comm_worker: &mut CommWorker) -> usize { 0 }
   #[deprecated] fn merge_grads(&mut self, _offset: usize, _comm_worker: &mut CommWorker) -> usize { 0 }
   #[deprecated] fn stage_params(&mut self, _offset: usize, _comm_worker: &mut CommWorker) -> usize { 0 }
-  #[deprecated] fn merge_params(&mut self, _offset: usize, _comm_worker: &mut CommWorker) -> usize { 0 }
+  #[deprecated] fn merge_params(&mut self, _offset: usize, _comm_worker: &mut CommWorker) -> usize { 0 }*/
 
   // Requires `RForward` capability.
   fn read_direction(&mut self, _offset: usize, _reader: &mut OpRead) -> usize { 0 }

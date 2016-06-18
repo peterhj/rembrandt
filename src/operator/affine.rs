@@ -1,4 +1,3 @@
-use data_new::{SampleLabel};
 use operator::{
   Operator, OpRead, OpWrite,
   ActivationFunction,
@@ -8,7 +7,7 @@ use operator::{
   OpPhase,
   SharedDeviceBuf,
 };
-use operator::comm::{CommWorker};
+//use operator::comm::{CommWorker};
 
 use array::{
   Array, AsyncArray, ArrayView, ArrayViewMut, ArrayZeroExt, NdArraySerialize,
@@ -16,9 +15,9 @@ use array::{
 };
 use array_cuda::device::array::{DeviceArray2d};
 use array_cuda::device::context::{DeviceContext, DeviceCtxRef};
-use array_cuda::device::ext::{DeviceCastBytesExt, DeviceNumExt};
 use array_cuda::device::linalg::{BlasMatrixExt, BlasVectorExt, Transpose};
 use array_cuda::device::memory::{DeviceBufferInitExt, DeviceBuffer};
+use array_cuda::device::num::{CastBytesExt, NumExt};
 use array_cuda::device::random::{RandomSampleExt, UniformDist};
 use cuda_dnn::v5::{
   CudnnTensorDesc, CudnnFilterDesc, CudnnConvDesc,
@@ -451,7 +450,7 @@ impl Operator for AffineOperator {
     }
   }
 
-  fn accumulate_grad(&mut self, scale: f32, momentum: f32) {
+  /*fn accumulate_grad(&mut self, scale: f32, momentum: f32) {
     assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
     let mut backward = self.backward.as_mut().unwrap();
@@ -523,7 +522,7 @@ impl Operator for AffineOperator {
       .send(&mut self.weights.as_view_mut(ctx));
     backward.save_bias.as_view(ctx)
       .send(&mut self.bias.as_view_mut(ctx));
-  }
+  }*/
 
   /*fn set_grads_with_params_diff(&mut self) {
     assert!(self.backward.is_some());
@@ -561,7 +560,7 @@ impl Operator for AffineOperator {
     comm_worker.store(self.params_off, &mut self.bias); //, ctx);
   }*/
 
-  fn stage_grads(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
+  /*fn stage_grads(&mut self, offset: usize, comm_worker: &mut CommWorker) -> usize {
     assert!(self.backward.is_some());
     let mut backward = self.backward.as_mut().unwrap();
     let mut offset = offset;
@@ -599,7 +598,7 @@ impl Operator for AffineOperator {
     comm_worker.store(offset, &mut self.bias);
     offset += self.bias.len();
     self.config.params_len()
-  }
+  }*/
 
   /*fn reset_grads(&mut self, scale: f32) {
     assert!(self.backward.is_some());

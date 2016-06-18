@@ -1,5 +1,6 @@
 use operator::{CompleteOperator, OpRead, OpWrite, OpCursor, OpCursorInner, ExtentMap};
 use opt::sgd::parallel::{ParallelSgdOptWorker};
+use opt::second::parallel::{ParallelSecondOptWorker};
 
 //use array::{Shape};
 use array_cuda::device::context::{DeviceContext};
@@ -206,30 +207,26 @@ impl OpWrite for OpCursor<RingDeviceBufComm<f32>> {
 }
 
 #[derive(Clone)]
-pub struct DeviceAllreduceSgdOptWorkerBuilder {
+pub struct DeviceAllreduceOptWorkerBuilder {
   num_workers:  usize,
-  //comm_id:  NcclUniqueId,
-  //barrier:  Arc<Barrier>,
   shared:   Arc<DevWorkerSharedData>,
   comm_builder: RingDeviceBufCommBuilder<f32>,
 }
 
-impl DeviceAllreduceSgdOptWorkerBuilder {
-  pub fn new(num_workers: usize) -> DeviceAllreduceSgdOptWorkerBuilder {
+impl DeviceAllreduceOptWorkerBuilder {
+  pub fn new(num_workers: usize) -> DeviceAllreduceOptWorkerBuilder {
     let shared = DevWorkerSharedData{
       shared_seed:  [thread_rng().next_u64(), thread_rng().next_u64()],
       reduce_buf:   Mutex::new(0.0),
     };
-    DeviceAllreduceSgdOptWorkerBuilder{
+    DeviceAllreduceOptWorkerBuilder{
       num_workers:  num_workers,
-      //comm_id:  NcclUniqueId::create().unwrap(),
-      //barrier:  Arc::new(Barrier::new(num_workers)),
       shared:   Arc::new(shared),
       comm_builder: RingDeviceBufCommBuilder::new(num_workers),
     }
   }
 
-  pub fn into_worker(self, worker_rank: usize, context: Rc<DeviceContext>, operator: Box<CompleteOperator>) -> DeviceAllreduceSgdOptWorker {
+  pub fn into_worker(self, worker_rank: usize, context: Rc<DeviceContext>, operator: Box<CompleteOperator>) -> DeviceAllreduceOptWorker {
     /*let comm = match NcclComm::create(worker_rank, self.num_workers, self.comm_id) {
       Err(e) => panic!("failed to create nccl comm: {:?}", e),
       Ok(comm) => comm,
@@ -243,7 +240,7 @@ impl DeviceAllreduceSgdOptWorkerBuilder {
     let pad = self.num_workers * 32;
     let padded_len = (params_len + pad - 1) / pad * pad;
     let ctx = &(*context).as_ref();
-    DeviceAllreduceSgdOptWorker{
+    DeviceAllreduceOptWorker{
       worker_rank:  worker_rank,
       num_workers:  self.num_workers,
       context:      context.clone(),
@@ -257,7 +254,7 @@ impl DeviceAllreduceSgdOptWorkerBuilder {
   }
 }
 
-pub struct DeviceAllreduceSgdOptWorker {
+pub struct DeviceAllreduceOptWorker {
   worker_rank:  usize,
   num_workers:  usize,
   context:      Rc<DeviceContext>,
@@ -269,7 +266,7 @@ pub struct DeviceAllreduceSgdOptWorker {
   sig_chkpt:    bool,
 }
 
-impl ParallelSgdOptWorker for DeviceAllreduceSgdOptWorker {
+impl ParallelSgdOptWorker for DeviceAllreduceOptWorker {
   fn worker_rank(&self) -> usize {
     self.worker_rank
   }
@@ -292,7 +289,6 @@ impl ParallelSgdOptWorker for DeviceAllreduceSgdOptWorker {
 
   fn wait_checkpoint(&mut self) -> bool {
     if self.sig_chkpt {
-      //self.barrier.wait();
       self.comm.inner.barrier();
       self.sig_chkpt = false;
       true
@@ -322,6 +318,7 @@ impl ParallelSgdOptWorker for DeviceAllreduceSgdOptWorker {
   }
 
   fn stage_grad(&mut self) {
+    unimplemented!();
   }
 
   fn sync_grad(&mut self) {
@@ -332,15 +329,31 @@ impl ParallelSgdOptWorker for DeviceAllreduceSgdOptWorker {
   }
 
   fn merge_grad(&mut self) {
+    unimplemented!();
   }
 
   fn accumulate_grad(&mut self, alpha: f32, mu: f32) {
-    /*let ctx = &(*self.context).as_ref();
-    self.comm.accumulate_read(0, alpha, mu, &mut self.grad_acc.inner.as_ref_mut(ctx));*/
     self.operator.accumulate_grad_(0, alpha, mu, &mut self.grad_acc);
   }
 
   fn step(&mut self, step_size: f32) {
     self.operator.step(0, step_size, &mut self.grad_acc);
+  }
+}
+
+impl ParallelSecondOptWorker for DeviceAllreduceOptWorker {
+  //fn stage<'a>(&'a mut self, src: &'a DeviceBufferRef<'a, f32>) {
+  fn stage<'ctx>(&'ctx mut self, src: &DeviceBufferRef<'ctx, f32>) {
+    self.comm.write(0, src);
+  }
+
+  fn sync(&mut self) {
+    self.comm.inner.barrier();
+    self.comm.inner.allreduce_average();
+  }
+
+  //fn merge<'a>(&'a mut self, dst: &'a mut DeviceBufferRefMut<'a, f32>) {
+  fn merge<'ctx>(&'ctx mut self, dst: &mut DeviceBufferRefMut<'ctx, f32>) {
+    self.comm.read(0, dst);
   }
 }

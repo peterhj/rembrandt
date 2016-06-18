@@ -10,6 +10,7 @@ extern crate rand;
 use array_cuda::device::context::{DeviceContext};
 use crossbeam::{scope};
 use rembrandt::data::{
+  SampleDatumConfig, SampleLabelConfig,
   AsyncQueueDataIter,
   CyclicSampleDataIter,
   RandomSampleDataIter,
@@ -19,12 +20,12 @@ use rembrandt::data::codec::{
   TurboJpegDataCodec,
 };
 use rembrandt::data::varraydb_data::{VarrayDbShard};
-use rembrandt::data_new::{
+/*use rembrandt::data_new::{
   SampleDatumConfig, SampleLabelConfig,
   DatasetConfig,
   SampleIterator, RandomEpisodeIterator,
   PartitionDataSource,
-};
+};*/
 use rembrandt::operator::{
   OpCapability,
 };
@@ -37,17 +38,15 @@ use rembrandt::opt::sgd::{
   Momentum,
   SyncOrder,
   CheckpointBehavior,
-  //OptSharedData,
-  //SgdOpt,
-  SerialSgdOptConfig,
-  SerialSgdOpt,
+  //SerialSgdOptConfig,
+  //SerialSgdOpt,
 };
 use rembrandt::opt::sgd::parallel::{
   ParallelSgdOptConfig,
   ParallelSgdOpt,
 };
-use rembrandt::opt::sgd::parallel::dev_allreduce::{
-  DeviceAllreduceSgdOptWorkerBuilder,
+use rembrandt::opt::parallel::dev_allreduce::{
+  DeviceAllreduceOptWorkerBuilder,
 };
 use rembrandt::templates::resnet_graph::{
   build_resnet18pool_var224x224,
@@ -103,7 +102,7 @@ fn main() {
   };*/
 
   scope(|scope| {
-    let builder = DeviceAllreduceSgdOptWorkerBuilder::new(num_local_workers);
+    let builder = DeviceAllreduceOptWorkerBuilder::new(num_local_workers);
     let mut guards = vec![];
     for tid in 0 .. num_local_workers {
       let sgd_opt_cfg = sgd_opt_cfg.clone();

@@ -1,4 +1,5 @@
 use caffe_proto::{Datum};
+use data::{SampleDatumConfig, SampleDatum, SampleLabelConfig, SampleLabel};
 
 use array::{Shape, Array, ArrayViewMut, NdArraySerialize, Array3d, BitArray3d};
 use byteorder::{LittleEndian, BigEndian, ReadBytesExt};
@@ -18,81 +19,6 @@ use std::fs::{File};
 use std::io::{Read, Write, BufReader, Cursor};
 use std::marker::{PhantomData};
 use std::path::{PathBuf};
-
-#[derive(Clone, Copy, Debug)]
-pub enum SampleDatumConfig {
-  Bytes3d,
-  Bits3d{scale: u8},
-  BitsThenBytes3d{scale: u8},
-}
-
-impl SampleDatumConfig {
-  pub fn decode(&self, value: &[u8]) -> SampleDatum {
-    match *self {
-      SampleDatumConfig::Bytes3d => {
-        SampleDatum::WHCBytes(Array3d::deserialize(&mut Cursor::new(value))
-          .ok().expect("failed to decode Bytes3d!"))
-      }
-      SampleDatumConfig::Bits3d{scale} => {
-        let bit_arr = BitArray3d::deserialize(&mut Cursor::new(value))
-          .ok().expect("failed to decode Bits3d!");
-        let arr = bit_arr.into_bytes(scale);
-        SampleDatum::WHCBytes(arr)
-      }
-      SampleDatumConfig::BitsThenBytes3d{scale} => {
-        let mut reader = Cursor::new(value);
-        //let bit_size = reader.read_u64::<LittleEndian>().unwrap() as usize;
-        let bit_arr = BitArray3d::deserialize(&mut reader)
-          .ok().expect("failed to decode BitsThenBytes3d bits half!");
-        //let bytes_size = value.read_u64::<LittleEndian>().unwrap() as usize;
-        //assert_eq!(bit_size + bytes_size + 16, value.len());
-        let bytes_arr: Array3d<u8> = Array3d::deserialize(&mut reader)
-          .ok().expect("failed to decode BitsThenBytes3d bytes half!");
-        assert_eq!(bit_arr.bound().0, bytes_arr.bound().0);
-        assert_eq!(bit_arr.bound().1, bytes_arr.bound().1);
-        let (width, height) = (bit_arr.bound().0, bit_arr.bound().1);
-        let bit_chs = bit_arr.bound().2;
-        let bytes_chs = bytes_arr.bound().2;
-        let channels = bit_chs + bytes_chs;
-
-        // FIXME(20160202)
-        let mut arr: Array3d<u8> = unsafe { Array3d::new((width, height, channels)) };
-        {
-          let mut arr = arr.as_view_mut().view_mut((0, 0, 0), (width, height, bit_chs));
-          bit_arr.write_bytes(scale, &mut arr);
-        }
-        {
-          let mut arr = arr.as_view_mut().view_mut((0, 0, bit_chs), (width, height, channels));
-          arr.copy_from(&bytes_arr.as_view());
-        }
-        SampleDatum::WHCBytes(arr)
-      }
-    }
-  }
-}
-
-#[derive(Clone)]
-pub enum SampleDatum {
-  WHCBytes(Array3d<u8>),
-  CWHBytes(Array3d<u8>),
-  JpegBuffer(Vec<u8>),
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum SampleLabelConfig {
-  Category{num_categories: i32},
-  //Category2,
-  LookaheadCategories{num_categories: i32, lookahead: usize},
-  //Lookahead2{lookahead: usize},
-}
-
-#[derive(Clone)]
-pub enum SampleLabel {
-  Category{category: i32},
-  //Category2{category: i32, category2: i32},
-  MultiCategory{categories: Vec<i32>},
-  //MultiCategory2{categories1: Vec<i32>, category2: i32},
-}
 
 pub trait DataIterator {
   /*type Iter: Iterator<Item=(SampleDatum, Option<SampleLabel>)>;

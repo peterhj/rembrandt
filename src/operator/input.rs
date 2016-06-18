@@ -1,8 +1,7 @@
-use data_new::{SampleLabel};
 use operator::{
   Operator, InputOperator, SharedDeviceBuf, OpPhase, OpCapability,
 };
-use operator::comm::{CommWorker};
+//use operator::comm::{CommWorker};
 use operator::conv::{
   StackResConv2dOperatorConfig,
   StackResConv2dOperator,
@@ -16,9 +15,9 @@ use array::{
 };
 use array_cuda::device::array::{DeviceArray2d};
 use array_cuda::device::context::{DeviceContext, DeviceCtxRef};
-use array_cuda::device::ext::{DeviceCastBytesExt, DeviceNumExt};
 use array_cuda::device::linalg::{BlasMatrixExt, BlasVectorExt, Transpose};
 use array_cuda::device::memory::{DeviceBufferInitExt, DeviceBuffer};
+use array_cuda::device::num::{CastBytesExt, NumExt};
 use array_cuda::device::random::{RandomSampleExt, UniformDist, GaussianDist};
 use cuda_dnn::v5::{
   CudnnConvFwdOp, CudnnConvBwdFilterOp, CudnnConvBwdDataOp,

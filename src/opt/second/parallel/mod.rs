@@ -5,43 +5,28 @@ use opt::sgd::{
   StepSizeSchedule,
   Momentum,
 };
+use opt::sgd::parallel::{ParallelSgdOptWorker};
 
 use array::{Shape};
+use array_cuda::device::{DeviceBufferRef, DeviceBufferRefMut};
 
 use std::ops::{Deref, DerefMut};
 use std::path::{PathBuf};
 use time::{get_time};
 
-pub trait ParallelSgdOptWorker {
-  fn worker_rank(&self) -> usize;
-  fn num_workers(&self) -> usize;
+pub mod solver;
 
-  fn operator(&mut self) -> &mut CompleteOperator;
-  fn shared_seed(&mut self) -> [u64; 2];
-
-  fn signal_checkpoint(&mut self);
-  fn wait_checkpoint(&mut self) -> bool;
-
-  fn save_param(&mut self);
-  fn restore_param(&mut self);
-
-  fn stage_param(&mut self);
-  fn sync_param(&mut self);
-  fn merge_param(&mut self);
-
-  fn stage_grad(&mut self);
-  fn sync_grad(&mut self);
-  fn merge_grad(&mut self);
-  fn accumulate_grad(&mut self, alpha: f32, mu: f32);
-  fn step(&mut self, step_size: f32);
+pub trait ParallelSecondOptWorker: ParallelSgdOptWorker {
+  fn stage<'ctx>(&'ctx mut self, src: &DeviceBufferRef<'ctx, f32>);
+  fn sync(&mut self);
+  fn merge<'ctx>(&'ctx mut self, dst: &mut DeviceBufferRefMut<'ctx, f32>);
 }
 
 #[derive(Clone, Debug)]
-pub struct ParallelSgdOptConfig {
+pub struct ParallelSecondOptConfig {
   pub init:           InitBehavior,
   pub minibatch_size: usize,
   pub step_size:      StepSizeSchedule,
-  pub momentum:       Momentum,
   pub l2_reg_coef:    f32,
 
   pub display_iters:  usize,
@@ -51,13 +36,13 @@ pub struct ParallelSgdOptConfig {
   pub valid_iters:    usize,
 }
 
-pub struct ParallelSgdOpt {
-  config:   ParallelSgdOptConfig,
+pub struct ParallelSecondOpt {
+  config:   ParallelSecondOptConfig,
 }
 
-impl ParallelSgdOpt {
-  pub fn new(config: ParallelSgdOptConfig) -> ParallelSgdOpt {
-    ParallelSgdOpt{
+impl ParallelSecondOpt {
+  pub fn new(config: ParallelSecondOptConfig) -> ParallelSecondOpt {
+    ParallelSecondOpt{
       config:   config,
     }
   }
@@ -65,17 +50,12 @@ impl ParallelSgdOpt {
   pub fn train(&mut self,
       mut train_data: &mut DataIter<Item=(SampleDatum, Option<SampleLabel>)>,
       mut valid_data: Option<&mut DataIter<Item=(SampleDatum, Option<SampleLabel>)>>,
-      worker: &mut ParallelSgdOptWorker)
+      worker: &mut ParallelSecondOptWorker)
   {
     let batch_size = worker.operator().batch_size();
     let minibatch_size = self.config.minibatch_size;
     let minibatch_weight = 1.0 / minibatch_size as f32;
     let epoch_size = train_data.num_shard_samples();
-
-    // FIXME(20160610): This belongs in a dedicated `SgdOptState` data structure
-    // which may be specialized for device stream operators.
-    /*let params_len = worker.operator().params_len();
-    let mut acc_update = OpCursor::new(DeviceBuffer::zeros(params_len, ctx));*/
 
     let mut init_t = 0;
     /*match self.config.init {
@@ -93,25 +73,10 @@ impl ParallelSgdOpt {
         init_t = t;
       }
     }*/
-    //let shared_seed = operator.shared_seed();
-    //let seed = [thread_rng().next_u64(), thread_rng().next_u64()];
     let shared_seed = worker.shared_seed();
     worker.operator().init_param(shared_seed);
     worker.operator().reset();
     worker.operator().reset_stats();
-
-    // If we are using the standard Nesterov update, apply some extra
-    // momentum before the next iteration begins.
-    match self.config.momentum {
-      Momentum::UpdateNesterov{mu} => {
-        if init_t > 0 {
-          //worker.operator().update_param(mu);
-          //let step_size = self.config.step_size.at_iter(init_t);
-          worker.step(mu);
-        }
-      }
-      _ => {}
-    }
 
     let mut start_time = get_time();
     let mut minibatch_start_time = start_time;
@@ -165,13 +130,10 @@ impl ParallelSgdOpt {
         // With a full batch of data, compute a full forward/backward pass.
         assert!(batch_counter <= batch_size);
         if batch_counter == batch_size {
-          //worker.operator().next();
-          //worker.operator().input_worker.operator()().load_frames(batch_size);
           worker.operator().wait_preload_frames(batch_size);
           worker.operator().load_labels(batch_size);
           worker.operator().load_weights(batch_size);
           worker.operator().forward(batch_size, OpPhase::Training{t: iter_counter});
-          //worker.operator().estimate_stats(acc_batch_size, batch_size);
           worker.operator().backward(batch_size);
           worker.operator().store_output_categories(batch_size);
           let local_loss = worker.operator().store_loss(batch_size);
@@ -191,23 +153,10 @@ impl ParallelSgdOpt {
           let step_size = self.config.step_size.at_iter(iter_counter);
 
           assert_eq!(acc_batch_size, minibatch_size);
-          //worker.operator().finalize_stats(minibatch_size);
           acc_batch_size = 0;
 
           // Apply regularization to the current gradient.
           worker.operator().regularize(Regularization::L2{l2_reg_coef: l2_reg_coef});
-
-          // If we are using the standard Nesterov update, unapply the extra
-          // momentum.
-          match self.config.momentum {
-            Momentum::UpdateNesterov{mu} => {
-              if iter_counter > 0 {
-                //worker.operator().update_param(-mu);
-                worker.step(-mu);
-              }
-            }
-            _ => {}
-          }
 
           // Increase the iteration counter _before_ updates and communication.
           iter_counter += 1;
@@ -215,27 +164,8 @@ impl ParallelSgdOpt {
           // Communicate to synchronize the gradient.
           worker.sync_grad();
 
-          // Compute the update, possibly with momentum.
-          match self.config.momentum {
-            Momentum::Zero                  => worker.accumulate_grad(1.0, 0.0),
-            Momentum::Update{mu} |
-            Momentum::UpdateNesterov{mu}    => worker.accumulate_grad(-step_size, mu),
-            // XXX(20160422): These are the Torch `optim.sgd`-style update;
-            // see: <https://github.com/torch/optim/blob/master/sgd.lua>.
-            Momentum::Gradient{mu}          => unimplemented!(),
-            Momentum::GradientNesterov{mu}  => unimplemented!(),
-          }
-
-          // Apply the update, possibly with momentum.
-          match self.config.momentum {
-            Momentum::Zero                  => worker.step(-step_size),
-            Momentum::Update{mu} |
-            Momentum::UpdateNesterov{mu}    => worker.step(1.0),
-            // XXX(20160422): These are the Torch `optim.sgd`-style update;
-            // see: <https://github.com/torch/optim/blob/master/sgd.lua>.
-            Momentum::Gradient{mu}          => unimplemented!(),
-            Momentum::GradientNesterov{mu}  => unimplemented!(),
-          }
+          worker.accumulate_grad(1.0, 0.0);
+          worker.step(-step_size);
 
           let minibatch_lap_time = get_time();
           let minibatch_elapsed_ms = (minibatch_lap_time - minibatch_start_time).num_milliseconds() + minibatch_offset_ms;
@@ -283,20 +213,6 @@ impl ParallelSgdOpt {
 
           worker.operator().reset();
           //worker.operator().reset_grad();
-          //worker.operator().reset_stats();
-
-          // If we are using the standard Nesterov update, apply some extra
-          // momentum before the next iteration begins.
-          // XXX(20160406): Interestingly, we should use the local update rather
-          // than the communicated update with momentum.
-          //worker.operator().set_grad_with_param_diff();
-          match self.config.momentum {
-            Momentum::UpdateNesterov{mu} => {
-              //worker.operator().update_param(mu);
-              worker.step(mu);
-            }
-            _ => {}
-          }
         }
       }
     }
@@ -304,13 +220,12 @@ impl ParallelSgdOpt {
 
   pub fn validate(&mut self,
       mut valid_data: &mut DataIter<Item=(SampleDatum, Option<SampleLabel>)>,
-      worker: &mut ParallelSgdOptWorker)
+      worker: &mut ParallelSecondOptWorker)
   {
     let batch_size = worker.operator().batch_size();
     let epoch_size = valid_data.num_shard_samples();
     let total_size = valid_data.num_total_samples();
     let weight = 1.0 / epoch_size as f32;
-    //let weight = 1.0 / total_size as f32;
 
     let mut start_time = get_time();
 

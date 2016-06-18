@@ -1,10 +1,9 @@
-use data::{DataShard, DataIter};
-use data_new::{
-  DataIterator,
-  SampleDatum, SampleDatumConfig, SampleLabel, SampleLabelConfig, 
+use data::{
+  SampleDatum, SampleDatumConfig, SampleLabel, SampleLabelConfig,
+  DataShard, DataIter,
 };
 use operator::{Operator, CompleteOperator, OpRead, OpWrite, OpCursor, OpPhase, Regularization};
-use operator::worker::{OperatorWorker};
+//use operator::worker::{OperatorWorker};
 
 use array::{Shape};
 use array_cuda::device::{DeviceCtxRef, DeviceBuffer, DeviceBufferInitExt};
@@ -17,7 +16,7 @@ use std::sync::{Arc, Barrier};
 use std::sync::atomic::{AtomicUsize, Ordering, fence};
 use time::{get_time};
 
-pub mod new;
+//pub mod new;
 
 pub mod parallel;
 //pub mod seq;
@@ -225,7 +224,7 @@ impl SgdOptState for DeviceSgdOptState {
   }
 }
 
-#[derive(Clone, Debug)]
+/*#[derive(Clone, Debug)]
 pub struct SerialSgdOptConfig {
   pub init:           InitBehavior,
   pub minibatch_size: usize,
@@ -548,4 +547,4 @@ impl SerialSgdOpt {
         elapsed_ms as f32 * 0.001,
     );
   }
-}
+}*/

@@ -40,29 +40,9 @@ path = "tools/dump-array3d-header.rs"
 name = "load-array3d"
 path = "tools/load-array3d.rs"
 
-[[bin]]
-name = "calculate-cifar10-mean"
-path = "tools/calculate-cifar10-mean.rs"
-
 #[[bin]]
-#name = "train-mnist"
-#path = "tools/train-mnist.rs"
-
-#[[bin]]
-#name = "train-cifar10"
-#path = "tools/train-cifar10.rs"
-
-#[[bin]]
-#name = "train-imagenet"
-#path = "tools/train-imagenet.rs"
-
-#[[bin]]
-#name = "train-gogod"
-#path = "tools/train-gogod.rs"
-
-#[[bin]]
-#name = "dist-train-mnist"
-#path = "tools/dist-train-mnist.rs"
+#name = "calculate-cifar10-mean"
+#path = "tools/calculate-cifar10-mean.rs"
 
 #[[bin]]
 #name = "dist-train-imagenet"
@@ -76,17 +56,13 @@ path = "tools/calculate-cifar10-mean.rs"
 #name = "seq-train-imagenet"
 #path = "tools/seq-train-imagenet.rs"
 
-[[bin]]
-name = "graph-train-imagenet"
-path = "tools/graph-train-imagenet.rs"
+#[[bin]]
+#name = "graph-train-imagenet"
+#path = "tools/graph-train-imagenet.rs"
 
 [[bin]]
 name = "dev-graph-train-imagenet"
 path = "tools/dev-graph-train-imagenet.rs"
-
-#[[bin]]
-#name = "dist-train-imagenet-shuf"
-#path = "tools/dist-train-imagenet-shuf.rs"
 
 #[[bin]]
 #name = "bench-kernels"
@@ -99,10 +75,6 @@ path = "tools/dev-graph-train-imagenet.rs"
 #[[bin]]
 #name = "bench-cublas"
 #path = "tools/bench-cublas.rs"
-
-#[[bin]]
-#name = "run-rembrandt"
-#path = "tools/run-rembrandt.rs"
 
 [dependencies]
 byteorder = "*"

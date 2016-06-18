@@ -1,4 +1,4 @@
-use data_new::{SampleLabel};
+use data::{SampleLabel};
 use operator::{
   Operator, InputOperator, LossOperator, CompleteOperator,
   OpRead, OpWrite,

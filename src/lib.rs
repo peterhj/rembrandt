@@ -16,7 +16,7 @@ extern crate episodb;
 extern crate lmdb;
 #[cfg(feature = "mpich")]
 extern crate mpich as mpi;
-extern crate nccl;
+//extern crate nccl;
 #[cfg(feature = "openmpi")]
 extern crate openmpi as mpi;
 //extern crate procgroup;
@@ -28,7 +28,7 @@ extern crate stb_image;
 extern crate toggle;
 extern crate turbojpeg;
 extern crate varraydb;
-extern crate worker as worker_;
+//extern crate worker as worker_;
 
 #[macro_use]
 extern crate log;
@@ -53,10 +53,10 @@ pub mod caffe_proto;
 //pub mod net;
 //pub mod opt;
 
-pub mod arch_new;
+//pub mod arch_new;
 pub mod data_new;
-pub mod layer_new;
-pub mod opt_new;
+//pub mod layer_new;
+//pub mod opt_new;
 
 //pub mod arch;
 //pub mod comm;
@@ -67,4 +67,4 @@ pub mod opt;
 pub mod solve;
 pub mod templates;
 pub mod util;
-pub mod worker;
+//pub mod worker;

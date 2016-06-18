@@ -1,4 +1,4 @@
-use data_new::{SampleDatum, SampleLabel};
+use data::{SampleDatum, SampleLabel};
 
 use array::{ArrayZeroExt, Array3d};
 //use epeg::{EpegImage};
