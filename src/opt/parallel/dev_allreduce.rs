@@ -13,10 +13,13 @@ use rand::{Rng, thread_rng};
 use std::ops::{Deref, DerefMut};
 use std::rc::{Rc};
 use std::sync::{Arc, Barrier, Mutex};
+use std::sync::atomic::{AtomicUsize, Ordering, fence};
 
+#[derive(Clone)]
 struct DevWorkerSharedData {
   shared_seed:  [u64; 2],
-  reduce_buf:   Mutex<f32>,
+  //reduce_buf:   Mutex<f32>,
+  reduce_count: Arc<AtomicUsize>,
 }
 
 /*#[derive(Clone)]
@@ -209,7 +212,7 @@ impl OpWrite for OpCursor<RingDeviceBufComm<f32>> {
 #[derive(Clone)]
 pub struct DeviceAllreduceOptWorkerBuilder {
   num_workers:  usize,
-  shared:   Arc<DevWorkerSharedData>,
+  shared:       DevWorkerSharedData,
   comm_builder: RingDeviceBufCommBuilder<f32>,
 }
 
@@ -217,11 +220,12 @@ impl DeviceAllreduceOptWorkerBuilder {
   pub fn new(num_workers: usize) -> DeviceAllreduceOptWorkerBuilder {
     let shared = DevWorkerSharedData{
       shared_seed:  [thread_rng().next_u64(), thread_rng().next_u64()],
-      reduce_buf:   Mutex::new(0.0),
+      //reduce_buf:   Mutex::new(0.0),
+      reduce_count: Arc::new(AtomicUsize::new(0)),
     };
     DeviceAllreduceOptWorkerBuilder{
       num_workers:  num_workers,
-      shared:   Arc::new(shared),
+      shared:       shared,
       comm_builder: RingDeviceBufCommBuilder::new(num_workers),
     }
   }
@@ -258,7 +262,7 @@ pub struct DeviceAllreduceOptWorker {
   worker_rank:  usize,
   num_workers:  usize,
   context:      Rc<DeviceContext>,
-  shared:       Arc<DevWorkerSharedData>,
+  shared:       DevWorkerSharedData,
   operator:     Box<CompleteOperator>,
   comm:         OpCursor<RingDeviceBufComm<f32>>,
   grad_acc:     OpCursor<DeviceBuffer<f32>>,
@@ -281,6 +285,20 @@ impl ParallelSgdOptWorker for DeviceAllreduceOptWorker {
 
   fn shared_seed(&mut self) -> [u64; 2] {
     self.shared.shared_seed
+  }
+
+  fn reduce(&self, count: usize) -> usize {
+    if self.worker_rank == 0 {
+      self.shared.reduce_count.store(0, Ordering::Release);
+    }
+    fence(Ordering::AcqRel);
+    self.comm.inner.barrier();
+    self.shared.reduce_count.fetch_add(count, Ordering::AcqRel);
+    fence(Ordering::AcqRel);
+    self.comm.inner.barrier();
+    let x = self.shared.reduce_count.load(Ordering::Acquire);
+    fence(Ordering::AcqRel);
+    x
   }
 
   fn signal_checkpoint(&mut self) {

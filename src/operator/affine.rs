@@ -72,6 +72,7 @@ pub struct AffineOperator {
 
   in_act:       SharedDeviceBuf<f32>,
   in_delta:     Option<SharedDeviceBuf<f32>>,
+  post_act:     DeviceBuffer<f32>,
   out_act:      SharedDeviceBuf<f32>,
   out_delta:    SharedDeviceBuf<f32>,
 
@@ -81,29 +82,35 @@ pub struct AffineOperator {
   add_bias:     CudnnAddOp,
 
   backward:     Option<AffineBwdOperator>,
-  hv_backward:  Option<AffineHvBwdOperator>,
-  //r_forward:    Option<AffineRFwdOperator>,
+  //hv_backward:  Option<AffineHvBwdOperator>,
+  r_forward:    Option<AffineRFwdOperator>,
 }
 
 struct AffineBwdOperator {
+  post_delta:   DeviceBuffer<f32>,
+
   grad_weights: DeviceArray2d<f32>,
   grad_bias:    DeviceArray2d<f32>,
-  acc_grad_weights: DeviceArray2d<f32>,
+  /*acc_grad_weights: DeviceArray2d<f32>,
   acc_grad_bias:    DeviceArray2d<f32>,
   save_weights: DeviceArray2d<f32>,
-  save_bias:    DeviceArray2d<f32>,
+  save_bias:    DeviceArray2d<f32>,*/
 
   unit_bias:    DeviceArray2d<f32>,
 
   //comm_worker:  Rc<RefCell>,
 }
 
-struct AffineHvBwdOperator {
+/*struct AffineHvBwdOperator {
   dir_weights:  DeviceArray2d<f32>,
   dir_bias:     DeviceArray2d<f32>,
-}
+}*/
 
 struct AffineRFwdOperator {
+  in_r_act:     SharedDeviceBuf<f32>,
+  post_r_act:   DeviceBuffer<f32>,
+  out_r_act:    SharedDeviceBuf<f32>,
+
   dir_weights:  DeviceArray2d<f32>,
   dir_bias:     DeviceArray2d<f32>,
 }
@@ -119,14 +126,27 @@ impl AffineOperator {
       let mut unit_bias = DeviceArray2d::<f32>::zeros((1, batch_size), ctx);
       unit_bias.as_view_mut(ctx).set_constant(1.0);
       Some(AffineBwdOperator{
+        post_delta:   DeviceBuffer::<f32>::zeros(out_channels * batch_size, ctx),
         grad_weights: DeviceArray2d::<f32>::zeros((in_channels, out_channels), ctx),
         grad_bias:    DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
-        acc_grad_weights: DeviceArray2d::<f32>::zeros((in_channels, out_channels), ctx),
+        /*acc_grad_weights: DeviceArray2d::<f32>::zeros((in_channels, out_channels), ctx),
         acc_grad_bias:    DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
         save_weights: DeviceArray2d::<f32>::zeros((in_channels, out_channels), ctx),
-        save_bias:    DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
+        save_bias:    DeviceArray2d::<f32>::zeros((1, out_channels), ctx),*/
         unit_bias:    unit_bias,
         //comm_worker:  comm_worker.unwrap(),
+      })
+    } else {
+      None
+    };
+
+    let r_forward = if capability.r_forward_enabled() {
+      Some(AffineRFwdOperator{
+        in_r_act:     prev_op.unwrap().get_output_r_act(0).unwrap(),
+        post_r_act:   DeviceBuffer::<f32>::zeros(out_channels * batch_size, ctx),
+        out_r_act:    Rc::new(RefCell::new(DeviceBuffer::<f32>::zeros(out_channels * batch_size, ctx))),
+        dir_weights:  DeviceArray2d::<f32>::zeros((in_channels, out_channels), ctx),
+        dir_bias:     DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
       })
     } else {
       None
@@ -145,13 +165,14 @@ impl AffineOperator {
       context:      context.clone(),
       in_act:       prev_op.unwrap().get_output_act(0),
       in_delta:     prev_op.unwrap().get_output_delta(0),
+      post_act:     DeviceBuffer::<f32>::zeros(out_channels * batch_size, ctx),
       out_act:      Rc::new(RefCell::new(DeviceBuffer::<f32>::zeros(out_channels * batch_size, ctx))),
       out_delta:    Rc::new(RefCell::new(DeviceBuffer::<f32>::zeros(out_channels * batch_size, ctx))),
       weights:      DeviceArray2d::<f32>::zeros((in_channels, out_channels), ctx),
       bias:         DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
       add_bias:     add_bias,
       backward:     backward,
-      hv_backward:  None,
+      r_forward:    r_forward,
     }
   }
 }
@@ -173,6 +194,16 @@ impl Operator for AffineOperator {
   fn get_output_delta(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> {
     assert_eq!(0, _arm);
     Some(self.out_delta.clone())
+  }
+
+  fn get_output_r_act(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> {
+    assert!(self.r_forward.is_some());
+    assert_eq!(0, _arm);
+    if let Some(ref r_forward) = self.r_forward {
+      Some(r_forward.out_r_act.clone())
+    } else {
+      None
+    }
   }
 
   fn init_param(&mut self, shared_seed: [u64; 2]) {
@@ -248,7 +279,7 @@ impl Operator for AffineOperator {
   }
 
   fn decode_state(&mut self, blob: &[u8]) -> usize {
-    assert!(self.backward.is_some());
+    /*assert!(self.backward.is_some());
     let AffineOperatorConfig{in_channels, out_channels, ..} = self.config;
     let ctx = &(*self.context).as_ref();
     let mut backward = self.backward.as_mut().unwrap();
@@ -265,11 +296,12 @@ impl Operator for AffineOperator {
     backward.acc_grad_bias.as_view_mut(ctx).sync_load(&load_update_bias.as_view());
 
     let progress = reader.position() as usize;
-    progress
+    progress*/
+    unimplemented!();
   }
 
   fn encode_state(&mut self, blob: &mut Vec<u8>) {
-    assert!(self.backward.is_some());
+    /*assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
     let mut backward = self.backward.as_mut().unwrap();
 
@@ -283,7 +315,8 @@ impl Operator for AffineOperator {
     update_bias.sync_store(&mut save_update_bias.as_view_mut());
 
     save_update_weights.serialize(blob).unwrap();
-    save_update_bias.serialize(blob).unwrap();
+    save_update_bias.serialize(blob).unwrap();*/
+    unimplemented!();
   }
 
   fn read_grad(&mut self, init_offset: usize, reader: &mut OpRead) -> usize {
@@ -338,35 +371,52 @@ impl Operator for AffineOperator {
     let &mut AffineOperator{
       ref context,
       ref mut in_act, ref mut out_act,
+      ref mut post_act,
       ref mut weights, ref mut bias,
       .. } = self;
 
     let ctx = &(**context).as_ref();
-    let weights = weights.as_view(ctx);
-    let bias = bias.as_view(ctx);
-    let in_act = in_act.borrow_mut().as_ref(ctx)
+    //let weights = weights.as_view(ctx);
+    //let bias = bias.as_view(ctx);
+
+    /*let in_act = in_act.borrow_mut().as_ref(ctx)
       .into_2d_view((in_channels, batch_size));
     let mut out_act = out_act.borrow_mut().as_ref_mut(ctx)
-      .into_2d_view_mut((out_channels, batch_size));
+      .into_2d_view_mut((out_channels, batch_size));*/
+    let mut in_act = in_act.borrow_mut();
+    let mut out_act = out_act.borrow_mut();
 
-    out_act.matrix_prod(1.0, &weights, Transpose::T, &in_act, Transpose::N, 0.0);
+    post_act.as_ref_mut(ctx).into_2d_view_mut((out_channels, batch_size))
+      .matrix_prod(
+          1.0,
+          &weights.as_view(ctx), Transpose::T,
+          &in_act.as_ref(ctx).into_2d_view((in_channels, batch_size)), Transpose::N,
+          0.0);
 
     self.add_bias.set_batch_size(batch_size).unwrap();
     unsafe { self.add_bias.forward(
         1.0,
-        bias.as_ptr(),
+        bias.as_view(ctx).as_ptr(),
         1.0,
-        out_act.as_mut_ptr(),
+        post_act.as_ref_mut(ctx).as_mut_ptr(),
         &*ctx.get_dnn(),
     ).unwrap() };
 
     match self.config.act_func {
-      ActivationFunction::Identity => {}
+      ActivationFunction::Identity => {
+        out_act.as_ref_mut(ctx).copy(&post_act.as_ref(ctx));
+      }
       ActivationFunction::Rect => {
-        unsafe { rembrandt_kernel_batch_map_rect_inplace(
+        /*unsafe { rembrandt_kernel_batch_map_rect_inplace(
             out_act.as_mut_ptr(),
             out_channels as i32,
             batch_size as i32,
+            ctx.stream.ptr,
+        ) };*/
+        unsafe { rembrandt_rect_fwd(
+            post_act.as_ref(ctx).as_ptr(),
+            (out_channels * batch_size) as i32,
+            out_act.as_ref_mut(ctx).as_mut_ptr(),
             ctx.stream.ptr,
         ) };
       }
@@ -384,52 +434,143 @@ impl Operator for AffineOperator {
       ref context,
       ref mut in_act, ref mut in_delta,
       ref mut out_act, ref mut out_delta,
+      ref mut post_act,
       ref mut weights, ref mut bias,
       ref mut backward,
       .. } = self;
     let mut backward = backward.as_mut().unwrap();
     let &mut AffineBwdOperator{
+      //ref mut post_delta,
       ref mut grad_weights, ref mut grad_bias,
       ref mut unit_bias,
       .. } = backward;
 
     let ctx = &(**context).as_ref();
-    let weights = weights.as_view(ctx);
-    let mut grad_weights = grad_weights.as_view_mut(ctx);
-    let mut grad_bias = grad_bias.as_view_mut(ctx);
-    let in_act = in_act.borrow_mut().as_ref(ctx)
-      .into_2d_view((in_channels, batch_size));
-    let out_act = out_act.borrow_mut().as_ref(ctx)
-      .into_2d_view((out_channels, batch_size));
-    let unit_bias = unit_bias.as_view(ctx);
 
-    {
-      let mut out_delta = out_delta.borrow_mut().as_ref_mut(ctx)
-        .into_2d_view_mut((out_channels, batch_size));
-      match self.config.act_func {
-        ActivationFunction::Identity => {}
-        ActivationFunction::Rect => {
-          unsafe { rembrandt_kernel_batch_map_rect_backprop_inplace(
-              out_act.as_ptr(),
-              out_channels as i32,
-              batch_size as i32,
-              out_delta.as_mut_ptr(),
-              ctx.stream.ptr,
-          ) };
-        }
-        _ => unimplemented!(),
+    let mut in_act = in_act.borrow_mut();
+    let mut out_delta = out_delta.borrow_mut();
+
+    //{
+      /*let mut out_delta = out_delta.borrow_mut().as_ref_mut(ctx)
+        .into_2d_view_mut((out_channels, batch_size));*/
+    match self.config.act_func {
+      ActivationFunction::Identity => {
+        backward.post_delta.as_ref_mut(ctx).copy(&out_delta.as_ref(ctx));
       }
+      ActivationFunction::Rect => {
+        /*unsafe { rembrandt_kernel_batch_map_rect_backprop_inplace(
+            out_act.as_ptr(),
+            out_channels as i32,
+            batch_size as i32,
+            out_delta.as_mut_ptr(),
+            ctx.stream.ptr,
+        ) };*/
+        unsafe { rembrandt_rect_bwd(
+            post_act.as_ref(ctx).as_ptr(),
+            (out_channels * batch_size) as i32,
+            out_delta.as_ref(ctx).as_ptr(),
+            backward.post_delta.as_ref_mut(ctx).as_mut_ptr(),
+            ctx.stream.ptr,
+        ) };
+      }
+      _ => unimplemented!(),
     }
+    //}
 
-    let out_delta = out_delta.borrow_mut().as_ref(ctx)
+    /*let out_delta = out_delta.borrow_mut().as_ref(ctx)
       .into_2d_view((out_channels, batch_size));
     grad_weights.matrix_prod(1.0, &in_act, Transpose::N, &out_delta, Transpose::T, 1.0);
-    grad_bias.matrix_prod(1.0, &unit_bias, Transpose::N, &out_delta, Transpose::T, 1.0);
+    grad_bias.matrix_prod(1.0, &unit_bias, Transpose::N, &out_delta, Transpose::T, 1.0);*/
+    grad_weights.as_view_mut(ctx)
+      .matrix_prod(
+          1.0,
+          &in_act.as_ref(ctx).into_2d_view((in_channels, batch_size)), Transpose::N,
+          &backward.post_delta.as_ref(ctx).into_2d_view((out_channels, batch_size)), Transpose::T,
+          1.0);
+    grad_bias.as_view_mut(ctx)
+      .matrix_prod(
+          1.0,
+          &unit_bias.as_view(ctx).view((0, 0), (1, batch_size)), Transpose::N,
+          &backward.post_delta.as_ref(ctx).into_2d_view((out_channels, batch_size)), Transpose::T,
+          1.0);
 
-    if let &mut Some(ref mut in_delta) = in_delta {
-      let mut in_delta = in_delta.borrow_mut().as_ref_mut(ctx)
-        .into_2d_view_mut((in_channels, batch_size));
-      in_delta.matrix_prod(1.0, &weights, Transpose::N, &out_delta, Transpose::N, 0.0);
+    if let Some(ref mut in_delta) = in_delta.as_mut() {
+      /*let mut in_delta = in_delta.borrow_mut().as_ref_mut(ctx)
+        .into_2d_view_mut((in_channels, batch_size));*/
+      let mut in_delta = in_delta.borrow_mut();
+      in_delta.as_ref_mut(ctx).into_2d_view_mut((in_channels, batch_size))
+        .matrix_prod(
+            1.0,
+            &weights.as_view(ctx), Transpose::N,
+            &backward.post_delta.as_ref(ctx).into_2d_view((out_channels, batch_size)), Transpose::N,
+            0.0);
+    }
+  }
+
+  fn r_forward(&mut self, batch_size: usize) {
+    assert!(self.r_forward.is_some());
+    assert!(batch_size <= self.batch_cap);
+    let in_channels = self.config.in_channels;
+    let out_channels = self.config.out_channels;
+
+    let &mut AffineOperator{
+      ref context,
+      ref mut in_act, ref mut out_act,
+      ref mut weights, ref mut bias,
+      .. } = self;
+
+    let ctx = &(**context).as_ref();
+    //let weights = weights.as_view(ctx);
+    //let bias = bias.as_view(ctx);
+    let mut r_forward = self.r_forward.as_mut().unwrap();
+
+    let mut in_act = in_act.borrow_mut();
+    //let mut out_act = out_act.borrow_mut();
+    let mut in_r_act = r_forward.in_r_act.borrow_mut();
+    let mut out_r_act = r_forward.out_r_act.borrow_mut();
+
+    r_forward.post_r_act.as_ref_mut(ctx).into_2d_view_mut((out_channels, batch_size))
+      .matrix_prod(
+          1.0,
+          &weights.as_view(ctx), Transpose::T,
+          &in_r_act.as_ref(ctx).into_2d_view((in_channels, batch_size)), Transpose::N,
+          0.0);
+    r_forward.post_r_act.as_ref_mut(ctx).into_2d_view_mut((out_channels, batch_size))
+      .matrix_prod(
+          1.0,
+          &r_forward.dir_weights.as_view(ctx), Transpose::T,
+          &in_act.as_ref(ctx).into_2d_view((in_channels, batch_size)), Transpose::N,
+          1.0);
+
+    self.add_bias.set_batch_size(batch_size).unwrap();
+    unsafe { self.add_bias.forward(
+        1.0,
+        r_forward.dir_bias.as_view(ctx).as_ptr(),
+        1.0,
+        r_forward.post_r_act.as_ref_mut(ctx).as_mut_ptr(),
+        &*ctx.get_dnn(),
+    ).unwrap() };
+
+    match self.config.act_func {
+      ActivationFunction::Identity => {
+        out_r_act.as_ref_mut(ctx).copy(&r_forward.post_r_act.as_ref(ctx));
+      }
+      ActivationFunction::Rect => {
+        /*unsafe { rembrandt_kernel_batch_map_rect_inplace(
+            out_r_act.as_ref_mut(ctx).as_mut_ptr(),
+            out_channels as i32,
+            batch_size as i32,
+            ctx.stream.ptr,
+        ) };*/
+        unsafe { rembrandt_rect_bwd(
+            self.post_act.as_ref(ctx).as_ptr(),
+            (out_channels * batch_size) as i32,
+            r_forward.post_r_act.as_ref(ctx).as_ptr(),
+            out_r_act.as_ref_mut(ctx).as_mut_ptr(),
+            ctx.stream.ptr,
+        ) };
+      }
+      _ => unimplemented!(),
     }
   }
 
@@ -610,7 +751,7 @@ impl Operator for AffineOperator {
       .row_vector_scale(scale);
   }*/
 
-  fn reset(&mut self) {
+  fn reset_grad(&mut self) {
     assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
     let mut backward = self.backward.as_mut().unwrap();

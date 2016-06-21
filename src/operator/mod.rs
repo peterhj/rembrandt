@@ -403,8 +403,8 @@ pub trait Operator {
   fn forward(&mut self, batch_size: usize, phase: OpPhase);
 
   // Requires `Backward` capability.
-  fn reset(&mut self) {}
-  fn reset_grad(&mut self) { unimplemented!(); }
+  //fn reset(&mut self) {}
+  fn reset_grad(&mut self) {}
   fn read_grad(&mut self, _offset: usize, _reader: &mut OpRead) -> usize { 0 }
   fn write_grad(&mut self, _offset: usize, _writer: &mut OpWrite) -> usize { 0 }
   fn accumulate_grad_(&mut self, _offset: usize, _alpha: f32, _mu: f32, _grad_acc_writer: &mut OpWrite) -> usize { 0 }
@@ -430,7 +430,7 @@ pub trait Operator {
   // Requires `RForward` capability.
   fn read_direction(&mut self, _offset: usize, _reader: &mut OpRead) -> usize { 0 }
   fn write_direction(&mut self, _offset: usize, _writer: &mut OpWrite) -> usize { 0 }
-  fn r_forward(&mut self, _batch_size: usize) { unimplemented!(); }
+  fn r_forward(&mut self, _batch_size: usize);
 
   // Requires `RBackward` capability.
   fn reset_r_grad(&mut self) { unimplemented!(); }
@@ -1030,7 +1030,12 @@ impl Operator for AddJoinOperator {
     /*assert!(self.r_forward.is_some());
     assert_eq!(0, _arm);
     Some(self.r_forward.as_ref().unwrap().in_r_act.clone())*/
-    unimplemented!();
+    assert_eq!(0, _arm);
+    if let Some(ref r_forward) = self.r_forward {
+      Some(r_forward.out_r_act.clone())
+    } else {
+      None
+    }
   }
 
   fn get_output_r_delta(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> {
@@ -1100,13 +1105,13 @@ impl Operator for AddJoinOperator {
     let mut r_forward = self.r_forward.as_mut().unwrap();
     let mut out_r_act = r_forward.out_r_act.borrow_mut().as_ref_mut(ctx);
 
-    // FIXME(20160602): activation function.
-    unimplemented!();
-
     out_r_act.copy(&r_forward.in_r_acts[0].borrow_mut().as_ref(ctx));
     for arm in 1 .. self.config.num_in_arms {
       out_r_act.vector_add(1.0, &r_forward.in_r_acts[arm].borrow_mut().as_ref(ctx), 1.0);
     }
+
+    // FIXME(20160602): activation function.
+    //unimplemented!();
   }
 }
 
@@ -1393,5 +1398,9 @@ impl Operator for DropoutOperator {
           ctx.stream.ptr,
       ) };
     }
+  }
+
+  fn r_forward(&mut self, batch_size: usize) {
+    unimplemented!();
   }
 }

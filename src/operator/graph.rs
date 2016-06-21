@@ -535,11 +535,11 @@ impl Operator for GraphOperator {
     }
   }
 
-  fn reset(&mut self) {
+  /*fn reset(&mut self) {
     for &id in self.fwd_toporder.iter() {
       self.operators[id].reset();
     }
-  }
+  }*/
 
   fn reset_grad(&mut self) {
     for &id in self.fwd_toporder.iter() {
@@ -594,42 +594,6 @@ impl Operator for GraphOperator {
     }
     offset - init_offset
   }
-
-  /*fn reset_stats(&mut self) {
-    for &id in self.fwd_toporder.iter() {
-      self.operators[id].reset_stats();
-    }
-  }
-
-  fn estimate_stats(&mut self, acc_sample_size: usize, batch_size: usize) {
-    for &id in self.fwd_toporder.iter() {
-      self.operators[id].estimate_stats(acc_sample_size, batch_size);
-    }
-  }
-
-  fn finalize_stats(&mut self, minibatch_size: usize) {
-    for &id in self.fwd_toporder.iter() {
-      self.operators[id].finalize_stats(minibatch_size);
-    }
-  }
-
-  fn accumulate_grad(&mut self, scale: f32, momentum: f32) {
-    for &id in self.fwd_toporder.iter() {
-      self.operators[id].accumulate_grad(scale, momentum);
-    }
-  }
-
-  fn update_param(&mut self, scale: f32) {
-    for &id in self.fwd_toporder.iter() {
-      self.operators[id].update_param(scale);
-    }
-  }
-
-  fn update_param2(&mut self, grad_scale: f32, update_scale: f32) {
-    for &id in self.fwd_toporder.iter() {
-      self.operators[id].update_param2(grad_scale, update_scale);
-    }
-  }*/
 }
 
 impl InputOperator for GraphOperator {
@@ -687,6 +651,18 @@ impl LossOperator for GraphOperator {
     // FIXME(20160601): potentially multiple inputs.
     let id0 = *self.loss_ops.iter().next().unwrap();
     self.operators[id0].upcast_loss().load_weights(batch_size);
+  }
+
+  fn reset_targets(&mut self, batch_size: usize) {
+    // FIXME(20160601): potentially multiple inputs.
+    let id0 = *self.loss_ops.iter().next().unwrap();
+    self.operators[id0].upcast_loss().reset_targets(batch_size);
+  }
+
+  fn set_targets_with_r_loss(&mut self, batch_size: usize) {
+    // FIXME(20160601): potentially multiple inputs.
+    let id0 = *self.loss_ops.iter().next().unwrap();
+    self.operators[id0].upcast_loss().set_targets_with_r_loss(batch_size);
   }
 
   fn store_loss(&mut self, batch_size: usize) -> f32 {

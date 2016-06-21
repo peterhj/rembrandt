@@ -64,6 +64,10 @@ path = "tools/load-array3d.rs"
 name = "dev-graph-train-imagenet"
 path = "tools/dev-graph-train-imagenet.rs"
 
+[[bin]]
+name = "second-dev-graph-train-imagenet"
+path = "tools/second-dev-graph-train-imagenet.rs"
+
 #[[bin]]
 #name = "bench-kernels"
 #path = "tools/bench-kernels.rs"

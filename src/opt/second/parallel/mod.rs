@@ -2,10 +2,10 @@ use data::{SampleDatum, SampleLabel, DataShard, DataIter};
 use operator::{Operator, CompleteOperator, OpPhase, Regularization};
 use opt::sgd::{
   InitBehavior,
-  StepSizeSchedule,
   Momentum,
 };
 use opt::sgd::parallel::{ParallelSgdOptWorker};
+use opt::second::parallel::solver::{ParallelSolver};
 
 use array::{Shape};
 use array_cuda::device::{DeviceBufferRef, DeviceBufferRefMut};
@@ -26,7 +26,6 @@ pub trait ParallelSecondOptWorker: ParallelSgdOptWorker {
 pub struct ParallelSecondOptConfig {
   pub init:           InitBehavior,
   pub minibatch_size: usize,
-  pub step_size:      StepSizeSchedule,
   pub l2_reg_coef:    f32,
 
   pub display_iters:  usize,
@@ -36,14 +35,16 @@ pub struct ParallelSecondOptConfig {
   pub valid_iters:    usize,
 }
 
-pub struct ParallelSecondOpt {
+pub struct ParallelSecondOpt<Solver> where Solver: ParallelSolver {
   config:   ParallelSecondOptConfig,
+  solver:   Solver,
 }
 
-impl ParallelSecondOpt {
-  pub fn new(config: ParallelSecondOptConfig) -> ParallelSecondOpt {
+impl<Solver> ParallelSecondOpt<Solver> where Solver: ParallelSolver {
+  pub fn new(config: ParallelSecondOptConfig, solver: Solver) -> ParallelSecondOpt<Solver> {
     ParallelSecondOpt{
       config:   config,
+      solver:   solver,
     }
   }
 
@@ -75,8 +76,8 @@ impl ParallelSecondOpt {
     }*/
     let shared_seed = worker.shared_seed();
     worker.operator().init_param(shared_seed);
-    worker.operator().reset();
-    worker.operator().reset_stats();
+    worker.operator().reset_grad();
+    //worker.operator().reset_stats();
 
     let mut start_time = get_time();
     let mut minibatch_start_time = start_time;
@@ -150,7 +151,6 @@ impl ParallelSecondOpt {
 
         if local_counter % minibatch_size == 0 {
           let l2_reg_coef = self.config.l2_reg_coef;
-          let step_size = self.config.step_size.at_iter(iter_counter);
 
           assert_eq!(acc_batch_size, minibatch_size);
           acc_batch_size = 0;
@@ -164,8 +164,9 @@ impl ParallelSecondOpt {
           // Communicate to synchronize the gradient.
           worker.sync_grad();
 
+          self.solver.solve(batch_size, worker);
           worker.accumulate_grad(1.0, 0.0);
-          worker.step(-step_size);
+          worker.step(0.1);
 
           let minibatch_lap_time = get_time();
           let minibatch_elapsed_ms = (minibatch_lap_time - minibatch_start_time).num_milliseconds() + minibatch_offset_ms;
@@ -186,10 +187,9 @@ impl ParallelSecondOpt {
             let accuracy = acc_correct_count as f32 / acc_total_count as f32;
             let avg_loss = display_acc_loss / self.config.display_iters as f32;
             if worker.worker_rank() == 0 {
-              info!("SgdOpt: train: iter: {} epoch: {} sample: {}/{} step: {} loss: {:.06} accuracy: {:.03} elapsed: {:.03} s",
+              info!("SecondOpt: train: iter: {} epoch: {} sample: {}/{} loss: {:.06} accuracy: {:.03} elapsed: {:.03} s",
                   iter_counter, epoch_counter,
                   epoch_offset, epoch_size,
-                  step_size,
                   avg_loss,
                   accuracy,
                   elapsed_ms as f32 * 0.001,
@@ -211,8 +211,7 @@ impl ParallelSecondOpt {
             minibatch_start_time = start_time;
           }
 
-          worker.operator().reset();
-          //worker.operator().reset_grad();
+          worker.operator().reset_grad();
         }
       }
     }

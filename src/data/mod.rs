@@ -1,7 +1,7 @@
 use data::augment::{TransformPreproc};
 //use data_new::{SampleDatum, SampleLabel};
 
-use array::{Shape, Array, ArrayViewMut, NdArraySerialize, Array3d, BitArray3d};
+use array::{Shape, Array, ArrayZeroExt, ArrayViewMut, NdArraySerialize, Array3d, BitArray3d};
 use rng::xorshift::{Xorshiftplus128Rng};
 use threadpool::{ThreadPool};
 
@@ -119,6 +119,43 @@ pub trait EpisodicDataShard {
 
 pub trait DataIter: DataShard + Iterator<Item=(SampleDatum, Option<SampleLabel>)> {
   fn reset(&mut self) {}
+}
+
+pub struct GenerateRandomArray3dDataIter {
+  shape:    (usize, usize, usize),
+  ncats:    i32,
+}
+
+impl GenerateRandomArray3dDataIter {
+  pub fn new(shape: (usize, usize, usize), ncats: i32) -> Self {
+    GenerateRandomArray3dDataIter{
+      shape:    shape,
+      ncats:    ncats,
+    }
+  }
+}
+
+impl DataShard for GenerateRandomArray3dDataIter {
+  fn num_shard_samples(&self) -> usize {
+    1000_000
+  }
+
+  fn num_total_samples(&self) -> usize {
+    1000_000
+  }
+}
+
+impl Iterator for GenerateRandomArray3dDataIter {
+  type Item = (SampleDatum, Option<SampleLabel>);
+
+  fn next(&mut self) -> Option<(SampleDatum, Option<SampleLabel>)> {
+    let datum = SampleDatum::WHCBytes(Array3d::zeros(self.shape));
+    let label = SampleLabel::Category{category: 0};
+    Some((datum, Some(label)))
+  }
+}
+
+impl DataIter for GenerateRandomArray3dDataIter {
 }
 
 pub struct RangeDataShard<Shard> {

@@ -9,9 +9,11 @@ use array_cuda::device::num::{NumExt};
 use array_cuda::device::random::{RandomSampleExt, GaussianDist};
 use comm_cuda::{RingDeviceBufCommBuilder, RingDeviceBufComm};
 
+use std::iter::{repeat};
 use std::rc::{Rc};
 
 pub trait ParallelSolver {
+  fn solve(&mut self, batch_size: usize, worker: &mut ParallelSecondOptWorker);
 }
 
 pub trait SolverIteration {
@@ -21,13 +23,19 @@ pub trait SolverIteration {
 pub struct FisherIteration {
 }
 
+impl FisherIteration {
+  pub fn new() -> FisherIteration {
+    FisherIteration{}
+  }
+}
+
 impl SolverIteration for FisherIteration {
   fn step(&self, batch_size: usize, worker: &mut ParallelSecondOptWorker) {
     worker.operator().reset_grad();
     worker.operator().r_forward(batch_size);
-    // FIXME(20160617): set loss targets.
+    worker.operator().set_targets_with_r_loss(batch_size);
     worker.operator().backward(batch_size);
-    // FIXME(20160617): reset loss targets.
+    worker.operator().reset_targets(batch_size);
     worker.sync_grad();
   }
 }
@@ -112,7 +120,29 @@ pub struct CgDeviceParallelSolver<Iter> {
 }
 
 impl<Iter> CgDeviceParallelSolver<Iter> where Iter: SolverIteration {
-  pub fn solve(&mut self, batch_size: usize, worker: &mut ParallelSecondOptWorker) {
+  pub fn new(param_len: usize, max_iters: usize, iteration: Iter, context: Rc<DeviceContext>) -> CgDeviceParallelSolver<Iter> {
+    let ctx = &context.set();
+    CgDeviceParallelSolver{
+      max_iters:    max_iters,
+      iteration:    iteration,
+      ctx:      context.clone(),
+      lambda:   0.0,
+      ng:       OpCursor::new(DeviceBuffer::zeros(param_len, ctx)),
+      p:        OpCursor::new(DeviceBuffer::zeros(param_len, ctx)),
+      w:        OpCursor::new(DeviceBuffer::zeros(param_len, ctx)),
+      x:        DeviceBuffer::zeros(param_len, ctx),
+      r:        DeviceBuffer::zeros(param_len, ctx),
+      pw:       DeviceBuffer::zeros(max_iters+1, ctx),
+      pw_h:     repeat(0.0).take(max_iters+1).collect(),
+      rhos:     DeviceBuffer::zeros(max_iters+1, ctx),
+      rhos_h:   repeat(0.0).take(max_iters+1).collect(),
+      alphas_h: repeat(0.0).take(max_iters+1).collect(),
+    }
+  }
+}
+
+impl<Iter> ParallelSolver for CgDeviceParallelSolver<Iter> where Iter: SolverIteration {
+  fn solve(&mut self, batch_size: usize, worker: &mut ParallelSecondOptWorker) {
     worker.operator().write_grad(0, &mut self.ng);
     {
       let ctx = &self.ctx.set();

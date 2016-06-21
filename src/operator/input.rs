@@ -455,6 +455,10 @@ impl Operator for Data3dOperator {
     // Do nothing.
   }
 
+  fn r_forward(&mut self, _batch_size: usize) {
+    unimplemented!();
+  }
+
   /*fn sync_grads(&mut self) {
     // Do nothing.
   }

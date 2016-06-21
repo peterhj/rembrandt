@@ -18,6 +18,7 @@ pub trait ParallelSgdOptWorker {
 
   fn operator(&mut self) -> &mut CompleteOperator;
   fn shared_seed(&mut self) -> [u64; 2];
+  fn reduce(&self, count: usize) -> usize;
 
   fn signal_checkpoint(&mut self);
   fn wait_checkpoint(&mut self) -> bool;
@@ -97,8 +98,8 @@ impl ParallelSgdOpt {
     //let seed = [thread_rng().next_u64(), thread_rng().next_u64()];
     let shared_seed = worker.shared_seed();
     worker.operator().init_param(shared_seed);
-    worker.operator().reset();
-    worker.operator().reset_stats();
+    worker.operator().reset_grad();
+    //worker.operator().reset_stats();
 
     // If we are using the standard Nesterov update, apply some extra
     // momentum before the next iteration begins.
@@ -281,8 +282,7 @@ impl ParallelSgdOpt {
             minibatch_start_time = start_time;
           }
 
-          worker.operator().reset();
-          //worker.operator().reset_grad();
+          worker.operator().reset_grad();
           //worker.operator().reset_stats();
 
           // If we are using the standard Nesterov update, apply some extra
@@ -379,15 +379,29 @@ impl ParallelSgdOpt {
     let acc_correct_count = display_acc_correct_count;
     let acc_total_count = display_acc_total_count;
     let accuracy = acc_correct_count as f32 / acc_total_count as f32;
+    let loss = display_acc_loss;
+
+    let sum_correct_count = worker.reduce(acc_correct_count);
+    let sum_total_count = worker.reduce(acc_total_count);
+    let avg_accuracy = sum_correct_count as f32 / sum_total_count as f32;
+    let sum_loss = worker.reduce((loss * 1.0e6) as usize);
+    let avg_loss = (sum_loss as f32 / worker.num_workers() as f32) * 1.0e-6;
+
     // FIXME(20160609): need to all-reduce the loss and accuracy.
-    let avg_loss = display_acc_loss;
-    //if worker.worker_rank() == 0 {
+    info!("SgdOpt: valid: rank: {} samples: {} loss: {:.06} accuracy: {:.03} elapsed: {:.03} s",
+        worker.worker_rank(),
+        epoch_size,
+        loss,
+        accuracy,
+        elapsed_ms as f32 * 0.001,
+    );
+    if worker.worker_rank() == 0 {
       info!("SgdOpt: valid: samples: {} loss: {:.06} accuracy: {:.03} elapsed: {:.03} s",
           total_size,
           avg_loss,
-          accuracy,
+          avg_accuracy,
           elapsed_ms as f32 * 0.001,
       );
-    //}
+    }
   }
 }

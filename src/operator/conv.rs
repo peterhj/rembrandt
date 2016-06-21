@@ -700,7 +700,7 @@ impl Operator for Conv2dOperator {
 
     match self.config.act_func {
       ActivationFunction::Identity => {
-        out_r_act.as_ref_mut(ctx).copy(&post_act.as_ref(ctx));
+        out_r_act.as_ref_mut(ctx).copy(&r_forward.post_r_act.as_ref(ctx));
       }
       ActivationFunction::Rect => {
         unsafe { rembrandt_rect_bwd(
@@ -912,7 +912,7 @@ impl Operator for Conv2dOperator {
       .row_vector_scale(scale);
   }*/
 
-  fn reset(&mut self) {
+  fn reset_grad(&mut self) {
     assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
     let mut backward = self.backward.as_mut().unwrap();
@@ -1283,6 +1283,15 @@ impl Operator for BNormConv2dOperator {
     Some(self.out_delta.clone())
   }
 
+  fn get_output_r_act(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> {
+    assert_eq!(0, _arm);
+    if let Some(ref r_forward) = self.r_forward {
+      Some(r_forward.out_r_act.clone())
+    } else {
+      None
+    }
+  }
+
   fn init_param(&mut self, shared_seed: [u64; 2]) {
     let BNormConv2dOperatorConfig{in_dims, conv_size, out_channels, ..} = self.config;
     let ctx = &(*self.context).as_ref();
@@ -1496,14 +1505,14 @@ impl Operator for BNormConv2dOperator {
     unimplemented!();
   }
 
-  fn reset_grad(&mut self) {
+  /*fn reset_grad(&mut self) {
     assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
     let mut backward = self.backward.as_mut().unwrap();
     backward.grad_weights.as_view_mut(ctx).set_constant(0.0);
     backward.scale_grad.as_ref_mut(ctx).set_constant(0.0);
     backward.bias_grad.as_ref_mut(ctx).set_constant(0.0);
-  }
+  }*/
 
   fn read_grad(&mut self, init_offset: usize, reader: &mut OpRead) -> usize {
     assert!(self.backward.is_some());
@@ -2439,19 +2448,11 @@ impl Operator for BNormConv2dOperator {
     unimplemented!();
   }*/
 
-  fn reset(&mut self) {
+  fn reset_grad(&mut self) {
     assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
     let mut backward = self.backward.as_mut().unwrap();
-
-    backward.grad_weights.as_view_mut(ctx)
-      .matrix_scale(0.0);
-
-    /*self.bn_scale1_grad.as_view_mut(ctx)
-      .row_vector_scale(0.0);
-    self.bn_bias1_grad.as_view_mut(ctx)
-      .row_vector_scale(0.0);*/
-
+    backward.grad_weights.as_view_mut(ctx).set_constant(0.0);
     backward.scale_grad.as_ref_mut(ctx).set_constant(0.0);
     backward.bias_grad.as_ref_mut(ctx).set_constant(0.0);
   }
@@ -3391,6 +3392,10 @@ impl Operator for StackResConv2dOperator {
     }
   }
 
+  fn r_forward(&mut self, batch_size: usize) {
+    unimplemented!();
+  }
+
   fn regularize(&mut self, reg: Regularization) {
     assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
@@ -3717,7 +3722,7 @@ impl Operator for StackResConv2dOperator {
     unimplemented!();
   }*/
 
-  fn reset(&mut self) {
+  fn reset_grad(&mut self) {
     assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
     let mut backward = self.backward.as_mut().unwrap();
@@ -4956,6 +4961,10 @@ impl Operator for ProjStackResConv2dOperator {
     }
   }
 
+  fn r_forward(&mut self, batch_size: usize) {
+    unimplemented!();
+  }
+
   fn regularize(&mut self, reg: Regularization) {
     assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
@@ -5392,7 +5401,7 @@ impl Operator for ProjStackResConv2dOperator {
     unimplemented!();
   }*/
 
-  fn reset(&mut self) {
+  fn reset_grad(&mut self) {
     assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
     let mut backward = self.backward.as_mut().unwrap();

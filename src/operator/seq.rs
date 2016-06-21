@@ -250,9 +250,9 @@ impl Operator for SequentialOperator {
     }
   }*/
 
-  fn reset(&mut self) {
+  fn reset_grad(&mut self) {
     for op in self.hidden_ops.iter_mut() {
-      op.reset();
+      op.reset_grad();
     }
   }
 
