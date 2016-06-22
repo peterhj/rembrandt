@@ -44,6 +44,7 @@ pub struct SoftmaxKLLossOperator {
   weights:      DeviceBuffer<f32>,
   weights_h:    Vec<f32>,
   targets:      DeviceBuffer<f32>,
+  targets_h:    Vec<f32>,
   r_weights:    DeviceBuffer<f32>,
   //r_weights_h:  Vec<f32>,
 
@@ -96,8 +97,8 @@ impl SoftmaxKLLossOperator {
 
     let r_forward = if capability.r_forward_enabled() {
       Some(SoftmaxKLLossRFwdOperator{
-        in_r_act:       Rc::new(RefCell::new(DeviceBuffer::zeros(loss_config.num_categories * batch_size, ctx))),
-        mix_in_r_act:   DeviceBuffer::zeros(loss_config.num_categories * batch_size, ctx),
+        in_r_act:       prev_op.unwrap().get_output_r_act(0).unwrap(),
+        mix_in_r_act:   DeviceBuffer::zeros(batch_size, ctx),
         out_r_act:      DeviceBuffer::zeros(loss_config.num_categories * batch_size, ctx),
         out_r_loss:     DeviceBuffer::zeros(batch_size, ctx),
       })
@@ -125,9 +126,10 @@ impl SoftmaxKLLossOperator {
       out_loss:     DeviceBuffer::zeros(batch_size, ctx),
       label_cats:   DeviceBuffer::zeros(batch_size, ctx),
       label_cats_h: repeat(0).take(batch_size).collect(),
-      weights:      DeviceBuffer::zeros(batch_size, ctx),
-      weights_h:    repeat(0.0).take(batch_size).collect(),
+      weights:      DeviceBuffer::ones(batch_size, ctx),
+      weights_h:    repeat(1.0).take(batch_size).collect(),
       targets:      DeviceBuffer::ones(batch_size, ctx),
+      targets_h:    repeat(1.0).take(batch_size).collect(),
       r_weights:    DeviceBuffer::ones(batch_size, ctx),
       out_cats:     DeviceBuffer::zeros(batch_size, ctx),
       out_cats_h:   repeat(0).take(batch_size).collect(),
@@ -167,6 +169,11 @@ impl Operator for SoftmaxKLLossOperator {
     None
   }
 
+  fn get_output_r_act(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> {
+    assert_eq!(0, _arm);
+    None
+  }
+
   fn forward(&mut self, batch_size: usize, _phase: OpPhase) {
     assert!(batch_size <= self.batch_cap);
     let ctx = &(*self.context).as_ref();
@@ -193,12 +200,14 @@ impl Operator for SoftmaxKLLossOperator {
         self.logit_max.as_ref(ctx).as_ptr(),
         ctx.stream.ptr,
     ) };
-    unsafe { rembrandt_kernel_exp_map(
+    /*unsafe { rembrandt_kernel_exp_map(
         self.logit.as_ref(ctx).as_ptr(),
         (self.loss_config.num_categories * batch_size) as i32,
         self.factor.as_ref_mut(ctx).as_mut_ptr(),
         ctx.stream.ptr,
-    ) };
+    ) };*/
+    self.factor.as_ref_mut(ctx).copy(&self.logit.as_ref(ctx));
+    self.factor.as_ref_mut_range(0, self.loss_config.num_categories * batch_size, ctx).vector_exp();
     unsafe { rembrandt_kernel_batch_blockreduce_sum(
         self.factor.as_ref(ctx).as_ptr(),
         self.loss_config.num_categories as i32,
@@ -266,12 +275,14 @@ impl Operator for SoftmaxKLLossOperator {
         r_forward.mix_in_r_act.as_ref_mut(ctx).as_mut_ptr(),
         ctx.stream.ptr,
     ) };
-    unsafe { rembrandt_kernel_div_map_inplace(
+    /*unsafe { rembrandt_kernel_div_map_inplace(
         r_forward.mix_in_r_act.as_ref_mut(ctx).as_mut_ptr(),
         batch_size as i32,
         self.factor_sum.as_ref(ctx).as_ptr(),
         ctx.stream.ptr,
-    ) };
+    ) };*/
+    r_forward.mix_in_r_act.as_ref_mut_range(0, batch_size, ctx)
+      .vector_elemwise_div(&self.factor_sum.as_ref_range(0, batch_size, ctx));
     unsafe { rembrandt_kernel_softmax_r_fwd_batch(
         //self.out_act.as_ref(ctx).as_ptr(),
         r_forward.in_r_act.borrow_mut().as_ref(ctx).as_ptr(),
@@ -287,7 +298,7 @@ impl Operator for SoftmaxKLLossOperator {
         self.loss_config.num_categories as i32,
         batch_size as i32,
         self.label_cats.as_ref(ctx).as_ptr(),
-        self.r_weights.as_ref(ctx).as_ptr(),
+        //self.r_weights.as_ref(ctx).as_ptr(),
         r_forward.out_r_loss.as_ref_mut(ctx).as_mut_ptr(),
         ctx.stream.ptr,
     ) };
@@ -353,6 +364,9 @@ impl LossOperator for SoftmaxKLLossOperator {
     let ctx = &(*self.context).as_ref();
     self.targets.as_ref_mut(ctx)
       .copy(&self.r_forward.as_mut().unwrap().out_r_loss.as_ref(ctx));
+    /*self.targets.as_ref(ctx)
+      .sync_store(&mut self.targets_h);
+    println!("DEBUG: R-loss targets: {:?}", &self.targets_h);*/
   }
 
   fn store_loss(&mut self, batch_size: usize) -> f32 {

@@ -321,10 +321,10 @@ impl ParallelSgdOptWorker for DeviceAllreduceOptWorker {
 
   fn save_param(&mut self) {
     self.operator.write_param(0, &mut self.saved_param);
-    let ctx = &self.context.set();
+    /*let ctx = &self.context.set();
     self.w_norm.as_ref_mut(ctx).vector_l2_norm(&self.saved_param.as_ref(ctx));
     self.w_norm.as_ref(ctx).sync_store(&mut self.w_norm_h);
-    println!("DEBUG: worker: rank: {} |param|: {:.6}", self.worker_rank(), self.w_norm_h[0]);
+    println!("DEBUG: worker: rank: {} |param|: {:.6}", self.worker_rank(), self.w_norm_h[0]);*/
   }
 
   fn restore_param(&mut self) {
@@ -381,5 +381,9 @@ impl ParallelSecondOptWorker for DeviceAllreduceOptWorker {
   //fn merge<'a>(&'a mut self, dst: &'a mut DeviceBufferRefMut<'a, f32>) {
   fn merge<'ctx>(&'ctx mut self, dst: &mut DeviceBufferRefMut<'ctx, f32>) {
     self.comm.read(0, dst);
+  }
+
+  fn read_step<'ctx>(&'ctx mut self, dst: &mut DeviceBufferRefMut<'ctx, f32>) {
+    self.grad_acc.read(0, dst);
   }
 }

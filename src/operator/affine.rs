@@ -13,10 +13,10 @@ use array::{
   Array, AsyncArray, ArrayView, ArrayViewMut, ArrayZeroExt, NdArraySerialize,
   Shape, Array2d,
 };
+use array_cuda::device::{DeviceContext, DeviceBufferInitExt, DeviceBuffer};
 use array_cuda::device::array::{DeviceArray2d};
-use array_cuda::device::context::{DeviceContext, DeviceCtxRef};
-use array_cuda::device::linalg::{BlasMatrixExt, BlasVectorExt, Transpose};
-use array_cuda::device::memory::{DeviceBufferInitExt, DeviceBuffer};
+use array_cuda::device::context::{DeviceCtxRef};
+use array_cuda::device::linalg::{VectorExt, BlasMatrixExt, BlasVectorExt, Transpose};
 use array_cuda::device::num::{CastBytesExt, NumExt};
 use array_cuda::device::random::{RandomSampleExt, UniformDist};
 use cuda_dnn::v5::{
@@ -110,6 +110,8 @@ struct AffineRFwdOperator {
   in_r_act:     SharedDeviceBuf<f32>,
   post_r_act:   DeviceBuffer<f32>,
   out_r_act:    SharedDeviceBuf<f32>,
+  out_r_act_n:  DeviceBuffer<f32>,
+  out_r_act_nh: Vec<f32>,
 
   dir_weights:  DeviceArray2d<f32>,
   dir_bias:     DeviceArray2d<f32>,
@@ -145,6 +147,8 @@ impl AffineOperator {
         in_r_act:     prev_op.unwrap().get_output_r_act(0).unwrap(),
         post_r_act:   DeviceBuffer::<f32>::zeros(out_channels * batch_size, ctx),
         out_r_act:    Rc::new(RefCell::new(DeviceBuffer::<f32>::zeros(out_channels * batch_size, ctx))),
+        out_r_act_n:  DeviceBuffer::<f32>::zeros(1, ctx),
+        out_r_act_nh: vec![0.0],
         dir_weights:  DeviceArray2d::<f32>::zeros((in_channels, out_channels), ctx),
         dir_bias:     DeviceArray2d::<f32>::zeros((1, out_channels), ctx),
       })
@@ -594,6 +598,12 @@ impl Operator for AffineOperator {
       }
       _ => unimplemented!(),
     }
+
+    // FIXME(20160622): for debugging.
+    /*r_forward.out_r_act_n.as_ref_mut(ctx)
+      .vector_l2_norm(&out_r_act.as_ref_range(0, out_channels * batch_size, ctx));
+    r_forward.out_r_act_n.as_ref(ctx).sync_store(&mut r_forward.out_r_act_nh);
+    println!("DEBUG: AffineOp: |r_y|: {}", r_forward.out_r_act_nh[0]);*/
   }
 
   fn regularize(&mut self, reg: Regularization) {

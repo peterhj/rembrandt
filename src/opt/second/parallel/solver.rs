@@ -101,13 +101,20 @@ impl LanczosDeviceParallelSolver {
   }
 }*/
 
+pub struct CgSolverConfig {
+  pub max_iters:    usize,
+  pub epsilon:      f32,
+  pub lambda:       f32,
+}
+
 pub struct CgDeviceParallelSolver<Iter> {
-  max_iters:    usize,
+  config:   CgSolverConfig,
+  //max_iters:    usize,
   iteration:    Iter,
   ctx:      Rc<DeviceContext>,
   //comm:     RingDeviceBufComm<f32>,
-  epsilon:  f32,
-  lambda:   f32,
+  //epsilon:  f32,
+  //lambda:   f32,
   g:        OpCursor<DeviceBuffer<f32>>,
   gnorm:    DeviceBuffer<f32>,
   gnorm_h:  Vec<f32>,
@@ -125,14 +132,16 @@ pub struct CgDeviceParallelSolver<Iter> {
 }
 
 impl<Iter> CgDeviceParallelSolver<Iter> where Iter: SolverIteration {
-  pub fn new(param_len: usize, max_iters: usize, iteration: Iter, context: Rc<DeviceContext>) -> CgDeviceParallelSolver<Iter> {
+  pub fn new(param_len: usize, config: CgSolverConfig, /*max_iters: usize,*/ iteration: Iter, context: Rc<DeviceContext>) -> CgDeviceParallelSolver<Iter> {
     let ctx = &context.set();
+    let max_iters = config.max_iters;
     CgDeviceParallelSolver{
-      max_iters:    max_iters,
+      //max_iters:    max_iters,
+      //epsilon:  1.0e-2,
+      //lambda:   0.5,
+      config:       config,
       iteration:    iteration,
       ctx:      context.clone(),
-      epsilon:  0.001,
-      lambda:   0.001,
       g:        OpCursor::new(DeviceBuffer::zeros(param_len, ctx)),
       gnorm:    DeviceBuffer::zeros(1, ctx),
       gnorm_h:  vec![0.0],
@@ -160,9 +169,13 @@ impl<Iter> ParallelSolver for CgDeviceParallelSolver<Iter> where Iter: SolverIte
       self.w.as_ref_mut(ctx).set_constant(0.0);
       self.r.as_ref_mut(ctx).set_constant(0.0);
       self.x.as_ref_mut(ctx).set_constant(0.0);
+      worker.read_step(&mut self.x.as_ref_mut(ctx));
+      self.xnorm.as_ref_mut_range(0, 1, ctx).vector_l2_norm(&self.x.as_ref(ctx));
+      self.xnorm.as_ref_range(0, 1, ctx).sync_store(&mut self.xnorm_h[0 .. 1]);
       self.pw.as_ref_mut(ctx).set_constant(0.0);
       self.rhos.as_ref_mut(ctx).set_constant(0.0);
     }
+    let x0_norm = self.xnorm_h[0];
     worker.operator().write_grad(0, &mut self.g);
     {
       let ctx = &self.ctx.set();
@@ -174,26 +187,21 @@ impl<Iter> ParallelSolver for CgDeviceParallelSolver<Iter> where Iter: SolverIte
     worker.operator().write_grad(0, &mut self.r);
     {
       let ctx = &self.ctx.set();
-      worker.stage(&self.r.as_ref(ctx));
-    }
-    worker.sync();
-    {
-      let ctx = &self.ctx.set();
-      worker.merge(&mut self.r.as_ref_mut(ctx));
-    }
-    {
-      let ctx = &self.ctx.set();
-      self.r.as_ref_mut(ctx).vector_add(self.lambda, &self.x.as_ref(ctx), 1.0 - self.lambda);
+      //self.r.as_ref_mut(ctx).vector_add(-1.0, &self.g.as_ref(ctx), 0.0);
+      if self.config.lambda > 0.0 {
+        self.r.as_ref_mut(ctx).vector_add(self.config.lambda, &self.x.as_ref(ctx), 1.0);
+        //self.r.as_ref_mut(ctx).vector_add(self.lambda, &self.x.as_ref(ctx), 1.0 - self.lambda);
+      }
       self.r.as_ref_mut(ctx).vector_add(-1.0, &self.g.as_ref(ctx), -1.0);
       self.rhos.as_ref_mut_range(0, 1, ctx).vector_l2_norm(&self.r.as_ref(ctx));
       self.rhos.as_ref_range(0, 1, ctx).sync_store(&mut self.rhos_h[0 .. 1]);
     }
     let mut last_k = 0;
-    for k in 1 .. self.max_iters + 1 {
-      last_k = k-1;
-      if self.rhos_h[k-1] <= self.epsilon * self.gnorm_h[0] {
+    for k in 1 .. self.config.max_iters + 1 {
+      if self.rhos_h[k-1] <= self.config.epsilon * self.gnorm_h[0] {
         break;
       }
+      last_k = k;
       if k == 1 {
         let ctx = &(*self.ctx).as_ref();
         self.p.as_ref_mut(ctx).copy(&self.r.as_ref(ctx));
@@ -204,17 +212,11 @@ impl<Iter> ParallelSolver for CgDeviceParallelSolver<Iter> where Iter: SolverIte
       worker.operator().read_direction(0, &mut self.p);
       self.iteration.step(batch_size, worker);
       worker.operator().write_grad(0, &mut self.w);
-      {
-        let ctx = &self.ctx.set();
-        worker.stage(&self.w.as_ref(ctx));
-      }
-      worker.sync();
-      {
-        let ctx = &self.ctx.set();
-        worker.merge(&mut self.w.as_ref_mut(ctx));
-      }
       let ctx = &(*self.ctx).as_ref();
-      self.w.as_ref_mut(ctx).vector_add(self.lambda, &self.p.as_ref(ctx), 1.0 - self.lambda);
+      if self.config.lambda > 0.0 {
+        self.w.as_ref_mut(ctx).vector_add(self.config.lambda, &self.p.as_ref(ctx), 1.0);
+        //self.w.as_ref_mut(ctx).vector_add(self.lambda, &self.p.as_ref(ctx), 1.0 - self.lambda);
+      }
       self.pw.as_ref_mut_range(k, k+1, ctx).vector_inner_prod(&self.p.as_ref(ctx), &self.w.as_ref(ctx));
       self.pw.as_ref_range(k, k+1, ctx).sync_store(&mut self.pw_h[k .. k+1]);
       self.alphas_h[k] = self.rhos_h[k-1] * self.rhos_h[k-1] / self.pw_h[k];
@@ -222,13 +224,14 @@ impl<Iter> ParallelSolver for CgDeviceParallelSolver<Iter> where Iter: SolverIte
       self.r.as_ref_mut(ctx).vector_add(-self.alphas_h[k], &self.w.as_ref(ctx), 1.0);
       self.rhos.as_ref_mut_range(k, k+1, ctx).vector_l2_norm(&self.r.as_ref(ctx));
       self.rhos.as_ref_range(k, k+1, ctx).sync_store(&mut self.rhos_h[k .. k+1]);
+      //println!("DEBUG: cg solver: iter: {} alpha[k]: {} rho[k]: {}", k, self.alphas_h[k], self.rhos_h[k]);
     }
     {
       let ctx = &self.ctx.set();
       self.xnorm.as_ref_mut_range(0, 1, ctx).vector_l2_norm(&self.x.as_ref(ctx));
       self.xnorm.as_ref_range(0, 1, ctx).sync_store(&mut self.xnorm_h[0 .. 1]);
     }
-    println!("DEBUG: cg solver: |g|: {:.6} |r[0]|: {:.6} |r[K]|: {} |x|: {:.6}", self.gnorm_h[0], self.rhos_h[0], self.rhos_h[last_k], self.xnorm_h[0]);
+    println!("DEBUG: cg solver: K: {} |g|: {} |r[0]|: {} |r[K]|: {} |x[0]|: {} |x|: {}", last_k, self.gnorm_h[0], self.rhos_h[0], self.rhos_h[last_k], x0_norm, self.xnorm_h[0]);
     worker.operator().read_grad(0, &mut self.x);
   }
 }

@@ -99,7 +99,8 @@ pub fn build_resnet18pool_var224x224() -> GraphOperatorConfig {
     pool_size:      3,
     pool_stride:    2,
     pool_pad:       1,
-    pool_op:        PoolOperation::Max,
+    pool_op:        PoolOperation::Average,
+    //pool_op:        PoolOperation::Max,
     act_func:       ActivationFunction::Identity,
   };
   let res_conv2_op_cfg = StackResConv2dOperatorConfig{

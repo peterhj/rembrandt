@@ -110,9 +110,9 @@ fn main() {
       let guard = scope.spawn(move || {
         let context = Rc::new(DeviceContext::new(tid));
         let operator_cfg = build_resnet18pool_var224x224();
-        if tid == 0 {
+        /*if tid == 0 {
           info!("operator: {:?}", operator_cfg);
-        }
+        }*/
         let operator = Box::new(GraphOperator::new(operator_cfg, batch_size, OpCapability::Backward, context.clone()));
         let mut worker = builder.into_worker(tid, context, operator);
 

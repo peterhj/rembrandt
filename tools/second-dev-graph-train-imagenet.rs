@@ -35,6 +35,7 @@ use rembrandt::opt::second::parallel::{
 use rembrandt::opt::second::parallel::solver::{
   //ParallelSolver,
   FisherIteration,
+  CgSolverConfig,
   CgDeviceParallelSolver,
 };
 use rembrandt::opt::parallel::dev_allreduce::{
@@ -79,12 +80,17 @@ fn main() {
       let guard = scope.spawn(move || {
         let context = Rc::new(DeviceContext::new(tid));
         let operator_cfg = build_resnet18pool_var224x224();
-        if tid == 0 {
+        /*if tid == 0 {
           info!("operator: {:?}", operator_cfg);
-        }
+        }*/
         let operator = Box::new(GraphOperator::new(operator_cfg, batch_size, OpCapability::RForward, context.clone()));
         let params_len = operator.params_len();
-        let mut opt = ParallelSecondOpt::new(opt_cfg, CgDeviceParallelSolver::new(params_len, 20, FisherIteration::new(), context.clone()));
+        let solver_cfg = CgSolverConfig{
+          max_iters:    30,
+          epsilon:      1.0e-2,
+          lambda:       0.01,
+        };
+        let mut opt = ParallelSecondOpt::new(opt_cfg, CgDeviceParallelSolver::new(params_len, solver_cfg, FisherIteration::new(), context.clone()));
         let mut worker = builder.into_worker(tid, context, operator);
 
         let mut train_data =

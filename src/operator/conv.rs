@@ -996,7 +996,8 @@ impl BNormConv2dOperatorConfig {
   pub fn params_len(&self) -> usize {
     let (_, _, in_channels) = self.in_dims;
     let weights_len = self.conv_size * self.conv_size * in_channels * self.out_channels;
-    let batchnorm_len = 4 * self.out_channels;
+    let batchnorm_len = 2 * self.out_channels;
+    //let batchnorm_len = 4 * self.out_channels;
     weights_len + batchnorm_len
   }
 }
@@ -1082,6 +1083,8 @@ struct BNormConv2dBwdOperator {
 struct BNormConv2dRFwdOperator {
   in_r_act:     SharedDeviceBuf<f32>,
   out_r_act:    SharedDeviceBuf<f32>,
+  out_r_act_n:  DeviceBuffer<f32>,
+  out_r_act_nh: Vec<f32>,
 
   //pre_r_act:    DeviceBuffer<f32>,
   tmp_r_act:    DeviceBuffer<f32>,
@@ -1202,6 +1205,8 @@ impl BNormConv2dOperator {
       Some(BNormConv2dRFwdOperator{
         in_r_act:         in_r_act,
         out_r_act:        Rc::new(RefCell::new(DeviceBuffer::<f32>::zeros(out_length * batch_size, ctx))),
+        out_r_act_n:  DeviceBuffer::<f32>::zeros(1, ctx),
+        out_r_act_nh: vec![0.0],
         tmp_r_act:        DeviceBuffer::zeros(out_length * batch_size, ctx),
         tmp2_r_act:       DeviceBuffer::zeros(out_length * batch_size, ctx),
         post_r_act:       DeviceBuffer::zeros(out_length * batch_size, ctx),
@@ -1544,7 +1549,7 @@ impl Operator for BNormConv2dOperator {
     offset += writer.write(offset, &self.weights.as_view(ctx).data);
     offset += writer.write(offset, &self.scale.as_ref(ctx));
     offset += writer.write(offset, &self.bias.as_ref(ctx));
-    offset += 2 * self.config.out_channels;
+    //offset += 2 * self.config.out_channels;
     offset - init_offset
   }
 
@@ -1558,7 +1563,7 @@ impl Operator for BNormConv2dOperator {
     offset += reader.read(offset, &mut backward.bias_grad.as_ref_mut(ctx));
     //offset += reader.read(offset, &mut backward.stats_mean_acc.as_ref_mut(ctx));
     //offset += reader.read(offset, &mut backward.stats_var_acc.as_ref_mut(ctx));
-    offset += 2 * self.config.out_channels;
+    //offset += 2 * self.config.out_channels;
     offset - init_offset
   }
 
@@ -1572,7 +1577,7 @@ impl Operator for BNormConv2dOperator {
     offset += writer.write(offset, &backward.bias_grad.as_ref(ctx));
     //offset += writer.write(offset, &backward.stats_mean_acc.as_ref(ctx));
     //offset += writer.write(offset, &backward.stats_var_acc.as_ref(ctx));
-    offset += 2 * self.config.out_channels;
+    //offset += 2 * self.config.out_channels;
     offset - init_offset
   }
 
@@ -1585,7 +1590,7 @@ impl Operator for BNormConv2dOperator {
     offset += writer.accumulate_write(offset, alpha, mu, &backward.grad_weights.as_view(ctx).data);
     offset += writer.accumulate_write(offset, alpha, mu, &backward.scale_grad.as_ref(ctx));
     offset += writer.accumulate_write(offset, alpha, mu, &backward.bias_grad.as_ref(ctx));
-    offset += 2 * self.config.out_channels;
+    //offset += 2 * self.config.out_channels;
     /*offset += writer.write(offset, &backward.stats_mean_batch.as_ref(ctx));
     offset += writer.write(offset, &backward.stats_var_batch.as_ref(ctx));*/
 
@@ -1601,7 +1606,7 @@ impl Operator for BNormConv2dOperator {
     offset += reader.accumulate_read(offset, step_size, 1.0, &mut self.weights.as_view_mut(ctx).data);
     offset += reader.accumulate_read(offset, step_size, 1.0, &mut self.scale.as_ref_mut(ctx));
     offset += reader.accumulate_read(offset, step_size, 1.0, &mut self.bias.as_ref_mut(ctx));
-    offset += 2 * self.config.out_channels;
+    //offset += 2 * self.config.out_channels;
     /*offset += reader.read(offset, &mut backward.stats_mean_acc.as_ref_mut(ctx));
     offset += reader.read(offset, &mut backward.stats_var_acc.as_ref_mut(ctx));*/
 
@@ -1639,7 +1644,7 @@ impl Operator for BNormConv2dOperator {
     offset += reader.read(offset, &mut r_forward.dir_weights.as_view_mut(ctx).data);
     offset += reader.read(offset, &mut r_forward.dir_scale.as_ref_mut(ctx));
     offset += reader.read(offset, &mut r_forward.dir_bias.as_ref_mut(ctx));
-    offset += 2 * self.config.out_channels;
+    //offset += 2 * self.config.out_channels;
     offset - init_offset
   }
 
@@ -2115,6 +2120,12 @@ impl Operator for BNormConv2dOperator {
       }
       _ => unimplemented!(),
     }
+
+    // FIXME(20160622): for debugging.
+    /*r_forward.out_r_act_n.as_ref_mut(ctx)
+      .vector_l2_norm(&out_r_act.as_ref_range(0, out_length * batch_size, ctx));
+    r_forward.out_r_act_n.as_ref(ctx).sync_store(&mut r_forward.out_r_act_nh);
+    println!("DEBUG: BNormConv2dOp: |r_y|: {}", r_forward.out_r_act_nh[0]);*/
   }
 
   fn regularize(&mut self, reg: Regularization) {

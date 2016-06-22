@@ -20,6 +20,7 @@ pub trait ParallelSecondOptWorker: ParallelSgdOptWorker {
   fn stage<'ctx>(&'ctx mut self, src: &DeviceBufferRef<'ctx, f32>);
   fn sync(&mut self);
   fn merge<'ctx>(&'ctx mut self, dst: &mut DeviceBufferRefMut<'ctx, f32>);
+  fn read_step<'ctx>(&'ctx mut self, dst: &mut DeviceBufferRefMut<'ctx, f32>);
 }
 
 #[derive(Clone, Debug)]
@@ -167,7 +168,7 @@ impl<Solver> ParallelSecondOpt<Solver> where Solver: ParallelSolver {
 
           self.solver.solve(batch_size, worker);
           worker.accumulate_grad(1.0, 0.0);
-          worker.step(0.0001);
+          worker.step(0.1);
 
           worker.save_param();
 
