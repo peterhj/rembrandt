@@ -51,7 +51,7 @@ use std::path::{PathBuf};
 fn main() {
   env_logger::init().unwrap();
 
-  let num_local_workers = 4;
+  let num_local_workers = 1;
   let batch_size = 32;
   let minibatch_size = 32;
   //info!("batch size: {}", batch_size);
@@ -62,9 +62,9 @@ fn main() {
     minibatch_size: minibatch_size,
     l2_reg_coef:    1.0e-4,
     display_iters:      1,
-    checkpoint_iters:   250,
-    save_iters:         250,
-    valid_iters:        250,
+    checkpoint_iters:   625,
+    save_iters:         625,
+    valid_iters:        625,
 
     checkpoint_dir:     PathBuf::from("models/imagenet_maxscale480-resnet18pool_dev_x4_test"),
   };
@@ -84,7 +84,7 @@ fn main() {
         }
         let operator = Box::new(GraphOperator::new(operator_cfg, batch_size, OpCapability::RForward, context.clone()));
         let params_len = operator.params_len();
-        let mut opt = ParallelSecondOpt::new(opt_cfg, CgDeviceParallelSolver::new(params_len, 10, FisherIteration{}, context.clone()));
+        let mut opt = ParallelSecondOpt::new(opt_cfg, CgDeviceParallelSolver::new(params_len, 20, FisherIteration::new(), context.clone()));
         let mut worker = builder.into_worker(tid, context, operator);
 
         let mut train_data =

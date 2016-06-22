@@ -319,6 +319,16 @@ impl Operator for AffineOperator {
     unimplemented!();
   }
 
+  fn write_param(&mut self, init_offset: usize, writer: &mut OpWrite) -> usize {
+    assert!(self.backward.is_some());
+    let ctx = &(*self.context).as_ref();
+    let mut backward = self.backward.as_mut().unwrap();
+    let mut offset = init_offset;
+    offset += writer.write(offset, &self.weights.as_view(ctx).data);
+    offset += writer.write(offset, &self.bias.as_view(ctx).data);
+    offset - init_offset
+  }
+
   fn read_grad(&mut self, init_offset: usize, reader: &mut OpRead) -> usize {
     assert!(self.backward.is_some());
     let ctx = &(*self.context).as_ref();
@@ -360,6 +370,16 @@ impl Operator for AffineOperator {
     offset += reader.accumulate_read(offset, step_size, 1.0, &mut self.weights.as_view_mut(ctx).data);
     offset += reader.accumulate_read(offset, step_size, 1.0, &mut self.bias.as_view_mut(ctx).data);
 
+    offset - init_offset
+  }
+
+  fn read_direction(&mut self, init_offset: usize, reader: &mut OpRead) -> usize {
+    assert!(self.backward.is_some());
+    let ctx = &(*self.context).as_ref();
+    let mut r_forward = self.r_forward.as_mut().unwrap();
+    let mut offset = init_offset;
+    offset += reader.read(offset, &mut r_forward.dir_weights.as_view_mut(ctx).data);
+    offset += reader.read(offset, &mut r_forward.dir_bias.as_view_mut(ctx).data);
     offset - init_offset
   }
 
@@ -490,7 +510,9 @@ impl Operator for AffineOperator {
     grad_bias.as_view_mut(ctx)
       .matrix_prod(
           1.0,
-          &unit_bias.as_view(ctx).view((0, 0), (1, batch_size)), Transpose::N,
+          // FIXME(20160621): need to be able to take subviews.
+          &unit_bias.as_view(ctx), Transpose::N,
+          //&unit_bias.as_view(ctx).view((0, 0), (1, batch_size)), Transpose::N,
           &backward.post_delta.as_ref(ctx).into_2d_view((out_channels, batch_size)), Transpose::T,
           1.0);
 

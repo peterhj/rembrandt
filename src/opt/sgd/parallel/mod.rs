@@ -18,7 +18,7 @@ pub trait ParallelSgdOptWorker {
 
   fn operator(&mut self) -> &mut CompleteOperator;
   fn shared_seed(&mut self) -> [u64; 2];
-  fn reduce(&self, count: usize) -> usize;
+  fn reduce_scalar(&self, count: usize) -> usize;
 
   fn signal_checkpoint(&mut self);
   fn wait_checkpoint(&mut self) -> bool;
@@ -98,6 +98,7 @@ impl ParallelSgdOpt {
     //let seed = [thread_rng().next_u64(), thread_rng().next_u64()];
     let shared_seed = worker.shared_seed();
     worker.operator().init_param(shared_seed);
+    worker.save_param();
     worker.operator().reset_grad();
     //worker.operator().reset_stats();
 
@@ -237,6 +238,8 @@ impl ParallelSgdOpt {
             Momentum::Gradient{mu}          => unimplemented!(),
             Momentum::GradientNesterov{mu}  => unimplemented!(),
           }
+
+          worker.save_param();
 
           let minibatch_lap_time = get_time();
           let minibatch_elapsed_ms = (minibatch_lap_time - minibatch_start_time).num_milliseconds() + minibatch_offset_ms;
@@ -381,10 +384,10 @@ impl ParallelSgdOpt {
     let accuracy = acc_correct_count as f32 / acc_total_count as f32;
     let loss = display_acc_loss;
 
-    let sum_correct_count = worker.reduce(acc_correct_count);
-    let sum_total_count = worker.reduce(acc_total_count);
+    let sum_correct_count = worker.reduce_scalar(acc_correct_count);
+    let sum_total_count = worker.reduce_scalar(acc_total_count);
     let avg_accuracy = sum_correct_count as f32 / sum_total_count as f32;
-    let sum_loss = worker.reduce((loss * 1.0e6) as usize);
+    let sum_loss = worker.reduce_scalar((loss * 1.0e6) as usize);
     let avg_loss = (sum_loss as f32 / worker.num_workers() as f32) * 1.0e-6;
 
     // FIXME(20160609): need to all-reduce the loss and accuracy.

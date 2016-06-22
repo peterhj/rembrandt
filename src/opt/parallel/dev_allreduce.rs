@@ -253,6 +253,8 @@ impl DeviceAllreduceOptWorkerBuilder {
       comm:         comm,
       grad_acc:     OpCursor::new(DeviceBuffer::zeros(padded_len, ctx)),
       saved_param:  OpCursor::new(DeviceBuffer::zeros(padded_len, ctx)),
+      w_norm:       DeviceBuffer::zeros(1, ctx),
+      w_norm_h:     vec![0.0],
       sig_chkpt:    false,
     }
   }
@@ -267,6 +269,8 @@ pub struct DeviceAllreduceOptWorker {
   comm:         OpCursor<RingDeviceBufComm<f32>>,
   grad_acc:     OpCursor<DeviceBuffer<f32>>,
   saved_param:  OpCursor<DeviceBuffer<f32>>,
+  w_norm:       DeviceBuffer<f32>,
+  w_norm_h:     Vec<f32>,
   sig_chkpt:    bool,
 }
 
@@ -287,15 +291,15 @@ impl ParallelSgdOptWorker for DeviceAllreduceOptWorker {
     self.shared.shared_seed
   }
 
-  fn reduce(&self, count: usize) -> usize {
+  fn reduce_scalar(&self, count: usize) -> usize {
     if self.worker_rank == 0 {
       self.shared.reduce_count.store(0, Ordering::Release);
     }
-    fence(Ordering::AcqRel);
     self.comm.inner.barrier();
+    fence(Ordering::AcqRel);
     self.shared.reduce_count.fetch_add(count, Ordering::AcqRel);
-    fence(Ordering::AcqRel);
     self.comm.inner.barrier();
+    fence(Ordering::AcqRel);
     let x = self.shared.reduce_count.load(Ordering::Acquire);
     fence(Ordering::AcqRel);
     x
@@ -317,6 +321,10 @@ impl ParallelSgdOptWorker for DeviceAllreduceOptWorker {
 
   fn save_param(&mut self) {
     self.operator.write_param(0, &mut self.saved_param);
+    let ctx = &self.context.set();
+    self.w_norm.as_ref_mut(ctx).vector_l2_norm(&self.saved_param.as_ref(ctx));
+    self.w_norm.as_ref(ctx).sync_store(&mut self.w_norm_h);
+    println!("DEBUG: worker: rank: {} |param|: {:.6}", self.worker_rank(), self.w_norm_h[0]);
   }
 
   fn restore_param(&mut self) {
@@ -336,7 +344,7 @@ impl ParallelSgdOptWorker for DeviceAllreduceOptWorker {
   }
 
   fn stage_grad(&mut self) {
-    unimplemented!();
+    self.operator.write_grad(0, &mut self.comm);
   }
 
   fn sync_grad(&mut self) {
@@ -347,7 +355,7 @@ impl ParallelSgdOptWorker for DeviceAllreduceOptWorker {
   }
 
   fn merge_grad(&mut self) {
-    unimplemented!();
+    self.operator.read_grad(0, &mut self.comm);
   }
 
   fn accumulate_grad(&mut self, alpha: f32, mu: f32) {

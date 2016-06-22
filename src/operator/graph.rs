@@ -541,6 +541,14 @@ impl Operator for GraphOperator {
     }
   }*/
 
+  fn write_param(&mut self, init_offset: usize, writer: &mut OpWrite) -> usize {
+    let mut offset = init_offset;
+    for &id in self.fwd_toporder.iter() {
+      offset += self.operators[id].write_param(offset, writer);
+    }
+    offset - init_offset
+  }
+
   fn reset_grad(&mut self) {
     for &id in self.fwd_toporder.iter() {
       self.operators[id].reset_grad();

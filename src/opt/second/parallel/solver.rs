@@ -106,12 +106,17 @@ pub struct CgDeviceParallelSolver<Iter> {
   iteration:    Iter,
   ctx:      Rc<DeviceContext>,
   //comm:     RingDeviceBufComm<f32>,
+  epsilon:  f32,
   lambda:   f32,
-  ng:       OpCursor<DeviceBuffer<f32>>,
+  g:        OpCursor<DeviceBuffer<f32>>,
+  gnorm:    DeviceBuffer<f32>,
+  gnorm_h:  Vec<f32>,
   p:        OpCursor<DeviceBuffer<f32>>,
   w:        OpCursor<DeviceBuffer<f32>>,
-  x:        DeviceBuffer<f32>,
-  r:        DeviceBuffer<f32>,
+  r:        OpCursor<DeviceBuffer<f32>>,
+  x:        OpCursor<DeviceBuffer<f32>>,
+  xnorm:    DeviceBuffer<f32>,
+  xnorm_h:  Vec<f32>,
   pw:       DeviceBuffer<f32>,
   pw_h:     Vec<f32>,
   rhos:     DeviceBuffer<f32>,
@@ -126,12 +131,17 @@ impl<Iter> CgDeviceParallelSolver<Iter> where Iter: SolverIteration {
       max_iters:    max_iters,
       iteration:    iteration,
       ctx:      context.clone(),
-      lambda:   0.0,
-      ng:       OpCursor::new(DeviceBuffer::zeros(param_len, ctx)),
+      epsilon:  0.001,
+      lambda:   0.001,
+      g:        OpCursor::new(DeviceBuffer::zeros(param_len, ctx)),
+      gnorm:    DeviceBuffer::zeros(1, ctx),
+      gnorm_h:  vec![0.0],
       p:        OpCursor::new(DeviceBuffer::zeros(param_len, ctx)),
       w:        OpCursor::new(DeviceBuffer::zeros(param_len, ctx)),
-      x:        DeviceBuffer::zeros(param_len, ctx),
-      r:        DeviceBuffer::zeros(param_len, ctx),
+      r:        OpCursor::new(DeviceBuffer::zeros(param_len, ctx)),
+      x:        OpCursor::new(DeviceBuffer::zeros(param_len, ctx)),
+      xnorm:    DeviceBuffer::zeros(1, ctx),
+      xnorm_h:  vec![0.0],
       pw:       DeviceBuffer::zeros(max_iters+1, ctx),
       pw_h:     repeat(0.0).take(max_iters+1).collect(),
       rhos:     DeviceBuffer::zeros(max_iters+1, ctx),
@@ -143,14 +153,47 @@ impl<Iter> CgDeviceParallelSolver<Iter> where Iter: SolverIteration {
 
 impl<Iter> ParallelSolver for CgDeviceParallelSolver<Iter> where Iter: SolverIteration {
   fn solve(&mut self, batch_size: usize, worker: &mut ParallelSecondOptWorker) {
-    worker.operator().write_grad(0, &mut self.ng);
     {
       let ctx = &self.ctx.set();
+      self.g.as_ref_mut(ctx).set_constant(0.0);
+      self.p.as_ref_mut(ctx).set_constant(0.0);
+      self.w.as_ref_mut(ctx).set_constant(0.0);
+      self.r.as_ref_mut(ctx).set_constant(0.0);
       self.x.as_ref_mut(ctx).set_constant(0.0);
+      self.pw.as_ref_mut(ctx).set_constant(0.0);
+      self.rhos.as_ref_mut(ctx).set_constant(0.0);
+    }
+    worker.operator().write_grad(0, &mut self.g);
+    {
+      let ctx = &self.ctx.set();
+      self.gnorm.as_ref_mut_range(0, 1, ctx).vector_l2_norm(&self.g.as_ref(ctx));
+      self.gnorm.as_ref_range(0, 1, ctx).sync_store(&mut self.gnorm_h[0 .. 1]);
+    }
+    worker.operator().read_direction(0, &mut self.x);
+    self.iteration.step(batch_size, worker);
+    worker.operator().write_grad(0, &mut self.r);
+    {
+      let ctx = &self.ctx.set();
+      worker.stage(&self.r.as_ref(ctx));
+    }
+    worker.sync();
+    {
+      let ctx = &self.ctx.set();
+      worker.merge(&mut self.r.as_ref_mut(ctx));
+    }
+    {
+      let ctx = &self.ctx.set();
+      self.r.as_ref_mut(ctx).vector_add(self.lambda, &self.x.as_ref(ctx), 1.0 - self.lambda);
+      self.r.as_ref_mut(ctx).vector_add(-1.0, &self.g.as_ref(ctx), -1.0);
       self.rhos.as_ref_mut_range(0, 1, ctx).vector_l2_norm(&self.r.as_ref(ctx));
       self.rhos.as_ref_range(0, 1, ctx).sync_store(&mut self.rhos_h[0 .. 1]);
     }
+    let mut last_k = 0;
     for k in 1 .. self.max_iters + 1 {
+      last_k = k-1;
+      if self.rhos_h[k-1] <= self.epsilon * self.gnorm_h[0] {
+        break;
+      }
       if k == 1 {
         let ctx = &(*self.ctx).as_ref();
         self.p.as_ref_mut(ctx).copy(&self.r.as_ref(ctx));
@@ -180,5 +223,12 @@ impl<Iter> ParallelSolver for CgDeviceParallelSolver<Iter> where Iter: SolverIte
       self.rhos.as_ref_mut_range(k, k+1, ctx).vector_l2_norm(&self.r.as_ref(ctx));
       self.rhos.as_ref_range(k, k+1, ctx).sync_store(&mut self.rhos_h[k .. k+1]);
     }
+    {
+      let ctx = &self.ctx.set();
+      self.xnorm.as_ref_mut_range(0, 1, ctx).vector_l2_norm(&self.x.as_ref(ctx));
+      self.xnorm.as_ref_range(0, 1, ctx).sync_store(&mut self.xnorm_h[0 .. 1]);
+    }
+    println!("DEBUG: cg solver: |g|: {:.6} |r[0]|: {:.6} |r[K]|: {} |x|: {:.6}", self.gnorm_h[0], self.rhos_h[0], self.rhos_h[last_k], self.xnorm_h[0]);
+    worker.operator().read_grad(0, &mut self.x);
   }
 }

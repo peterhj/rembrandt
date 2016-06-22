@@ -76,6 +76,7 @@ impl<Solver> ParallelSecondOpt<Solver> where Solver: ParallelSolver {
     }*/
     let shared_seed = worker.shared_seed();
     worker.operator().init_param(shared_seed);
+    worker.save_param();
     worker.operator().reset_grad();
     //worker.operator().reset_stats();
 
@@ -166,7 +167,9 @@ impl<Solver> ParallelSecondOpt<Solver> where Solver: ParallelSolver {
 
           self.solver.solve(batch_size, worker);
           worker.accumulate_grad(1.0, 0.0);
-          worker.step(0.1);
+          worker.step(0.0001);
+
+          worker.save_param();
 
           let minibatch_lap_time = get_time();
           let minibatch_elapsed_ms = (minibatch_lap_time - minibatch_start_time).num_milliseconds() + minibatch_offset_ms;
@@ -296,7 +299,7 @@ impl<Solver> ParallelSecondOpt<Solver> where Solver: ParallelSolver {
     // FIXME(20160609): need to all-reduce the loss and accuracy.
     let avg_loss = display_acc_loss;
     //if worker.worker_rank() == 0 {
-      info!("SgdOpt: valid: samples: {} loss: {:.06} accuracy: {:.03} elapsed: {:.03} s",
+      info!("SecondOpt: valid: samples: {} loss: {:.06} accuracy: {:.03} elapsed: {:.03} s",
           total_size,
           avg_loss,
           accuracy,

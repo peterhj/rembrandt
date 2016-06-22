@@ -934,6 +934,7 @@ pub struct AddJoinOperator {
   context:      Rc<DeviceContext>,
 
   in_acts:      Vec<SharedDeviceBuf<f32>>,
+  post_act:     DeviceBuffer<f32>,
   out_act:      SharedDeviceBuf<f32>,
 
   backward:     Option<AddJoinBwdOperator>,
@@ -942,11 +943,13 @@ pub struct AddJoinOperator {
 
 struct AddJoinBwdOperator {
   in_deltas:    Vec<Option<SharedDeviceBuf<f32>>>,
+  post_delta:   DeviceBuffer<f32>,
   out_delta:    SharedDeviceBuf<f32>,
 }
 
 struct AddJoinRFwdOperator {
   in_r_acts:    Vec<SharedDeviceBuf<f32>>,
+  post_r_act:   DeviceBuffer<f32>,
   out_r_act:    SharedDeviceBuf<f32>,
 }
 
@@ -964,6 +967,7 @@ impl AddJoinOperator {
       let prev_op = prev_ops[arm].1;
       in_acts.push(prev_op.get_output_act(prev_arm));
     }
+    let post_act = DeviceBuffer::zeros(out_length * batch_size, ctx);
     let out_act = Rc::new(RefCell::new(DeviceBuffer::zeros(out_length * batch_size, ctx)));
 
     let backward = if capability.backward_enabled() {
@@ -973,9 +977,11 @@ impl AddJoinOperator {
         let prev_op = prev_ops[arm].1;
         in_deltas.push(prev_op.get_output_delta(prev_arm));
       }
+      let post_delta = DeviceBuffer::zeros(out_length * batch_size, ctx);
       let out_delta = Rc::new(RefCell::new(DeviceBuffer::zeros(out_length * batch_size, ctx)));
       Some(AddJoinBwdOperator{
         in_deltas:  in_deltas,
+        post_delta: post_delta,
         out_delta:  out_delta,
       })
     } else {
@@ -989,9 +995,11 @@ impl AddJoinOperator {
         let prev_op = prev_ops[arm].1;
         in_r_acts.push(prev_op.get_output_r_act(prev_arm).unwrap());
       }
+      let post_r_act = DeviceBuffer::zeros(out_length * batch_size, ctx);
       let out_r_act = Rc::new(RefCell::new(DeviceBuffer::zeros(out_length * batch_size, ctx)));
       Some(AddJoinRFwdOperator{
         in_r_acts:  in_r_acts,
+        post_r_act: post_r_act,
         out_r_act:  out_r_act,
       })
     } else {
@@ -1004,6 +1012,7 @@ impl AddJoinOperator {
       config:       config,
       context:      context.clone(),
       in_acts:      in_acts,
+      post_act:     post_act,
       out_act:      out_act,
       backward:     backward,
       r_forward:    r_forward,
@@ -1046,20 +1055,28 @@ impl Operator for AddJoinOperator {
     assert!(batch_size <= self.batch_cap);
     let ctx = &(*self.context).as_ref();
     let out_length = self.config.out_dims.len();
-    let mut out_act = self.out_act.borrow_mut().as_ref_mut(ctx);
+    let mut out_act = self.out_act.borrow_mut();
 
-    out_act.copy(&self.in_acts[0].borrow_mut().as_ref(ctx));
+    self.post_act.as_ref_mut(ctx).copy(&self.in_acts[0].borrow_mut().as_ref(ctx));
     for arm in 1 .. self.config.num_in_arms {
-      out_act.vector_add(1.0, &self.in_acts[arm].borrow_mut().as_ref(ctx), 1.0);
+      self.post_act.as_ref_mut(ctx).vector_add(1.0, &self.in_acts[arm].borrow_mut().as_ref(ctx), 1.0);
     }
 
     match self.config.act_func {
-      ActivationFunction::Identity => {}
+      ActivationFunction::Identity => {
+        out_act.as_ref_mut(ctx).copy(&self.post_act.as_ref(ctx));
+      }
       ActivationFunction::Rect => {
-        unsafe { rembrandt_kernel_batch_map_rect_inplace(
+        /*unsafe { rembrandt_kernel_batch_map_rect_inplace(
             out_act.as_mut_ptr(),
             out_length as i32,
             batch_size as i32,
+            ctx.stream.ptr,
+        ) };*/
+        unsafe { rembrandt_rect_fwd(
+            self.post_act.as_ref(ctx).as_ptr(),
+            (out_length * batch_size) as i32,
+            out_act.as_ref_mut(ctx).as_mut_ptr(),
             ctx.stream.ptr,
         ) };
       }
@@ -1073,11 +1090,14 @@ impl Operator for AddJoinOperator {
     let ctx = &(*self.context).as_ref();
     let out_length = self.config.out_dims.len();
     let mut backward = self.backward.as_mut().unwrap();
+    let mut out_delta = backward.out_delta.borrow_mut();
 
     match self.config.act_func {
-      ActivationFunction::Identity => {}
+      ActivationFunction::Identity => {
+        backward.post_delta.as_ref_mut(ctx).copy(&out_delta.as_ref(ctx));
+      }
       ActivationFunction::Rect => {
-        let out_act = self.out_act.borrow_mut().as_ref(ctx);
+        /*let out_act = self.out_act.borrow_mut().as_ref(ctx);
         let mut out_delta = backward.out_delta.borrow_mut().as_ref_mut(ctx);
         unsafe { rembrandt_kernel_batch_map_rect_backprop_inplace(
             out_act.as_ptr(),
@@ -1085,15 +1105,22 @@ impl Operator for AddJoinOperator {
             batch_size as i32,
             out_delta.as_mut_ptr(),
             ctx.stream.ptr,
+        ) };*/
+        unsafe { rembrandt_rect_bwd(
+            self.post_act.as_ref(ctx).as_ptr(),
+            (out_length * batch_size) as i32,
+            out_delta.as_ref(ctx).as_ptr(),
+            backward.post_delta.as_ref_mut(ctx).as_mut_ptr(),
+            ctx.stream.ptr,
         ) };
       }
       _ => unimplemented!(),
     }
 
-    let out_delta = backward.out_delta.borrow_mut().as_ref(ctx);
+    //let out_delta = backward.out_delta.borrow_mut().as_ref(ctx);
     for arm in 0 .. self.config.num_in_arms {
       if let Some(ref mut in_delta) = backward.in_deltas[arm] {
-        in_delta.borrow_mut().as_ref_mut(ctx).copy(&out_delta);
+        in_delta.borrow_mut().as_ref_mut(ctx).copy(&backward.post_delta.as_ref(ctx));
       }
     }
   }
@@ -1102,16 +1129,30 @@ impl Operator for AddJoinOperator {
     assert!(self.r_forward.is_some());
     assert!(batch_size <= self.batch_cap);
     let ctx = &(*self.context).as_ref();
+    let out_length = self.config.out_dims.len();
     let mut r_forward = self.r_forward.as_mut().unwrap();
-    let mut out_r_act = r_forward.out_r_act.borrow_mut().as_ref_mut(ctx);
+    let mut out_r_act = r_forward.out_r_act.borrow_mut();
 
-    out_r_act.copy(&r_forward.in_r_acts[0].borrow_mut().as_ref(ctx));
+    r_forward.post_r_act.as_ref_mut(ctx).copy(&r_forward.in_r_acts[0].borrow_mut().as_ref(ctx));
     for arm in 1 .. self.config.num_in_arms {
-      out_r_act.vector_add(1.0, &r_forward.in_r_acts[arm].borrow_mut().as_ref(ctx), 1.0);
+      r_forward.post_r_act.as_ref_mut(ctx).vector_add(1.0, &r_forward.in_r_acts[arm].borrow_mut().as_ref(ctx), 1.0);
     }
 
-    // FIXME(20160602): activation function.
-    //unimplemented!();
+    match self.config.act_func {
+      ActivationFunction::Identity => {
+        out_r_act.as_ref_mut(ctx).copy(&r_forward.post_r_act.as_ref(ctx));
+      }
+      ActivationFunction::Rect => {
+        unsafe { rembrandt_rect_bwd(
+            self.post_act.as_ref(ctx).as_ptr(),
+            (out_length * batch_size) as i32,
+            r_forward.post_r_act.as_ref(ctx).as_ptr(),
+            out_r_act.as_ref_mut(ctx).as_mut_ptr(),
+            ctx.stream.ptr,
+        ) };
+      }
+      _ => unimplemented!(),
+    }
   }
 }
 
