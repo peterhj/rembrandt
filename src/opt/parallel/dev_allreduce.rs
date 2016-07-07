@@ -255,6 +255,8 @@ impl DeviceAllreduceOptWorkerBuilder {
       saved_param:  OpCursor::new(DeviceBuffer::zeros(padded_len, ctx)),
       w_norm:       DeviceBuffer::zeros(1, ctx),
       w_norm_h:     vec![0.0],
+      g_norm:       DeviceBuffer::zeros(1, ctx),
+      g_norm_h:     vec![0.0],
       sig_chkpt:    false,
     }
   }
@@ -271,6 +273,8 @@ pub struct DeviceAllreduceOptWorker {
   saved_param:  OpCursor<DeviceBuffer<f32>>,
   w_norm:       DeviceBuffer<f32>,
   w_norm_h:     Vec<f32>,
+  g_norm:       DeviceBuffer<f32>,
+  g_norm_h:     Vec<f32>,
   sig_chkpt:    bool,
 }
 
@@ -344,7 +348,8 @@ impl ParallelSgdOptWorker for DeviceAllreduceOptWorker {
   }
 
   fn stage_grad(&mut self) {
-    self.operator.write_grad(0, &mut self.comm);
+    //self.operator.write_grad(0, &mut self.comm);
+    unimplemented!();
   }
 
   fn sync_grad(&mut self) {
@@ -352,14 +357,20 @@ impl ParallelSgdOptWorker for DeviceAllreduceOptWorker {
     self.comm.inner.barrier();
     self.comm.inner.allreduce_average();
     self.operator.read_grad(0, &mut self.comm);
+    self.comm.inner.barrier();
   }
 
   fn merge_grad(&mut self) {
-    self.operator.read_grad(0, &mut self.comm);
+    //self.operator.read_grad(0, &mut self.comm);
+    unimplemented!();
   }
 
   fn accumulate_grad(&mut self, alpha: f32, mu: f32) {
     self.operator.accumulate_grad_(0, alpha, mu, &mut self.grad_acc);
+    /*let ctx = &self.context.set();
+    self.g_norm.as_ref_mut(ctx).vector_l2_norm(&self.grad_acc.as_ref(ctx));
+    self.g_norm.as_ref(ctx).sync_store(&mut self.g_norm_h);
+    println!("DEBUG: worker: rank: {} |grad|: {:.6}", self.worker_rank(), self.g_norm_h[0]);*/
   }
 
   fn step(&mut self, step_size: f32) {

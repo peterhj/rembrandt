@@ -409,6 +409,7 @@ pub trait Operator {
   fn write_grad(&mut self, _offset: usize, _writer: &mut OpWrite) -> usize { 0 }
   fn accumulate_grad_(&mut self, _offset: usize, _alpha: f32, _mu: f32, _grad_acc_writer: &mut OpWrite) -> usize { 0 }
   fn step(&mut self, _offset: usize, _step_size: f32, _grad_acc_reader: &mut OpRead) -> usize { 0 }
+  fn update_stats(&mut self) {}
   fn backward(&mut self, batch_size: usize);
   fn regularize(&mut self, _reg: Regularization) {}
 

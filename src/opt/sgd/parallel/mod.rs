@@ -239,6 +239,11 @@ impl ParallelSgdOpt {
             Momentum::GradientNesterov{mu}  => unimplemented!(),
           }
 
+          // Update non-gradient stats (only do this once per iteration, so this
+          // is applied outside of `.step`).
+          worker.operator().update_stats();
+
+          // FIXME(20160706): Preserve a copy of the current parameter if necessary.
           worker.save_param();
 
           let minibatch_lap_time = get_time();

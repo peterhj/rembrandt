@@ -587,6 +587,12 @@ impl Operator for GraphOperator {
     offset - init_offset
   }
 
+  fn update_stats(&mut self) {
+    for &id in self.fwd_toporder.iter() {
+      self.operators[id].update_stats();
+    }
+  }
+
   fn read_direction(&mut self, init_offset: usize, reader: &mut OpRead) -> usize {
     let mut offset = init_offset;
     for &id in self.fwd_toporder.iter() {
