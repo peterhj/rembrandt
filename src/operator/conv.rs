@@ -2075,7 +2075,7 @@ impl Operator for BNormConv2dOperator {
         &*ctx.get_dnn(),
     ).unwrap() };
 
-    /*r_forward.stats_r_mean.as_ref_mut(ctx).set_constant(0.0);
+    r_forward.stats_r_mean.as_ref_mut(ctx).set_constant(0.0);
     r_forward.stats_r_var.as_ref_mut(ctx).set_constant(0.0);
     unsafe { rembrandt_kernel_estimate_conv_mean_fast_batch(
         r_forward.tmp_r_act.as_ref(ctx).as_ptr(),
@@ -2109,10 +2109,12 @@ impl Operator for BNormConv2dOperator {
         self.config.bnorm_epsilon as f32,
         r_forward.tmp2_r_act.as_ref_mut(ctx).as_mut_ptr(),
         ctx.stream.ptr,
-    ) };*/
+    ) };
 
+    /*r_forward.stats_r_mean.as_ref_mut(ctx).set_constant(0.0);
+    r_forward.stats_r_var.as_ref_mut(ctx).set_constant(0.0);
     // FIXME(20160623)
-    let alpha = 0.9;
+    let alpha = 0.1;
     //let alpha = self.config.bnorm_mov_avg.at_iter(t) as f32;
     r_forward.stats_r_mean.as_ref_mut(ctx).set_constant(0.0);
     r_forward.stats_r_var.as_ref_mut(ctx).set_constant(0.0);
@@ -2131,7 +2133,7 @@ impl Operator for BNormConv2dOperator {
         r_forward.stats_r_var.as_ref_mut(ctx).as_mut_ptr(),
         r_forward.tmp2_r_act.as_ref_mut(ctx).as_mut_ptr(),
         ctx.stream.ptr,
-    ) };
+    ) };*/
 
     unsafe { rembrandt_conv_diag_linear_fwd_batch(
         r_forward.tmp2_r_act.as_ref(ctx).as_ptr(),

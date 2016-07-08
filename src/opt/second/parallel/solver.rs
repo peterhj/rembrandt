@@ -1,4 +1,4 @@
-use operator::{OpRead, OpWrite, OpCursor};
+use operator::{OpRead, OpWrite, OpCursor, OpPhase};
 use opt::second::parallel::{ParallelSecondOptWorker};
 
 use array_cuda::device::{
@@ -13,7 +13,7 @@ use std::iter::{repeat};
 use std::rc::{Rc};
 
 pub trait ParallelSolver {
-  fn solve(&mut self, batch_size: usize, worker: &mut ParallelSecondOptWorker);
+  fn solve(&mut self, batch_size: usize, worker: &mut ParallelSecondOptWorker, cache_seed: &[u64]);
 }
 
 pub trait SolverIteration {
@@ -124,6 +124,8 @@ pub struct CgDeviceParallelSolver<Iter> {
   x:        OpCursor<DeviceBuffer<f32>>,
   xnorm:    DeviceBuffer<f32>,
   xnorm_h:  Vec<f32>,
+  gxdot:    DeviceBuffer<f32>,
+  gxdot_h:  Vec<f32>,
   pw:       DeviceBuffer<f32>,
   pw_h:     Vec<f32>,
   rhos:     DeviceBuffer<f32>,
@@ -151,6 +153,8 @@ impl<Iter> CgDeviceParallelSolver<Iter> where Iter: SolverIteration {
       x:        OpCursor::new(DeviceBuffer::zeros(param_len, ctx)),
       xnorm:    DeviceBuffer::zeros(1, ctx),
       xnorm_h:  vec![0.0],
+      gxdot:    DeviceBuffer::zeros(1, ctx),
+      gxdot_h:  vec![0.0],
       pw:       DeviceBuffer::zeros(max_iters+1, ctx),
       pw_h:     repeat(0.0).take(max_iters+1).collect(),
       rhos:     DeviceBuffer::zeros(max_iters+1, ctx),
@@ -161,7 +165,7 @@ impl<Iter> CgDeviceParallelSolver<Iter> where Iter: SolverIteration {
 }
 
 impl<Iter> ParallelSolver for CgDeviceParallelSolver<Iter> where Iter: SolverIteration {
-  fn solve(&mut self, batch_size: usize, worker: &mut ParallelSecondOptWorker) {
+  fn solve(&mut self, batch_size: usize, worker: &mut ParallelSecondOptWorker, cache_seed: &[u64]) {
     {
       let ctx = &self.ctx.set();
       self.g.as_ref_mut(ctx).set_constant(0.0);
@@ -170,6 +174,7 @@ impl<Iter> ParallelSolver for CgDeviceParallelSolver<Iter> where Iter: SolverIte
       self.r.as_ref_mut(ctx).set_constant(0.0);
       self.x.as_ref_mut(ctx).set_constant(0.0);
       worker.read_step(&mut self.x.as_ref_mut(ctx));
+      self.x.as_ref_mut(ctx).vector_scale(0.1); // XXX(20160708): choose this hyperparam.
       self.xnorm.as_ref_mut_range(0, 1, ctx).vector_l2_norm(&self.x.as_ref(ctx));
       self.xnorm.as_ref_range(0, 1, ctx).sync_store(&mut self.xnorm_h[0 .. 1]);
       self.pw.as_ref_mut(ctx).set_constant(0.0);
@@ -196,9 +201,11 @@ impl<Iter> ParallelSolver for CgDeviceParallelSolver<Iter> where Iter: SolverIte
       self.rhos.as_ref_mut_range(0, 1, ctx).vector_l2_norm(&self.r.as_ref(ctx));
       self.rhos.as_ref_range(0, 1, ctx).sync_store(&mut self.rhos_h[0 .. 1]);
     }
+    let mut converged = false;
     let mut last_k = 0;
     for k in 1 .. self.config.max_iters + 1 {
       if self.rhos_h[k-1] <= self.config.epsilon * self.gnorm_h[0] {
+        converged = true;
         break;
       }
       last_k = k;
@@ -231,7 +238,49 @@ impl<Iter> ParallelSolver for CgDeviceParallelSolver<Iter> where Iter: SolverIte
       self.xnorm.as_ref_mut_range(0, 1, ctx).vector_l2_norm(&self.x.as_ref(ctx));
       self.xnorm.as_ref_range(0, 1, ctx).sync_store(&mut self.xnorm_h[0 .. 1]);
     }
-    println!("DEBUG: cg solver: K: {} |g|: {} |r[0]|: {} |r[K]|: {} |x[0]|: {} |x|: {}", last_k, self.gnorm_h[0], self.rhos_h[0], self.rhos_h[last_k], x0_norm, self.xnorm_h[0]);
     worker.operator().read_grad(0, &mut self.x);
+
+    // FIXME(20160707): line search.
+    {
+      let ctx = &self.ctx.set();
+      self.gxdot.as_ref_mut_range(0, 1, ctx).vector_inner_prod(&self.g.as_ref(ctx), &self.x.as_ref(ctx));
+      self.gxdot.as_ref_range(0, 1, ctx).sync_store(&mut self.gxdot_h[0 .. 1]);
+    }
+    let mut alpha = 0.1;
+    if converged {
+      worker.accumulate_grad(1.0, 0.0);
+      worker.step(alpha);
+    }
+    /*if self.gxdot_h[0] >= 0.0 {
+      println!("DEBUG: cg solver: not a descent direction");
+    } else {
+      worker.accumulate_grad(1.0, 0.0);
+      let loss0 = worker.sync_loss(batch_size);
+      println!("DEBUG: cg solver: loss[0]: {}", loss0);
+      worker.operator().forward(batch_size, OpPhase::Training{t: 1}); // FIXME(20160707)
+      let loss0_v2 = worker.sync_loss(batch_size);
+      println!("DEBUG: cg solver: loss[0] v2: {}", loss0_v2);
+      worker.operator().forward(batch_size, OpPhase::Training{t: 1}); // FIXME(20160707)
+      let loss0_v3 = worker.sync_loss(batch_size);
+      println!("DEBUG: cg solver: loss[0] v3: {}", loss0_v3);
+      worker.save_param();
+      let beta = 1.0e-3;
+      let mut k = 1;
+      loop {
+        worker.step(alpha);
+        worker.operator().forward(batch_size, OpPhase::Training{t: 1}); // FIXME(20160707)
+        let loss_k = worker.sync_loss(batch_size);
+        println!("DEBUG: cg solver: loss[{}]: {} rhs: {}", k, loss_k, loss0 + alpha * beta * self.gxdot_h[0]);
+        if loss_k <= loss0 + alpha * beta * self.gxdot_h[0] {
+          break;
+        }
+        worker.restore_param();
+        alpha = 0.5 * alpha;
+        k += 1;
+      }
+      worker.step(alpha);
+    }*/
+    println!("DEBUG: cg solver: K: {} |g|: {} |r[0]|: {} |r[K]|: {} |x[0]|: {} |x|: {} g.x: {} alpha: {} converged: {:?}",
+        last_k, self.gnorm_h[0], self.rhos_h[0], self.rhos_h[last_k], x0_norm, self.xnorm_h[0], self.gxdot_h[0], alpha, converged);
   }
 }

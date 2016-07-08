@@ -400,6 +400,8 @@ pub trait Operator {
   fn encode_state(&mut self, _blob: &mut Vec<u8>) {}
   fn read_param(&mut self, _offset: usize, _reader: &mut OpRead) -> usize { 0 }
   fn write_param(&mut self, _offset: usize, _writer: &mut OpWrite) -> usize { 0 }
+  fn save_seed(&mut self, _buf: &mut Vec<u64>) {}
+  fn restore_seed(&mut self, _buf: &[u64]) -> usize { 0 }
   fn forward(&mut self, batch_size: usize, phase: OpPhase);
 
   // Requires `Backward` capability.

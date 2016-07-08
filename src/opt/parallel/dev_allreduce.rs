@@ -7,6 +7,7 @@ use array_cuda::device::context::{DeviceContext};
 use array_cuda::device::linalg::{VectorExt, AsyncVectorExt};
 use array_cuda::device::memory::{DeviceBufferInitExt, DeviceBuffer, DeviceBufferRef, DeviceBufferRefMut, RawDeviceBuffer};
 use comm_cuda::{RingDeviceBufCommBuilder, RingDeviceBufComm};
+use fixarith::{Fix24x64};
 //use nccl::{NcclUniqueId, NcclComm, NcclSumOp};
 
 use rand::{Rng, thread_rng};
@@ -305,8 +306,27 @@ impl ParallelSgdOptWorker for DeviceAllreduceOptWorker {
     self.comm.inner.barrier();
     fence(Ordering::AcqRel);
     let x = self.shared.reduce_count.load(Ordering::Acquire);
+    self.comm.inner.barrier();
     fence(Ordering::AcqRel);
     x
+  }
+
+  fn reduce_scalar_f32(&self, count: f32) -> f32 {
+    if self.worker_rank == 0 {
+      self.shared.reduce_count.store(0, Ordering::Release);
+    }
+    self.comm.inner.barrier();
+    fence(Ordering::AcqRel);
+    let count_fix = Fix24x64::round_nearest_f64(count as f64);
+    let r = count_fix.into_usize_repr();
+    self.shared.reduce_count.fetch_add(r, Ordering::AcqRel);
+    self.comm.inner.barrier();
+    fence(Ordering::AcqRel);
+    let x = self.shared.reduce_count.load(Ordering::Acquire);
+    self.comm.inner.barrier();
+    fence(Ordering::AcqRel);
+    let sum = Fix24x64::from_usize_repr(x);
+    sum.into_f64() as f32
   }
 
   fn signal_checkpoint(&mut self) {
@@ -323,23 +343,7 @@ impl ParallelSgdOptWorker for DeviceAllreduceOptWorker {
     }
   }
 
-  fn save_param(&mut self) {
-    self.operator.write_param(0, &mut self.saved_param);
-    /*let ctx = &self.context.set();
-    self.w_norm.as_ref_mut(ctx).vector_l2_norm(&self.saved_param.as_ref(ctx));
-    self.w_norm.as_ref(ctx).sync_store(&mut self.w_norm_h);
-    println!("DEBUG: worker: rank: {} |param|: {:.6}", self.worker_rank(), self.w_norm_h[0]);*/
-  }
-
-  fn restore_param(&mut self) {
-    self.operator.read_param(0, &mut self.saved_param);
-  }
-
-  fn stage_param(&mut self) {
-    unimplemented!();
-  }
-
-  fn sync_param(&mut self) {
+  /*fn stage_param(&mut self) {
     unimplemented!();
   }
 
@@ -352,17 +356,43 @@ impl ParallelSgdOptWorker for DeviceAllreduceOptWorker {
     unimplemented!();
   }
 
+  fn merge_grad(&mut self) {
+    //self.operator.read_grad(0, &mut self.comm);
+    unimplemented!();
+  }*/
+
+  fn sync_loss(&mut self, batch_size: usize) -> f32 {
+    let local_loss = self.operator().store_loss(batch_size);
+    let total_loss = self.reduce_scalar_f32(local_loss) / self.num_workers() as f32;
+    total_loss
+  }
+
+  /*fn save_loss(&mut self) -> f32 {
+    unimplemented!();
+  }*/
+
+  fn sync_param(&mut self) {
+    unimplemented!();
+  }
+
+  fn save_param(&mut self) {
+    self.operator.write_param(0, &mut self.saved_param);
+    /*let ctx = &self.context.set();
+    self.w_norm.as_ref_mut(ctx).vector_l2_norm(&self.saved_param.as_ref(ctx));
+    self.w_norm.as_ref(ctx).sync_store(&mut self.w_norm_h);
+    println!("DEBUG: worker: rank: {} |param|: {:.6}", self.worker_rank(), self.w_norm_h[0]);*/
+  }
+
+  fn restore_param(&mut self) {
+    self.operator.read_param(0, &mut self.saved_param);
+  }
+
   fn sync_grad(&mut self) {
     self.operator.write_grad(0, &mut self.comm);
     self.comm.inner.barrier();
     self.comm.inner.allreduce_average();
     self.operator.read_grad(0, &mut self.comm);
     self.comm.inner.barrier();
-  }
-
-  fn merge_grad(&mut self) {
-    //self.operator.read_grad(0, &mut self.comm);
-    unimplemented!();
   }
 
   fn accumulate_grad(&mut self, alpha: f32, mu: f32) {

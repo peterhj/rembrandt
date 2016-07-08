@@ -19,20 +19,21 @@ pub trait ParallelSgdOptWorker {
   fn operator(&mut self) -> &mut CompleteOperator;
   fn shared_seed(&mut self) -> [u64; 2];
   fn reduce_scalar(&self, count: usize) -> usize;
+  fn reduce_scalar_f32(&self, count: f32) -> f32;
 
   fn signal_checkpoint(&mut self);
   fn wait_checkpoint(&mut self) -> bool;
 
+  fn sync_loss(&mut self, batch_size: usize) -> f32;
+  //fn save_loss(&mut self) -> f32;
+
+  fn sync_param(&mut self);
   fn save_param(&mut self);
   fn restore_param(&mut self);
 
-  fn stage_param(&mut self);
-  fn sync_param(&mut self);
-  fn merge_param(&mut self);
-
-  fn stage_grad(&mut self);
   fn sync_grad(&mut self);
-  fn merge_grad(&mut self);
+  //fn save_grad(&mut self);
+  //fn restore_grad(&mut self);
   fn accumulate_grad(&mut self, alpha: f32, mu: f32);
   fn step(&mut self, step_size: f32);
 }
@@ -102,6 +103,10 @@ impl ParallelSgdOpt {
     worker.operator().reset_grad();
     //worker.operator().reset_stats();
 
+    let mut cache_samples = vec![];
+    let mut cache_seed = vec![];
+    let mut batch_seed = vec![];
+
     // If we are using the standard Nesterov update, apply some extra
     // momentum before the next iteration begins.
     match self.config.momentum {
@@ -134,17 +139,14 @@ impl ParallelSgdOpt {
     let mut acc_batch_size = 0;
 
     loop {
-      train_data.reset();
-      for (datum, maybe_label) in &mut train_data {
-        /*match (label_cfg, maybe_label.as_ref()) {
-          (SampleLabelConfig::Category{num_categories}, Some(&SampleLabel::Category{category})) => {
-            assert!(category >= 0);
-            assert!(category < num_categories);
-          }
-          _ => panic!("SgdOpt: unsupported label"),
-        }*/
+      cache_samples.clear();
+      cache_seed.clear();
+      for (datum, maybe_label) in (&mut train_data).take(minibatch_size) {
+        cache_samples.push((datum, maybe_label));
+      }
+      for &(ref datum, ref maybe_label) in cache_samples.iter() {
         match datum {
-          SampleDatum::WHCBytes(ref frame_bytes) => {
+          &SampleDatum::WHCBytes(ref frame_bytes) => {
             //println!("DEBUG: frame: {:?}", frame_bytes.as_slice());
             let frame_len = frame_bytes.bound().len();
             worker.operator()
@@ -157,7 +159,11 @@ impl ParallelSgdOpt {
           }
           _ => unimplemented!(),
         }
-        worker.operator().stage_label(batch_counter, &maybe_label.unwrap());
+        match maybe_label {
+          &Some(ref label) => worker.operator().stage_label(batch_counter, label),
+          &None => panic!(),
+        }
+        //worker.operator().stage_label(batch_counter, &maybe_label.unwrap());
         worker.operator().stage_weight(batch_counter, minibatch_weight);
         batch_counter += 1;
         local_counter += 1;
@@ -172,6 +178,9 @@ impl ParallelSgdOpt {
           worker.operator().wait_preload_frames(batch_size);
           worker.operator().load_labels(batch_size);
           worker.operator().load_weights(batch_size);
+          batch_seed.clear();
+          worker.operator().save_seed(&mut batch_seed);
+          cache_seed.extend_from_slice(&batch_seed);
           worker.operator().forward(batch_size, OpPhase::Training{t: iter_counter});
           //worker.operator().estimate_stats(acc_batch_size, batch_size);
           worker.operator().backward(batch_size);

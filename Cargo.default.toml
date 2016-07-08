@@ -108,6 +108,7 @@ comm_cuda = { path = "../libcomm_cuda" }
 cuda = { git = "https://github.com/peterhj/libcuda.git" }
 cuda_dnn = { path = "../libcuda_dnn" } #, features = ["cudnn_v3"] }
 episodb = { path = "../../episodb" }
+fixarith = { path = "../../libfixarith" }
 lmdb = { path = "../liblmdb" }
 #mpich = { path = "../../libmpich" }
 nccl = { git = "https://github.com/peterhj/libnccl.git" }

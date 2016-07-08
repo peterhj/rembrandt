@@ -1,22 +1,16 @@
 #![feature(btree_range)]
 #![feature(collections_bound)]
 
-//extern crate array;
 extern crate array;
 extern crate array_cuda;
-//extern crate array_dist;
 extern crate arraydb;
-//extern crate async;
-//extern crate async_cuda;
 extern crate comm_cuda;
 extern crate cuda_dnn;
-//extern crate epeg;
 extern crate episodb;
-//extern crate linalg;
+extern crate fixarith;
 extern crate lmdb;
 #[cfg(feature = "mpich")]
 extern crate mpich as mpi;
-//extern crate nccl;
 #[cfg(feature = "openmpi")]
 extern crate openmpi as mpi;
 //extern crate procgroup;

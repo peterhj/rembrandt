@@ -734,6 +734,15 @@ impl Operator for VarData3dOperator {
     self.r_forward.as_ref().map(|r_fwd| r_fwd.out_r_buf.clone())
   }
 
+  fn save_seed(&mut self, buf: &mut Vec<u64>) {
+    buf.extend_from_slice(self.rng.state());
+  }
+
+  fn restore_seed(&mut self, buf: &[u64]) -> usize {
+    self.rng.reseed(buf);
+    self.rng.state().len()
+  }
+
   fn forward(&mut self, batch_size: usize, phase: OpPhase) {
     assert!(batch_size <= self.batch_cap);
     let ctx = &(*self.context).as_ref();
@@ -801,46 +810,6 @@ impl Operator for VarData3dOperator {
         ( &VarData3dPreprocConfig::Crop{crop_width, crop_height},
           &mut VarData3dPreprocState::Crop,
         ) => {
-          /*for batch_idx in 0 .. batch_size {
-            let (in_width, in_height, _) = self.in_shapes[batch_idx];
-            let (offset_w, offset_h) = match phase {
-              OpPhase::Inference => {
-                let offset_w = (in_width - crop_width) / 2;
-                let offset_h = (in_height - crop_height) / 2;
-                (offset_w, offset_h)
-              }
-              OpPhase::Training{..} => {
-                /*let offset_w = woff_range.ind_sample(&mut self.rng);
-                let offset_h = hoff_range.ind_sample(&mut self.rng);*/
-                let offset_w = self.rng.gen_range(0, in_width - crop_width + 1);
-                let offset_h = self.rng.gen_range(0, in_height - crop_height + 1);
-                (offset_w, offset_h)
-              }
-            };
-            self.in_widths_h[batch_idx] = in_width as i32;
-            self.in_heights_h[batch_idx] = in_height as i32;
-            self.in_x_offsets_h[batch_idx] = offset_w as i32;
-            self.in_y_offsets_h[batch_idx] = offset_h as i32;
-          }
-          self.in_widths.as_ref_mut(ctx).sync_load(&self.in_widths_h);
-          self.in_heights.as_ref_mut(ctx).sync_load(&self.in_heights_h);
-          self.in_x_offsets.as_ref_mut(ctx).sync_load(&self.in_x_offsets_h);
-          self.in_y_offsets.as_ref_mut(ctx).sync_load(&self.in_y_offsets_h);
-          unsafe { rembrandt_kernel_batch_image3_crop(
-              src_buf.as_ptr(),
-              in_stride as i32,
-              batch_size as i32,
-              self.in_widths.as_ref(ctx).as_ptr(),
-              self.in_heights.as_ref(ctx).as_ptr(),
-              out_channels as i32,
-              self.in_x_offsets.as_ref(ctx).as_ptr(),
-              self.in_y_offsets.as_ref(ctx).as_ptr(),
-              target_buf.as_mut_ptr(),
-              crop_width as i32,
-              crop_height as i32,
-              ctx.stream.ptr,
-          ) };*/
-
           let target_stride = crop_width * crop_height * out_channels;
           for batch_idx in 0 .. batch_size {
             let (in_width, in_height, _) = self.in_shapes[batch_idx];

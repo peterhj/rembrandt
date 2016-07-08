@@ -52,7 +52,7 @@ use std::path::{PathBuf};
 fn main() {
   env_logger::init().unwrap();
 
-  let num_local_workers = 1;
+  let num_local_workers = 4;
   let batch_size = 32;
   let minibatch_size = 32;
   //info!("batch size: {}", batch_size);
@@ -86,9 +86,9 @@ fn main() {
         let operator = Box::new(GraphOperator::new(operator_cfg, batch_size, OpCapability::RForward, context.clone()));
         let params_len = operator.params_len();
         let solver_cfg = CgSolverConfig{
-          max_iters:    30,
+          max_iters:    50,
           epsilon:      1.0e-2,
-          lambda:       0.01,
+          lambda:       1.0e-2,
         };
         let mut opt = ParallelSecondOpt::new(opt_cfg, CgDeviceParallelSolver::new(params_len, solver_cfg, FisherIteration::new(), context.clone()));
         let mut worker = builder.into_worker(tid, context, operator);

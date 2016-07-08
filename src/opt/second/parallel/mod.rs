@@ -81,6 +81,8 @@ impl<Solver> ParallelSecondOpt<Solver> where Solver: ParallelSolver {
     worker.operator().reset_grad();
     //worker.operator().reset_stats();
 
+    let mut batch_seed = vec![];
+
     let mut start_time = get_time();
     let mut minibatch_start_time = start_time;
     let mut minibatch_offset_ms: i64 = 0;
@@ -102,13 +104,6 @@ impl<Solver> ParallelSecondOpt<Solver> where Solver: ParallelSolver {
     loop {
       train_data.reset();
       for (datum, maybe_label) in &mut train_data {
-        /*match (label_cfg, maybe_label.as_ref()) {
-          (SampleLabelConfig::Category{num_categories}, Some(&SampleLabel::Category{category})) => {
-            assert!(category >= 0);
-            assert!(category < num_categories);
-          }
-          _ => panic!("SgdOpt: unsupported label"),
-        }*/
         match datum {
           SampleDatum::WHCBytes(ref frame_bytes) => {
             //println!("DEBUG: frame: {:?}", frame_bytes.as_slice());
@@ -123,7 +118,10 @@ impl<Solver> ParallelSecondOpt<Solver> where Solver: ParallelSolver {
           }
           _ => unimplemented!(),
         }
-        worker.operator().stage_label(batch_counter, &maybe_label.unwrap());
+        match maybe_label {
+          Some(ref label) => worker.operator().stage_label(batch_counter, label),
+          None => panic!(),
+        }
         worker.operator().stage_weight(batch_counter, minibatch_weight);
         batch_counter += 1;
         local_counter += 1;
@@ -136,6 +134,8 @@ impl<Solver> ParallelSecondOpt<Solver> where Solver: ParallelSolver {
           worker.operator().wait_preload_frames(batch_size);
           worker.operator().load_labels(batch_size);
           worker.operator().load_weights(batch_size);
+          batch_seed.clear();
+          worker.operator().save_seed(&mut batch_seed);
           worker.operator().forward(batch_size, OpPhase::Training{t: iter_counter});
           worker.operator().backward(batch_size);
           worker.operator().store_output_categories(batch_size);
@@ -166,11 +166,16 @@ impl<Solver> ParallelSecondOpt<Solver> where Solver: ParallelSolver {
           // Communicate to synchronize the gradient.
           worker.sync_grad();
 
-          self.solver.solve(batch_size, worker);
-          worker.accumulate_grad(1.0, 0.0);
-          worker.step(0.1);
+          if iter_counter <= 625 {
+            worker.accumulate_grad(1.0, 0.0);
+            worker.step(-0.1);
+          } else {
+            self.solver.solve(batch_size, worker, &batch_seed); // FIXME(20160708)
+            //worker.accumulate_grad(1.0, 0.0);
+            //worker.step(0.1);
+          }
 
-          worker.save_param();
+          //worker.save_param();
 
           let minibatch_lap_time = get_time();
           let minibatch_elapsed_ms = (minibatch_lap_time - minibatch_start_time).num_milliseconds() + minibatch_offset_ms;

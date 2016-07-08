@@ -505,6 +505,21 @@ impl Operator for GraphOperator {
     }
   }
 
+  fn save_seed(&mut self, buf: &mut Vec<u64>) {
+    for &id in self.fwd_toporder.iter() {
+      self.operators[id].save_seed(buf);
+    }
+  }
+
+  fn restore_seed(&mut self, buf: &[u64]) -> usize {
+    let mut offset = 0;
+    for &id in self.fwd_toporder.iter() {
+      offset += self.operators[id].restore_seed(&buf[offset .. ]);
+    }
+    assert_eq!(offset, buf.len());
+    offset
+  }
+
   fn forward(&mut self, batch_size: usize, phase: OpPhase) {
     for &id in self.fwd_toporder.iter() {
       self.operators[id].forward(batch_size, phase);
