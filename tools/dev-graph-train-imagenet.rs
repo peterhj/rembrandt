@@ -14,6 +14,7 @@ use rembrandt::data::{
   AsyncQueueDataIter,
   CyclicSampleDataIter,
   RandomSampleDataIter,
+  GenerateRandomArray3dDataIter,
 };
 use rembrandt::data::codec::{
   Array3dDataCodec,
@@ -88,9 +89,10 @@ fn main() {
     momentum:       Momentum::UpdateNesterov{mu: 0.9},
     l2_reg_coef:    1.0e-4,
     display_iters:      25,
+    //valid_iters:        20000,
+    valid_iters:        625,
     checkpoint_iters:   625,
     save_iters:         625,
-    valid_iters:        625,
 
     checkpoint_dir:     PathBuf::from("models/imagenet_maxscale480-resnet18pool_dev_x4_test"),
   };
@@ -117,6 +119,10 @@ fn main() {
         let mut worker = builder.into_worker(tid, context, operator);
 
         let mut train_data =
+            /*AsyncQueueDataIter::new(
+            GenerateRandomArray3dDataIter::new(
+                (480, 480, 3), 1000,
+            ));*/
             AsyncQueueDataIter::new(
             //CyclicSampleDataIter::new(
             RandomSampleDataIter::new(

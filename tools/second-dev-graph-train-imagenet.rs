@@ -88,7 +88,8 @@ fn main() {
         let solver_cfg = CgSolverConfig{
           max_iters:    50,
           epsilon:      1.0e-2,
-          lambda:       1.0e-2,
+          //lambda:       1.0e-3,
+          lambda:       1.0e-4,
         };
         let mut opt = ParallelSecondOpt::new(opt_cfg, CgDeviceParallelSolver::new(params_len, solver_cfg, FisherIteration::new(), context.clone()));
         let mut worker = builder.into_worker(tid, context, operator);

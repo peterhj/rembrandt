@@ -1,3 +1,4 @@
+use data::{SampleDatum, SampleLabel};
 use operator::{OpRead, OpWrite, OpCursor, OpPhase};
 use opt::second::parallel::{ParallelSecondOptWorker};
 
@@ -13,7 +14,7 @@ use std::iter::{repeat};
 use std::rc::{Rc};
 
 pub trait ParallelSolver {
-  fn solve(&mut self, batch_size: usize, worker: &mut ParallelSecondOptWorker, cache_seed: &[u64]);
+  fn solve(&mut self, batch_size: usize, worker: &mut ParallelSecondOptWorker, cache_samples: &[(SampleDatum, Option<SampleLabel>)], cache_seed: &[u64]);
 }
 
 pub trait SolverIteration {
@@ -109,18 +110,17 @@ pub struct CgSolverConfig {
 
 pub struct CgDeviceParallelSolver<Iter> {
   config:   CgSolverConfig,
-  //max_iters:    usize,
   iteration:    Iter,
   ctx:      Rc<DeviceContext>,
-  //comm:     RingDeviceBufComm<f32>,
-  //epsilon:  f32,
-  //lambda:   f32,
   g:        OpCursor<DeviceBuffer<f32>>,
   gnorm:    DeviceBuffer<f32>,
   gnorm_h:  Vec<f32>,
+  m:        DeviceBuffer<f32>,
   p:        OpCursor<DeviceBuffer<f32>>,
   w:        OpCursor<DeviceBuffer<f32>>,
   r:        OpCursor<DeviceBuffer<f32>>,
+  z:        DeviceBuffer<f32>,
+  //x0:       OpCursor<DeviceBuffer<f32>>,
   x:        OpCursor<DeviceBuffer<f32>>,
   xnorm:    DeviceBuffer<f32>,
   xnorm_h:  Vec<f32>,
@@ -131,6 +131,8 @@ pub struct CgDeviceParallelSolver<Iter> {
   rhos:     DeviceBuffer<f32>,
   rhos_h:   Vec<f32>,
   alphas_h: Vec<f32>,
+  //fnorm:    DeviceBuffer<f32>,
+  //fnorm_h:  Vec<f32>,
 }
 
 impl<Iter> CgDeviceParallelSolver<Iter> where Iter: SolverIteration {
@@ -138,18 +140,18 @@ impl<Iter> CgDeviceParallelSolver<Iter> where Iter: SolverIteration {
     let ctx = &context.set();
     let max_iters = config.max_iters;
     CgDeviceParallelSolver{
-      //max_iters:    max_iters,
-      //epsilon:  1.0e-2,
-      //lambda:   0.5,
       config:       config,
       iteration:    iteration,
       ctx:      context.clone(),
       g:        OpCursor::new(DeviceBuffer::zeros(param_len, ctx)),
       gnorm:    DeviceBuffer::zeros(1, ctx),
       gnorm_h:  vec![0.0],
+      m:        DeviceBuffer::zeros(param_len, ctx),
       p:        OpCursor::new(DeviceBuffer::zeros(param_len, ctx)),
       w:        OpCursor::new(DeviceBuffer::zeros(param_len, ctx)),
       r:        OpCursor::new(DeviceBuffer::zeros(param_len, ctx)),
+      z:        DeviceBuffer::zeros(param_len, ctx),
+      //x0:       OpCursor::new(DeviceBuffer::zeros(param_len, ctx)),
       x:        OpCursor::new(DeviceBuffer::zeros(param_len, ctx)),
       xnorm:    DeviceBuffer::zeros(1, ctx),
       xnorm_h:  vec![0.0],
@@ -160,19 +162,26 @@ impl<Iter> CgDeviceParallelSolver<Iter> where Iter: SolverIteration {
       rhos:     DeviceBuffer::zeros(max_iters+1, ctx),
       rhos_h:   repeat(0.0).take(max_iters+1).collect(),
       alphas_h: repeat(0.0).take(max_iters+1).collect(),
+      //fnorm:    DeviceBuffer::zeros(1, ctx),
+      //fnorm_h:  vec![0.0],
     }
   }
 }
 
 impl<Iter> ParallelSolver for CgDeviceParallelSolver<Iter> where Iter: SolverIteration {
-  fn solve(&mut self, batch_size: usize, worker: &mut ParallelSecondOptWorker, cache_seed: &[u64]) {
+  fn solve(&mut self, batch_size: usize, worker: &mut ParallelSecondOptWorker, cache_samples: &[(SampleDatum, Option<SampleLabel>)], cache_seed: &[u64]) {
     {
       let ctx = &self.ctx.set();
       self.g.as_ref_mut(ctx).set_constant(0.0);
+      self.m.as_ref_mut(ctx).set_constant(0.0);
       self.p.as_ref_mut(ctx).set_constant(0.0);
       self.w.as_ref_mut(ctx).set_constant(0.0);
       self.r.as_ref_mut(ctx).set_constant(0.0);
+      self.z.as_ref_mut(ctx).set_constant(0.0);
+      //self.x0.as_ref_mut(ctx).set_constant(0.0);
       self.x.as_ref_mut(ctx).set_constant(0.0);
+      //worker.read_step(&mut self.x0.as_ref_mut(ctx));
+      //self.x.as_ref_mut(ctx).copy(&self.x0.as_ref(ctx));
       worker.read_step(&mut self.x.as_ref_mut(ctx));
       self.x.as_ref_mut(ctx).vector_scale(0.1); // XXX(20160708): choose this hyperparam.
       self.xnorm.as_ref_mut_range(0, 1, ctx).vector_l2_norm(&self.x.as_ref(ctx));
@@ -186,6 +195,9 @@ impl<Iter> ParallelSolver for CgDeviceParallelSolver<Iter> where Iter: SolverIte
       let ctx = &self.ctx.set();
       self.gnorm.as_ref_mut_range(0, 1, ctx).vector_l2_norm(&self.g.as_ref(ctx));
       self.gnorm.as_ref_range(0, 1, ctx).sync_store(&mut self.gnorm_h[0 .. 1]);
+      self.m.as_ref_mut(ctx).copy(&self.g.as_ref(ctx));
+      self.m.as_ref_mut(ctx).vector_reciprocal();
+      self.m.as_ref_mut(ctx).vector_square();
     }
     worker.operator().read_direction(0, &mut self.x);
     self.iteration.step(batch_size, worker);
@@ -204,6 +216,9 @@ impl<Iter> ParallelSolver for CgDeviceParallelSolver<Iter> where Iter: SolverIte
     let mut converged = false;
     let mut last_k = 0;
     for k in 1 .. self.config.max_iters + 1 {
+      /*if k > 10 && self.rhos_h[k-1] >= self.rhos_h[0] {
+        break;
+      }*/
       if self.rhos_h[k-1] <= self.config.epsilon * self.gnorm_h[0] {
         converged = true;
         break;
@@ -233,12 +248,14 @@ impl<Iter> ParallelSolver for CgDeviceParallelSolver<Iter> where Iter: SolverIte
       self.rhos.as_ref_range(k, k+1, ctx).sync_store(&mut self.rhos_h[k .. k+1]);
       //println!("DEBUG: cg solver: iter: {} alpha[k]: {} rho[k]: {}", k, self.alphas_h[k], self.rhos_h[k]);
     }
+    if !converged && self.rhos_h[last_k] < self.rhos_h[0] {
+      converged = true;
+    }
     {
       let ctx = &self.ctx.set();
       self.xnorm.as_ref_mut_range(0, 1, ctx).vector_l2_norm(&self.x.as_ref(ctx));
       self.xnorm.as_ref_range(0, 1, ctx).sync_store(&mut self.xnorm_h[0 .. 1]);
     }
-    worker.operator().read_grad(0, &mut self.x);
 
     // FIXME(20160707): line search.
     {
@@ -246,8 +263,11 @@ impl<Iter> ParallelSolver for CgDeviceParallelSolver<Iter> where Iter: SolverIte
       self.gxdot.as_ref_mut_range(0, 1, ctx).vector_inner_prod(&self.g.as_ref(ctx), &self.x.as_ref(ctx));
       self.gxdot.as_ref_range(0, 1, ctx).sync_store(&mut self.gxdot_h[0 .. 1]);
     }
-    let mut alpha = 0.1;
-    if converged {
+    let mut alpha = 0.0;
+    if converged && self.gxdot_h[0] < 0.0 {
+      let delta = 0.01;
+      alpha = (delta / -self.gxdot_h[0]).sqrt();
+      worker.operator().read_grad(0, &mut self.x);
       worker.accumulate_grad(1.0, 0.0);
       worker.step(alpha);
     }

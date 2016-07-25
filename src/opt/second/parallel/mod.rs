@@ -81,6 +81,8 @@ impl<Solver> ParallelSecondOpt<Solver> where Solver: ParallelSolver {
     worker.operator().reset_grad();
     //worker.operator().reset_stats();
 
+    let mut cache_samples = vec![];
+    let mut cache_seed = vec![];
     let mut batch_seed = vec![];
 
     let mut start_time = get_time();
@@ -102,10 +104,14 @@ impl<Solver> ParallelSecondOpt<Solver> where Solver: ParallelSolver {
     let mut acc_batch_size = 0;
 
     loop {
-      train_data.reset();
-      for (datum, maybe_label) in &mut train_data {
+      cache_samples.clear();
+      cache_seed.clear();
+      for (datum, maybe_label) in (&mut train_data).take(minibatch_size) {
+        cache_samples.push((datum, maybe_label));
+      }
+      for &(ref datum, ref maybe_label) in cache_samples.iter() {
         match datum {
-          SampleDatum::WHCBytes(ref frame_bytes) => {
+          &SampleDatum::WHCBytes(ref frame_bytes) => {
             //println!("DEBUG: frame: {:?}", frame_bytes.as_slice());
             let frame_len = frame_bytes.bound().len();
             worker.operator()
@@ -119,8 +125,8 @@ impl<Solver> ParallelSecondOpt<Solver> where Solver: ParallelSolver {
           _ => unimplemented!(),
         }
         match maybe_label {
-          Some(ref label) => worker.operator().stage_label(batch_counter, label),
-          None => panic!(),
+          &Some(ref label) => worker.operator().stage_label(batch_counter, label),
+          &None => panic!(),
         }
         worker.operator().stage_weight(batch_counter, minibatch_weight);
         batch_counter += 1;
@@ -136,6 +142,7 @@ impl<Solver> ParallelSecondOpt<Solver> where Solver: ParallelSolver {
           worker.operator().load_weights(batch_size);
           batch_seed.clear();
           worker.operator().save_seed(&mut batch_seed);
+          cache_seed.extend_from_slice(&batch_seed);
           worker.operator().forward(batch_size, OpPhase::Training{t: iter_counter});
           worker.operator().backward(batch_size);
           worker.operator().store_output_categories(batch_size);
@@ -170,9 +177,7 @@ impl<Solver> ParallelSecondOpt<Solver> where Solver: ParallelSolver {
             worker.accumulate_grad(1.0, 0.0);
             worker.step(-0.1);
           } else {
-            self.solver.solve(batch_size, worker, &batch_seed); // FIXME(20160708)
-            //worker.accumulate_grad(1.0, 0.0);
-            //worker.step(0.1);
+            self.solver.solve(batch_size, worker, &cache_samples, &cache_seed);
           }
 
           //worker.save_param();

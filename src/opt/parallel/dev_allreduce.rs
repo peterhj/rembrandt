@@ -8,6 +8,7 @@ use array_cuda::device::linalg::{VectorExt, AsyncVectorExt};
 use array_cuda::device::memory::{DeviceBufferInitExt, DeviceBuffer, DeviceBufferRef, DeviceBufferRefMut, RawDeviceBuffer};
 use comm_cuda::{RingDeviceBufCommBuilder, RingDeviceBufComm};
 use fixarith::{Fix24x64};
+use multicore::{SpinBarrier};
 //use nccl::{NcclUniqueId, NcclComm, NcclSumOp};
 
 use rand::{Rng, thread_rng};
@@ -15,6 +16,50 @@ use std::ops::{Deref, DerefMut};
 use std::rc::{Rc};
 use std::sync::{Arc, Barrier, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering, fence};
+
+/*struct PaddedAtomicUsize {
+  atom: AtomicUsize,
+  _pad: [u64; 7],
+}
+
+pub struct SpinBarrier {
+  counter:  AtomicUsize,
+  epoch:    AtomicUsize,
+  //epochs:   Vec<PaddedAtomicUsize>,
+  num_thrs: usize,
+}
+
+impl SpinBarrier {
+  pub fn new(num_thrs: usize) -> SpinBarrier {
+    /*let mut epochs = Vec::with_capacity(num_thrs);
+    for _ in 0 .. num_thrs {
+      epochs.push(PaddedAtomicUsize{atom: AtomicUsize::new(0), _pad: [0, 0, 0, 0, 0, 0, 0]});
+    }*/
+    SpinBarrier{
+      counter:  AtomicUsize::new(0),
+      epoch:    AtomicUsize::new(0),
+      //epochs:   epochs,
+      num_thrs: num_thrs,
+    }
+  }
+
+  pub fn wait(&self) {
+    let prev_epoch = self.epoch.load(Ordering::Acquire);
+    let tid = self.counter.fetch_add(1, Ordering::AcqRel);
+    //let prev_epoch = self.epochs[tid].atom.load(Ordering::Acquire);
+    if tid == self.num_thrs - 1 {
+      self.counter.store(0, Ordering::Release);
+      self.epoch.fetch_add(1, Ordering::AcqRel);
+      /*for r in 0 .. self.num_thrs {
+        self.epochs[r].atom.fetch_add(1, Ordering::AcqRel);
+      }*/
+    } else {
+      while self.epoch.load(Ordering::Acquire) == prev_epoch {
+      //while self.epochs[tid].atom.load(Ordering::Acquire) == prev_epoch {
+      }
+    }
+  }
+}*/
 
 #[derive(Clone)]
 struct DevWorkerSharedData {
@@ -214,6 +259,7 @@ impl OpWrite for OpCursor<RingDeviceBufComm<f32>> {
 pub struct DeviceAllreduceOptWorkerBuilder {
   num_workers:  usize,
   shared:       DevWorkerSharedData,
+  barrier:      Arc<SpinBarrier>,
   comm_builder: RingDeviceBufCommBuilder<f32>,
 }
 
@@ -227,6 +273,7 @@ impl DeviceAllreduceOptWorkerBuilder {
     DeviceAllreduceOptWorkerBuilder{
       num_workers:  num_workers,
       shared:       shared,
+      barrier:      Arc::new(SpinBarrier::new(num_workers)),
       comm_builder: RingDeviceBufCommBuilder::new(num_workers),
     }
   }
@@ -251,6 +298,7 @@ impl DeviceAllreduceOptWorkerBuilder {
       context:      context.clone(),
       shared:       self.shared,
       operator:     operator,
+      barrier:      self.barrier.clone(),
       comm:         comm,
       grad_acc:     OpCursor::new(DeviceBuffer::zeros(padded_len, ctx)),
       saved_param:  OpCursor::new(DeviceBuffer::zeros(padded_len, ctx)),
@@ -269,6 +317,7 @@ pub struct DeviceAllreduceOptWorker {
   context:      Rc<DeviceContext>,
   shared:       DevWorkerSharedData,
   operator:     Box<CompleteOperator>,
+  barrier:      Arc<SpinBarrier>,
   comm:         OpCursor<RingDeviceBufComm<f32>>,
   grad_acc:     OpCursor<DeviceBuffer<f32>>,
   saved_param:  OpCursor<DeviceBuffer<f32>>,
@@ -389,10 +438,21 @@ impl ParallelSgdOptWorker for DeviceAllreduceOptWorker {
 
   fn sync_grad(&mut self) {
     self.operator.write_grad(0, &mut self.comm);
-    self.comm.inner.barrier();
+    //self.comm.inner.barrier();
+
+    // FIXME(20160712): debugging.
+    /*{
+      let ctx = &self.context.set();
+      ctx.blocking_sync();
+    }*/
+    //self.comm.inner.barrier();
+    //self.barrier.wait();
+    //self.comm.inner.reduce_scatter();
+    //self.comm.inner.allgather();
     self.comm.inner.allreduce_average();
+
     self.operator.read_grad(0, &mut self.comm);
-    self.comm.inner.barrier();
+    //self.comm.inner.barrier();
   }
 
   fn accumulate_grad(&mut self, alpha: f32, mu: f32) {
@@ -405,6 +465,11 @@ impl ParallelSgdOptWorker for DeviceAllreduceOptWorker {
 
   fn step(&mut self, step_size: f32) {
     self.operator.step(0, step_size, &mut self.grad_acc);
+  }
+
+  fn block(&mut self) {
+    let ctx = &self.context.set();
+    ctx.blocking_sync();
   }
 }
 

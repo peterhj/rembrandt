@@ -32,6 +32,14 @@ path = "src/lib.rs"
 name = "test-comm"
 path = "tools/test-comm.rs"
 
+#[[bin]]
+#name = "bench-barrier"
+#path = "tools/bench-barrier.rs"
+
+#[[bin]]
+#name = "bench-mpi-barrier"
+#path = "tools/bench-mpi-barrier.rs"
+
 [[bin]]
 name = "dump-array3d-header"
 path = "tools/dump-array3d-header.rs"
@@ -110,11 +118,13 @@ cuda_dnn = { path = "../libcuda_dnn" } #, features = ["cudnn_v3"] }
 episodb = { path = "../../episodb" }
 fixarith = { path = "../../libfixarith" }
 lmdb = { path = "../liblmdb" }
+#mpi = { path = "../libmpi", features = ["openmpi"] }
 #mpich = { path = "../../libmpich" }
-nccl = { git = "https://github.com/peterhj/libnccl.git" }
-openmpi = { path = "../../libopenmpi" }
-procgroup = { path = "../../libprocgroup" }
-procgroup_mpi = { path = "../../libprocgroup_mpi" }
+multicore = { path = "../libmulticore" }
+#nccl = { git = "https://github.com/peterhj/libnccl.git" }
+#openmpi = { path = "../../libopenmpi" }
+#procgroup = { path = "../../libprocgroup" }
+#procgroup_mpi = { path = "../../libprocgroup_mpi" }
 rembrandt_kernels = { path = "../rembrandt_kernels" }
 #rembrandt_reportserv = { path = "../rembrandt_reportserv" }
 rng = { path = "../../librng" }
