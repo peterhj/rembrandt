@@ -9,6 +9,7 @@ extern crate cuda_dnn;
 extern crate episodb;
 extern crate fixarith;
 extern crate lmdb;
+extern crate mpi;
 //#[cfg(feature = "mpich")]
 //extern crate mpich as mpi;
 extern crate multicore;

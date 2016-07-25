@@ -118,7 +118,7 @@ cuda_dnn = { path = "../libcuda_dnn" } #, features = ["cudnn_v3"] }
 episodb = { path = "../../episodb" }
 fixarith = { path = "../../libfixarith" }
 lmdb = { path = "../liblmdb" }
-#mpi = { path = "../libmpi", features = ["openmpi"] }
+mpi = { path = "../libmpi", features = ["openmpi"] }
 #mpich = { path = "../../libmpich" }
 multicore = { path = "../libmulticore" }
 #nccl = { git = "https://github.com/peterhj/libnccl.git" }
