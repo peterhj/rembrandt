@@ -10,13 +10,7 @@ extern crate episodb;
 extern crate fixarith;
 extern crate lmdb;
 extern crate mpi;
-//#[cfg(feature = "mpich")]
-//extern crate mpich as mpi;
 extern crate multicore;
-//#[cfg(feature = "openmpi")]
-//extern crate openmpi as mpi;
-//extern crate procgroup;
-//extern crate procgroup_mpi;
 extern crate protobuf;
 extern crate rembrandt_kernels;
 extern crate rng;
@@ -24,7 +18,6 @@ extern crate stb_image;
 extern crate toggle;
 extern crate turbojpeg;
 extern crate varraydb;
-//extern crate worker as worker_;
 
 #[macro_use]
 extern crate log;

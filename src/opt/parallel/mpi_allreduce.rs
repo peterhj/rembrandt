@@ -142,7 +142,8 @@ impl ParallelSgdOptWorker for MpiAllreduceOptWorker {
 
   fn shared_seed(&mut self) -> [u64; 2] {
     //self.shared.shared_seed
-    unimplemented!();
+    //unimplemented!();
+    [12345678, 12345678]
   }
 
   fn reduce_scalar(&self, count: usize) -> usize {
@@ -158,7 +159,8 @@ impl ParallelSgdOptWorker for MpiAllreduceOptWorker {
     self.comm.inner.barrier();
     fence(Ordering::AcqRel);
     x*/
-    unimplemented!();
+    //unimplemented!();
+    0
   }
 
   fn reduce_scalar_f32(&self, count: f32) -> f32 {
@@ -177,7 +179,8 @@ impl ParallelSgdOptWorker for MpiAllreduceOptWorker {
     fence(Ordering::AcqRel);
     let sum = Fix24x64::from_usize_repr(x);
     sum.into_f64() as f32*/
-    unimplemented!();
+    //unimplemented!();
+    0.0
   }
 
   fn signal_checkpoint(&mut self) {
@@ -187,7 +190,7 @@ impl ParallelSgdOptWorker for MpiAllreduceOptWorker {
   fn wait_checkpoint(&mut self) -> bool {
     if self.sig_chkpt {
       //self.comm.inner.barrier();
-      unimplemented!();
+      self.mpi_comm.barrier().unwrap();
       self.sig_chkpt = false;
       true
     } else {
@@ -199,7 +202,8 @@ impl ParallelSgdOptWorker for MpiAllreduceOptWorker {
     /*let local_loss = self.operator().store_loss(batch_size);
     let total_loss = self.reduce_scalar_f32(local_loss) / self.num_workers() as f32;
     total_loss*/
-    unimplemented!();
+    //unimplemented!();
+    0.0
   }
 
   fn sync_param(&mut self) {
@@ -243,5 +247,9 @@ impl ParallelSgdOptWorker for MpiAllreduceOptWorker {
 
   fn step(&mut self, step_size: f32) {
     self.operator.step(0, step_size, &mut self.grad_acc);
+  }
+
+  fn block(&mut self) {
+    //unimplemented!();
   }
 }

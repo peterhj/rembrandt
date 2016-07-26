@@ -73,6 +73,10 @@ name = "dev-graph-train-imagenet"
 path = "tools/dev-graph-train-imagenet.rs"
 
 [[bin]]
+name = "mpi-graph-train-imagenet"
+path = "tools/mpi-graph-train-imagenet.rs"
+
+[[bin]]
 name = "second-dev-graph-train-imagenet"
 path = "tools/second-dev-graph-train-imagenet.rs"
 

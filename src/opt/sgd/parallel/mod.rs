@@ -40,7 +40,7 @@ pub trait ParallelSgdOptWorker {
   fn accumulate_grad(&mut self, alpha: f32, mu: f32);
   fn step(&mut self, step_size: f32);
 
-  fn block(&mut self) { unimplemented!(); }
+  fn block(&mut self);
 }
 
 #[derive(Clone, Debug)]
@@ -100,30 +100,14 @@ impl ParallelSgdOpt {
         init_t = t;
       }
     }*/
-    //let shared_seed = operator.shared_seed();
-    //let seed = [thread_rng().next_u64(), thread_rng().next_u64()];
+
     let shared_seed = worker.shared_seed();
     worker.operator().init_param(shared_seed);
     worker.save_param();
-    /*worker.operator().reset_grad();
-    //worker.operator().reset_stats();*/
 
     let mut cache_samples = vec![];
     let mut cache_seed = vec![];
     let mut batch_seed = vec![];
-
-    /*// If we are using the standard Nesterov update, apply some extra
-    // momentum before the next iteration begins.
-    match self.config.momentum {
-      Momentum::UpdateNesterov{mu} => {
-        if init_t > 0 {
-          //worker.operator().update_param(mu);
-          //let step_size = self.config.step_size.at_iter(init_t);
-          worker.step(mu);
-        }
-      }
-      _ => {}
-    }*/
 
     //let mut start_time = get_time();
     //let mut minibatch_start_time = start_time;
@@ -199,7 +183,6 @@ impl ParallelSgdOpt {
           &Some(ref label) => worker.operator().stage_label(batch_counter, label),
           &None => panic!(),
         }
-        //worker.operator().stage_label(batch_counter, &maybe_label.unwrap());
         worker.operator().stage_weight(batch_counter, minibatch_weight);
         batch_counter += 1;
         local_counter += 1;
@@ -209,14 +192,14 @@ impl ParallelSgdOpt {
         // With a full batch of data, compute a full forward/backward pass.
         assert!(batch_counter <= batch_size);
         if batch_counter == batch_size {
-          //worker.operator().next();
-          //worker.operator().input_worker.operator()().load_frames(batch_size);
+          //worker.operator().load_frames(batch_size);
           worker.operator().wait_preload_frames(batch_size);
           worker.operator().load_labels(batch_size);
           worker.operator().load_weights(batch_size);
           batch_seed.clear();
-          worker.operator().save_seed(&mut batch_seed);
+          worker.operator().save_seed(&mut batch_seed); // FIXME(201607xx): really, this primarily generates a seed for the current batch, but also saves it.
           cache_seed.extend_from_slice(&batch_seed);
+          //worker.operator().set_batch_size(batch_size);
           worker.operator().forward(batch_size, OpPhase::Training{t: iter_counter});
           //worker.operator().estimate_stats(acc_batch_size, batch_size);
           worker.operator().backward(batch_size);
