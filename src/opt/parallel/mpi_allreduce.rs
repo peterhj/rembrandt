@@ -16,63 +16,14 @@ use std::rc::{Rc};
 use std::sync::{Arc, Barrier, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering, fence};
 
-/*#[derive(Clone)]
-pub struct MpiAllreduceOptWorkerBuilder {
-  num_workers:  usize,
-  shared:       DevWorkerSharedData,
-  comm_builder: RingDeviceBufCommBuilder<f32>,
-}
-
-impl MpiAllreduceOptWorkerBuilder {
-  pub fn new(num_workers: usize) -> MpiAllreduceOptWorkerBuilder {
-    let shared = DevWorkerSharedData{
-      shared_seed:  [thread_rng().next_u64(), thread_rng().next_u64()],
-      reduce_count: Arc::new(AtomicUsize::new(0)),
-    };
-    MpiAllreduceOptWorkerBuilder{
-      num_workers:  num_workers,
-      shared:       shared,
-      comm_builder: RingDeviceBufCommBuilder::new(num_workers),
-    }
-  }
-
-  pub fn into_worker(self, worker_rank: usize, context: Rc<DeviceContext>, operator: Box<CompleteOperator>) -> MpiAllreduceOptWorker {
-    let params_len = operator.params_len();
-    match self.comm_builder.buf_len() {
-      Some(buf_len) => assert_eq!(params_len, buf_len),
-      None => self.comm_builder.set_buf_len(params_len),
-    }
-    let comm = OpCursor::new(self.comm_builder.into_comm(worker_rank, context.clone()));
-    let pad = self.num_workers * 32;
-    let padded_len = (params_len + pad - 1) / pad * pad;
-    let ctx = &(*context).as_ref();
-    MpiAllreduceOptWorker{
-      worker_rank:  worker_rank,
-      num_workers:  self.num_workers,
-      context:      context.clone(),
-      shared:       self.shared,
-      operator:     operator,
-      comm:         comm,
-      grad_acc:     OpCursor::new(DeviceBuffer::zeros(padded_len, ctx)),
-      saved_param:  OpCursor::new(DeviceBuffer::zeros(padded_len, ctx)),
-      w_norm:       DeviceBuffer::zeros(1, ctx),
-      w_norm_h:     vec![0.0],
-      g_norm:       DeviceBuffer::zeros(1, ctx),
-      g_norm_h:     vec![0.0],
-      sig_chkpt:    false,
-    }
-  }
-}*/
-
 pub struct MpiAllreduceOptWorker {
   mpi_ctx:      MpiCtx,
   mpi_comm:     MpiComm,
   worker_rank:  usize,
   num_workers:  usize,
   context:      Rc<DeviceContext>,
-  //shared:       DevWorkerSharedData,
+  shared_seed:  [u64; 2],
   operator:     Box<CompleteOperator>,
-  //comm:         OpCursor<RingDeviceBufComm<f32>>,
   grad_acc:     OpCursor<DeviceBuffer<f32>>,
   grad_buf:     OpCursor<DeviceBuffer<f32>>,
   grad_buf_src: Vec<f32>,
@@ -88,15 +39,15 @@ pub struct MpiAllreduceOptWorker {
 impl MpiAllreduceOptWorker {
   pub fn new(context: Rc<DeviceContext>, operator: Box<CompleteOperator>) -> MpiAllreduceOptWorker {
     let params_len = operator.params_len();
-    /*match self.comm_builder.buf_len() {
-      Some(buf_len) => assert_eq!(params_len, buf_len),
-      None => self.comm_builder.set_buf_len(params_len),
-    }*/
-    //let comm = OpCursor::new(self.comm_builder.into_comm(worker_rank, context.clone()));
     let mpi_ctx = MpiCtx::new(MpiThreadLevel::Serialized);
-    let mpi_comm = MpiComm::world(&mpi_ctx);
+    let mut mpi_comm = MpiComm::world(&mpi_ctx);
     let worker_rank = mpi_comm.rank().unwrap();
     let num_workers = mpi_comm.size().unwrap();
+    let mut shared_seed = [0, 0];
+    if worker_rank == 0 {
+      shared_seed = [thread_rng().next_u64(), thread_rng().next_u64()];
+    }
+    mpi_comm.nonblocking_broadcast(&mut shared_seed, 0).unwrap().wait().unwrap();
     let pad = num_workers * 32;
     let padded_len = (params_len + pad - 1) / pad * pad;
     let ctx = &(*context).as_ref();
@@ -110,9 +61,8 @@ impl MpiAllreduceOptWorker {
       worker_rank:  worker_rank,
       num_workers:  num_workers,
       context:      context.clone(),
-      //shared:       self.shared,
+      shared_seed:  shared_seed,
       operator:     operator,
-      //comm:         comm,
       grad_acc:     OpCursor::new(DeviceBuffer::zeros(padded_len, ctx)),
       grad_buf:     OpCursor::new(DeviceBuffer::zeros(padded_len, ctx)),
       grad_buf_src: grad_buf_src,
@@ -141,9 +91,7 @@ impl ParallelSgdOptWorker for MpiAllreduceOptWorker {
   }
 
   fn shared_seed(&mut self) -> [u64; 2] {
-    //self.shared.shared_seed
-    //unimplemented!();
-    [12345678, 12345678]
+    self.shared_seed
   }
 
   fn reduce_scalar(&self, count: usize) -> usize {
@@ -189,7 +137,6 @@ impl ParallelSgdOptWorker for MpiAllreduceOptWorker {
 
   fn wait_checkpoint(&mut self) -> bool {
     if self.sig_chkpt {
-      //self.comm.inner.barrier();
       self.mpi_comm.barrier().unwrap();
       self.sig_chkpt = false;
       true
@@ -229,7 +176,8 @@ impl ParallelSgdOptWorker for MpiAllreduceOptWorker {
       self.grad_buf.as_ref_mut(ctx).vector_scale(1.0 / (self.num_workers as f32));
       self.grad_buf.as_ref(ctx).sync_store(&mut self.grad_buf_src);
     }
-    self.mpi_comm.nonblocking_allreduce(&self.grad_buf_src, &mut self.grad_buf_dst, MpiSumOp);
+    let mut status = self.mpi_comm.nonblocking_allreduce(&self.grad_buf_src, &mut self.grad_buf_dst, MpiSumOp).unwrap();
+    status.wait().unwrap();
     {
       let ctx = &self.context.set();
       self.grad_buf.as_ref_mut(ctx).sync_load(&self.grad_buf_dst);
@@ -250,6 +198,7 @@ impl ParallelSgdOptWorker for MpiAllreduceOptWorker {
   }
 
   fn block(&mut self) {
-    //unimplemented!();
+    let ctx = &self.context.set();
+    ctx.blocking_sync();
   }
 }

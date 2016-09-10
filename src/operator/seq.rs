@@ -4,8 +4,6 @@ use operator::{
   OperatorNode, OperatorConfig,
   OpCapability, OpPhase,
   Regularization,
-  Pool2dOperatorConfig,
-  DropoutOperatorConfig,
 };
 use operator::input::{
   Data3dOperatorConfig,
@@ -24,6 +22,12 @@ use operator::conv::{
   ProjStackResConv2dOperatorConfig,
   BotResConv2dOperatorConfig,
   ProjBotResConv2dOperatorConfig,
+};
+use operator::dropout::{
+  DropoutOperatorConfig,
+};
+use operator::pool::{
+  Pool2dOperatorConfig,
 };
 
 use array::{Array2d};
@@ -112,8 +116,8 @@ impl SequentialOperatorConfig {
     self
   }
 
-  pub fn softmax_kl_loss(&mut self, cfg: CategoricalLossConfig) -> &mut Self  {
-    self.loss_op = Some(OperatorConfig::SoftmaxKLLoss(cfg));
+  pub fn softmax_nll_loss(&mut self, cfg: CategoricalLossConfig) -> &mut Self  {
+    self.loss_op = Some(OperatorConfig::SoftmaxNLLLoss(cfg));
     self
   }
 }

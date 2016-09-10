@@ -2,6 +2,7 @@ use data::{SampleLabel};
 use operator::{
   Operator, InputOperator, LossOperator, CompleteOperator,
   OpRead, OpWrite,
+  DevOperator, DevOpRead, DevOpWrite,
   OperatorVariant,
   OperatorConfig,
   OpCapability,
@@ -10,7 +11,6 @@ use operator::{
   Regularization,
   SplitOperatorConfig,
   JoinOperatorConfig,
-  Pool2dOperatorConfig,
 };
 use operator::affine::{
   AffineOperatorConfig,
@@ -32,6 +32,7 @@ use operator::loss::{
   CategoricalLossConfig,
 };
 use operator::pool::{
+  Pool2dOperatorConfig,
 };
 
 use array::{Array2d};
@@ -190,6 +191,7 @@ impl GraphOperatorConfig {
       fwd_backend:      cfg.fwd_backend,
       bwd_filt_backend: cfg.bwd_filt_backend,
       bwd_data_backend: cfg.bwd_data_backend,
+      bnorm_backend:    cfg.bnorm_backend,
     };
     let conv2_cfg = BNormConv2dOperatorConfig{
       in_dims:          cfg.in_dims,
@@ -205,6 +207,7 @@ impl GraphOperatorConfig {
       fwd_backend:      cfg.fwd_backend,
       bwd_filt_backend: cfg.bwd_filt_backend,
       bwd_data_backend: cfg.bwd_data_backend,
+      bnorm_backend:    cfg.bnorm_backend,
     };
     let join_cfg = JoinOperatorConfig{
       num_in_arms:  2,
@@ -257,6 +260,7 @@ impl GraphOperatorConfig {
       fwd_backend:      Conv2dFwdBackend::CudnnImplicitPrecompGemm,
       bwd_filt_backend: Conv2dBwdFilterBackend::CudnnNonDeterministic,
       bwd_data_backend: Conv2dBwdDataBackend::CudnnDeterministic,
+      bnorm_backend:    cfg.bnorm_backend,
     };
     let conv1_cfg = BNormConv2dOperatorConfig{
       in_dims:          cfg.in_dims,
@@ -273,6 +277,7 @@ impl GraphOperatorConfig {
       //bwd_backend:      cfg.bwd_backend,
       bwd_filt_backend: cfg.bwd_filt_backend,
       bwd_data_backend: cfg.bwd_data_backend,
+      bnorm_backend:    cfg.bnorm_backend,
     };
     let conv2_cfg = BNormConv2dOperatorConfig{
       in_dims:          cfg.out_dims,
@@ -289,6 +294,7 @@ impl GraphOperatorConfig {
       //bwd_backend:      cfg.bwd_backend,
       bwd_filt_backend: cfg.bwd_filt_backend,
       bwd_data_backend: cfg.bwd_data_backend,
+      bnorm_backend:    cfg.bnorm_backend,
     };
     let join_cfg = JoinOperatorConfig{
       num_in_arms:  2,
@@ -329,10 +335,10 @@ impl GraphOperatorConfig {
     self
   }
 
-  pub fn softmax_kl_loss(&mut self, key: &str, in_key: &str, cfg: CategoricalLossConfig) -> &mut Self {
+  pub fn softmax_nll_loss(&mut self, key: &str, in_key: &str, cfg: CategoricalLossConfig) -> &mut Self {
     self.nodes.insert(key.to_owned(), ConfigNode{
       in_keys:  vec![in_key.to_owned()],
-      config:   OperatorConfig::SoftmaxKLLoss(cfg),
+      config:   OperatorConfig::SoftmaxNLLLoss(cfg),
     });
     let id = self.id_counter;
     self.key_ids.insert(key.to_owned(), id);
@@ -484,6 +490,42 @@ impl GraphOperator {
   }
 }
 
+impl DevOperator for GraphOperator {
+  fn dev_load_grad(&mut self, init_offset: usize, reader: &mut DevOpRead) -> usize {
+    let mut offset = init_offset;
+    for &id in self.fwd_toporder.iter() {
+      offset += self.operators[id].downcast_dev().dev_load_grad(offset, reader);
+    }
+    offset - init_offset
+  }
+
+  fn dev_store_grad(&mut self, init_offset: usize, writer: &mut DevOpWrite) -> usize {
+    let mut offset = init_offset;
+    for &id in self.fwd_toporder.iter() {
+      offset += self.operators[id].downcast_dev().dev_store_grad(offset, writer);
+    }
+    offset - init_offset
+  }
+
+  /*fn forward_and_dev_store_param(&mut self, batch_size: usize, phase: OpPhase, init_offset: usize, writer: &mut DevOpWrite) -> usize {
+    let mut offset = init_offset;
+    for &id in self.fwd_toporder.iter() {
+      self.operators[id].forward(batch_size, phase);
+      offset += self.operators[id].write_param(offset, writer);
+    }
+    offset - init_offset
+  }*/
+
+  fn backward_and_dev_store_grad(&mut self, batch_size: usize, init_offset: usize, writer: &mut DevOpWrite) -> usize {
+    let mut offset = init_offset;
+    for &id in self.bwd_toporder.iter() {
+      self.operators[id].backward(batch_size);
+      offset += self.operators[id].downcast_dev().dev_store_grad(offset, writer);
+    }
+    offset - init_offset
+  }
+}
+
 impl Operator for GraphOperator {
   fn batch_size(&self) -> usize {
     self.operators[0].batch_size()
@@ -520,7 +562,7 @@ impl Operator for GraphOperator {
     offset
   }
 
-  fn forward(&mut self, batch_size: usize, phase: OpPhase) {
+  fn forward(&mut self, batch_size: usize, phase: OpPhase, /*writer: &mut OpRead*/) {
     for &id in self.fwd_toporder.iter() {
       self.operators[id].forward(batch_size, phase);
     }

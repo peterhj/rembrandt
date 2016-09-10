@@ -17,8 +17,8 @@ use rembrandt::data::{
   GenerateRandomArray3dDataIter,
 };
 use rembrandt::data::codec::{
-  Array3dDataCodec,
-  TurboJpegDataCodec,
+  SupervisedArray3dSampleCodec,
+  SupervisedTurboJpegSampleCodec,
 };
 use rembrandt::data::varraydb_data::{VarrayDbShard};
 /*use rembrandt::data_new::{
@@ -70,9 +70,9 @@ use std::sync::{Arc, Barrier};
 fn main() {
   env_logger::init().unwrap();
 
-  let num_local_workers = 4;
+  let num_local_workers = 2;
+  let minibatch_size = 128;
   let batch_size = 32;
-  let minibatch_size = 64;
   //info!("batch size: {}", batch_size);
   info!("num workers: {} batch size: {}", num_local_workers, batch_size);
 
@@ -126,23 +126,31 @@ fn main() {
             AsyncQueueDataIter::new(
             //CyclicSampleDataIter::new(
             RandomSampleDataIter::new(
-            VarrayDbShard::open_partition(
+            /*DualVarrayDbShard::open_partition(
                 &PathBuf::from("/rscratch/phj/data/ilsvrc2012_multiv2_shuf/ilsvrc2012_maxscale480_shuf_train_data.varraydb"),
                 &PathBuf::from("/rscratch/phj/data/ilsvrc2012_multiv2_shuf/ilsvrc2012_maxscale480_shuf_train_labels.varraydb"),
                 TurboJpegDataCodec::new(),
                 //worker.worker_rank(), worker.num_workers(),
                 //tid, num_local_workers,
+                0, 1,*/
+            VarrayDbShard::open_partition(
+                &PathBuf::from("/rscratch/phj/data/ilsvrc2012_v3_shuf/ilsvrc2012_maxscale480_shuf_train_data.varraydb"),
+                SupervisedTurboJpegSampleCodec::new(),
                 0, 1,
             )));
 
         let mut valid_data =
             //AsyncQueueDataIter::new(
             CyclicSampleDataIter::new(
-            VarrayDbShard::open_partition(
+            /*DualVarrayDbShard::open_partition(
                 &PathBuf::from("/rscratch/phj/data/ilsvrc2012_multiv2_orig/ilsvrc2012_scale256_orig_valid_data.varraydb"),
                 &PathBuf::from("/rscratch/phj/data/ilsvrc2012_multiv2_orig/ilsvrc2012_scale256_orig_valid_labels.varraydb"),
                 Array3dDataCodec::new(),
                 //worker.worker_rank(), worker.num_workers(),
+                tid, num_local_workers,*/
+            VarrayDbShard::open_partition(
+                &PathBuf::from("/rscratch/phj/data/ilsvrc2012_v3_orig/ilsvrc2012_scale256_orig_valid_data.varraydb"),
+                SupervisedArray3dSampleCodec::new(),
                 tid, num_local_workers,
             ));
 

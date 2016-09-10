@@ -98,7 +98,12 @@ pub enum SampleLabel {
   //MultiCategory2{categories1: Vec<i32>, category2: i32},
 }
 
+#[derive(Clone)]
+pub enum DataSample {
+}
+
 pub trait DataShard {
+  //fn shard_offset(&self) -> Option<usize> { None }
   fn num_shard_samples(&self) -> usize;
   fn num_total_samples(&self) -> usize;
 }
@@ -110,6 +115,11 @@ pub trait DataShard {
 
 pub trait IndexedDataShard: DataShard {
   fn get_sample(&mut self, idx: usize) -> (SampleDatum, Option<SampleLabel>);
+}
+
+pub trait RangePartitionDataShard: IndexedDataShard {
+  fn shard_offset(&self) -> usize;
+  fn shard_len(&self) -> usize;
 }
 
 pub trait EpisodicDataShard {

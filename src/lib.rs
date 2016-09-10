@@ -1,3 +1,11 @@
+#![allow(dead_code)]
+#![allow(unused_assignments)]
+#![allow(unused_comparisons)]
+#![allow(unused_imports)]
+#![allow(unused_mut)]
+#![allow(unused_variables)]
+
+//#![feature(associated_type_defaults)]
 #![feature(btree_range)]
 #![feature(collections_bound)]
 
@@ -9,11 +17,11 @@ extern crate cuda_dnn;
 extern crate episodb;
 extern crate fixarith;
 extern crate lmdb;
-extern crate mpi;
 extern crate multicore;
 extern crate protobuf;
 extern crate rembrandt_kernels;
 extern crate rng;
+extern crate stat_utils;
 extern crate stb_image;
 extern crate toggle;
 extern crate turbojpeg;
@@ -30,7 +38,7 @@ extern crate rustc_serialize;
 extern crate threadpool;
 extern crate time;
 extern crate toml;
-extern crate vec_map;
+//extern crate vec_map;
 
 #[macro_use]
 pub mod util_macros;

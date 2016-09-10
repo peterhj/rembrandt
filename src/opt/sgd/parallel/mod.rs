@@ -7,6 +7,8 @@ use opt::sgd::{
 };
 
 use array::{Shape};
+use array_cuda::device::{DeviceBuffer};
+use stat_utils::online::{OnlineMeanVar};
 
 use std::fs::{File};
 use std::io::{Write, BufWriter};
@@ -20,6 +22,7 @@ pub trait ParallelSgdOptWorker {
   fn num_workers(&self) -> usize;
 
   fn operator(&mut self) -> &mut CompleteOperator;
+  //fn operator(&mut self) -> &mut CompleteOperator<Buf=DeviceBuffer<f32>>;
   fn shared_seed(&mut self) -> [u64; 2];
   fn reduce_scalar(&self, count: usize) -> usize;
   fn reduce_scalar_f32(&self, count: f32) -> f32;
@@ -107,6 +110,7 @@ impl ParallelSgdOpt {
 
     let mut cache_samples = vec![];
     let mut cache_seed = vec![];
+    //let mut cache_seed_ptr = 0;
     let mut batch_seed = vec![];
 
     //let mut start_time = get_time();
@@ -133,6 +137,8 @@ impl ParallelSgdOpt {
     let mut stats_iter_elapsed_mean = 0.0;
     let mut stats_iter_elapsed_var = 0.0;
     //let mut stats_iter_elapsed_data = Vec::with_capacity(1000);
+    let mut stats_comm_elapsed = OnlineMeanVar::new();
+
     let mut trace_path = PathBuf::from(&format!("trace-cpu.{}.log", worker.worker_rank()));
     let mut trace_file = BufWriter::with_capacity(4096, File::create(&trace_path).unwrap());
     writeln!(&mut trace_file, "idx\telapsed").unwrap();
@@ -161,6 +167,7 @@ impl ParallelSgdOpt {
 
       cache_samples.clear();
       cache_seed.clear();
+      //cache_seed_ptr = 0;
       for (datum, maybe_label) in (&mut train_data).take(minibatch_size) {
         cache_samples.push((datum, maybe_label));
       }
@@ -243,7 +250,17 @@ impl ParallelSgdOpt {
       iter_counter += 1;
 
       // Communicate to synchronize the gradient.
+      worker.block();
+      let comm_start_time = Instant::now();
+      //worker.sync_param();
       worker.sync_grad();
+      worker.block();
+      let comm_lap_time = Instant::now();
+      let comm_elapsed_dur = comm_lap_time - comm_start_time;
+      let comm_elapsed_s = comm_elapsed_dur.as_secs() as f64;
+      let comm_elapsed_ns = comm_elapsed_dur.subsec_nanos() as f64;
+      let comm_elapsed = comm_elapsed_s + comm_elapsed_ns * 1.0e-9;
+      stats_comm_elapsed.update(comm_elapsed);
 
       // Compute the update, possibly with momentum.
       match self.config.momentum {
@@ -318,7 +335,7 @@ impl ParallelSgdOpt {
         let accuracy = acc_correct_count as f32 / acc_total_count as f32;
         let avg_loss = display_acc_loss / self.config.display_iters as f32;
         //if worker.worker_rank() == 0 {
-          info!("SgdOpt: train: rank: {} iter: {} epoch: {} sample: {}/{} step: {} loss: {:.06} accuracy: {:.03} elapsed: {:.03} s mean: {:.06} s std: {:.06} s",
+          info!("SgdOpt: train: rank: {} iter: {} epoch: {} sample: {}/{} step: {} loss: {:.06} accuracy: {:.03} elapsed: {:.03} s iter: {:.06} s {:.06} s comm: {:.06} s {:.06} s",
               worker.worker_rank(),
               iter_counter, epoch_counter,
               epoch_offset, epoch_size,
@@ -332,6 +349,8 @@ impl ParallelSgdOpt {
               (stats_iter_elapsed_var / (stats_iter_counter as f64 - 2.0)).sqrt(),
               //stats_iter_elapsed_mb_mean,
               //(stats_iter_elapsed_mb_var / (self.config.display_iters as f64 - 1.0)).sqrt(),
+              stats_comm_elapsed.get_mean_std().0,
+              stats_comm_elapsed.get_mean_std().1,
           );
         //}
         display_acc_correct_count = 0;

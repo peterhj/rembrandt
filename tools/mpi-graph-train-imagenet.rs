@@ -75,8 +75,8 @@ fn main() {
   env_logger::init().unwrap();
 
   let num_local_workers = 1;
-  let batch_size = 16;
-  let minibatch_size = 16;
+  let batch_size = 32;
+  let minibatch_size = 64;
   //info!("batch size: {}", batch_size);
   info!("num workers: {} batch size: {}", num_local_workers, batch_size);
 

@@ -2,9 +2,6 @@ use operator::{
   OpCapability,
   ActivationFunction,
   ParamsInit,
-  PoolOperation,
-  Pool2dOperatorConfig,
-  DropoutOperatorConfig,
 };
 use operator::graph::{GraphOperatorConfig};
 /*use operator::comm::{
@@ -28,11 +25,19 @@ use operator::conv::{
   //Conv2dBwdBackend,
   Conv2dBwdFilterBackend,
   Conv2dBwdDataBackend,
+  Conv2dBNormBackend,
   Conv2dOperatorConfig,
   BNormMovingAverage,
   BNormConv2dOperatorConfig,
   StackResConv2dOperatorConfig,
   ProjStackResConv2dOperatorConfig,
+};
+use operator::dropout::{
+  DropoutOperatorConfig,
+};
+use operator::pool::{
+  PoolOperation,
+  Pool2dOperatorConfig,
 };
 
 use std::path::{PathBuf};
@@ -93,6 +98,7 @@ pub fn build_resnet18pool_var224x224() -> GraphOperatorConfig {
     fwd_backend:        Conv2dFwdBackend::CudnnImplicitPrecompGemm,
     bwd_filt_backend:   Conv2dBwdFilterBackend::CudnnDeterministic,
     bwd_data_backend:   Conv2dBwdDataBackend::CudnnNonDeterministic,
+    bnorm_backend:      Conv2dBNormBackend::Custom,
   };
   let pool1_op_cfg = Pool2dOperatorConfig{
     in_dims:        (112, 112, 64),
@@ -112,6 +118,7 @@ pub fn build_resnet18pool_var224x224() -> GraphOperatorConfig {
     fwd_backend:        Conv2dFwdBackend::CudnnWinograd,
     bwd_filt_backend:   Conv2dBwdFilterBackend::CudnnNonDeterministic,
     bwd_data_backend:   Conv2dBwdDataBackend::CudnnWinograd,
+    bnorm_backend:      Conv2dBNormBackend::Custom,
   };
   let pool2_op_cfg = Pool2dOperatorConfig{
     in_dims:        (56, 56, 64),
@@ -131,6 +138,7 @@ pub fn build_resnet18pool_var224x224() -> GraphOperatorConfig {
     fwd_backend:        Conv2dFwdBackend::CudnnWinograd,
     bwd_filt_backend:   Conv2dBwdFilterBackend::CudnnNonDeterministic,
     bwd_data_backend:   Conv2dBwdDataBackend::CudnnWinograd,
+    bnorm_backend:      Conv2dBNormBackend::Custom,
   };
   let res_conv3_op_cfg = StackResConv2dOperatorConfig{
     in_dims:        (28, 28, 128),
@@ -141,6 +149,7 @@ pub fn build_resnet18pool_var224x224() -> GraphOperatorConfig {
     fwd_backend:        Conv2dFwdBackend::CudnnWinograd,
     bwd_filt_backend:   Conv2dBwdFilterBackend::CudnnDeterministic,
     bwd_data_backend:   Conv2dBwdDataBackend::CudnnWinograd,
+    bnorm_backend:      Conv2dBNormBackend::Custom,
   };
   let pool3_op_cfg = Pool2dOperatorConfig{
     in_dims:        (28, 28, 128),
@@ -160,6 +169,7 @@ pub fn build_resnet18pool_var224x224() -> GraphOperatorConfig {
     fwd_backend:        Conv2dFwdBackend::CudnnWinograd,
     bwd_filt_backend:   Conv2dBwdFilterBackend::CudnnDeterministic,
     bwd_data_backend:   Conv2dBwdDataBackend::CudnnWinograd,
+    bnorm_backend:      Conv2dBNormBackend::Custom,
   };
   let res_conv4_op_cfg = StackResConv2dOperatorConfig{
     in_dims:        (14, 14, 256),
@@ -170,6 +180,7 @@ pub fn build_resnet18pool_var224x224() -> GraphOperatorConfig {
     fwd_backend:        Conv2dFwdBackend::CudnnFft,
     bwd_filt_backend:   Conv2dBwdFilterBackend::CudnnFft,
     bwd_data_backend:   Conv2dBwdDataBackend::CudnnFft,
+    bnorm_backend:      Conv2dBNormBackend::Custom,
   };
   let pool4_op_cfg = Pool2dOperatorConfig{
     in_dims:        (14, 14, 256),
@@ -189,6 +200,7 @@ pub fn build_resnet18pool_var224x224() -> GraphOperatorConfig {
     fwd_backend:        Conv2dFwdBackend::CudnnWinograd,
     bwd_filt_backend:   Conv2dBwdFilterBackend::CudnnNonDeterministic,
     bwd_data_backend:   Conv2dBwdDataBackend::CudnnWinograd,
+    bnorm_backend:      Conv2dBNormBackend::Custom,
   };
   let res_conv5_op_cfg = StackResConv2dOperatorConfig{
     in_dims:        (7, 7, 512),
@@ -199,6 +211,7 @@ pub fn build_resnet18pool_var224x224() -> GraphOperatorConfig {
     fwd_backend:        Conv2dFwdBackend::CudnnWinograd,
     bwd_filt_backend:   Conv2dBwdFilterBackend::CudnnNonDeterministic,
     bwd_data_backend:   Conv2dBwdDataBackend::CudnnWinograd,
+    bnorm_backend:      Conv2dBNormBackend::Custom,
   };
   let global_pool_op_cfg = Pool2dOperatorConfig{
     in_dims:        (7, 7, 512),
@@ -242,6 +255,6 @@ pub fn build_resnet18pool_var224x224() -> GraphOperatorConfig {
     .stack_res_conv2d(      "conv5_2",  "conv5_1",  res_conv5_op_cfg)
     .pool2d(                "pool5",    "conv5_2",  global_pool_op_cfg)
     .affine(                "affine",   "pool5",    aff1_op_cfg)
-    .softmax_kl_loss(       "loss",     "affine",   loss_cfg);
+    .softmax_nll_loss(      "loss",     "affine",   loss_cfg);
   graph_cfg
 }

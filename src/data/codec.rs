@@ -1,16 +1,19 @@
-use data::{SampleDatum};
+use data::{SampleDatum, SampleLabel};
 
 use array::{ArrayZeroExt, NdArraySerialize, Array3d};
 //use image::{GenericImage, DynamicImage, ImageFormat, load};
 use stb_image::image::{Image, LoadResult, load_from_memory};
 use turbojpeg::{TurbojpegDecoder, TurbojpegEncoder};
 
+use byteorder::{ReadBytesExt, LittleEndian};
 use std::io::{Read, Cursor};
 
 pub trait DataCodec {
-  //type Output;
-
   fn decode(&mut self, value: &[u8]) -> SampleDatum;
+}
+
+pub trait SampleCodec {
+  fn decode(&mut self, value: &[u8]) -> (SampleDatum, Option<SampleLabel>);
 }
 
 pub struct Array3dDataCodec;
@@ -29,6 +32,27 @@ impl DataCodec for Array3dDataCodec {
       Ok(arr) => arr,
     };
     SampleDatum::WHCBytes(arr)
+  }
+}
+
+pub struct SupervisedArray3dSampleCodec;
+
+impl SupervisedArray3dSampleCodec {
+  pub fn new() -> SupervisedArray3dSampleCodec {
+    SupervisedArray3dSampleCodec
+  }
+}
+
+impl SampleCodec for SupervisedArray3dSampleCodec {
+  fn decode(&mut self, value: &[u8]) -> (SampleDatum, Option<SampleLabel>) {
+    let value_len = value.len();
+    let mut reader = Cursor::new(&value[ .. value_len - 4]);
+    let arr: Array3d<u8> = match NdArraySerialize::deserialize(&mut reader) {
+      Err(_) => panic!("array3d codec: failed to deserialize"),
+      Ok(arr) => arr,
+    };
+    let label_cat = Cursor::new(&value[value_len - 4 .. ]).read_i32::<LittleEndian>().unwrap();
+    (SampleDatum::WHCBytes(arr), Some(SampleLabel::Category{category: label_cat}))
   }
 }
 
@@ -153,6 +177,71 @@ impl DataCodec for TurboJpegDataCodec {
     assert_eq!(pixels.len(), transp_pixels.len());
     let arr = Array3d::with_data(transp_pixels, (width, height, 3));
     SampleDatum::WHCBytes(arr)
+  }
+}
+
+pub struct SupervisedTurboJpegSampleCodec {
+  turbo_decoder:    TurbojpegDecoder,
+}
+
+impl SupervisedTurboJpegSampleCodec {
+  pub fn new() -> SupervisedTurboJpegSampleCodec {
+    let mut decoder = TurbojpegDecoder::create().unwrap();
+    SupervisedTurboJpegSampleCodec{
+      turbo_decoder:    decoder,
+    }
+  }
+}
+
+impl SampleCodec for SupervisedTurboJpegSampleCodec {
+  fn decode(&mut self, value: &[u8]) -> (SampleDatum, Option<SampleLabel>) {
+    let value_len = value.len();
+    let (pixels, width, height) = match self.turbo_decoder.decode_rgb8(&value[ .. value_len - 4]) {
+      Ok((head, pixels)) => {
+        (pixels, head.width, head.height)
+      }
+      Err(_) => {
+        match load_from_memory(&value[ .. value_len - 4]) {
+          LoadResult::ImageU8(mut im) => {
+            if im.depth != 3 && im.depth != 1 {
+              panic!("jpeg codec: unsupported depth: {}", im.depth);
+            }
+            assert_eq!(im.depth * im.width * im.height, im.data.len());
+
+            if im.depth == 1 {
+              let mut rgb_data = Vec::with_capacity(3 * im.width * im.height);
+              assert_eq!(im.width * im.height, im.data.len());
+              for i in 0 .. im.data.len() {
+                rgb_data.push(im.data[i]);
+                rgb_data.push(im.data[i]);
+                rgb_data.push(im.data[i]);
+              }
+              assert_eq!(3 * im.width * im.height, rgb_data.len());
+              im = Image::new(im.width, im.height, 3, rgb_data);
+            }
+            assert_eq!(3, im.depth);
+
+            (im.data, im.width, im.height)
+          }
+          LoadResult::Error(_) |
+          LoadResult::ImageF32(_) => {
+            panic!("jpeg codec: backup stb_image decoder failed");
+          }
+        }
+      }
+    };
+    let mut transp_pixels = Vec::with_capacity(pixels.len());
+    for c in 0 .. 3 {
+      for y in 0 .. height {
+        for x in 0 .. width {
+          transp_pixels.push(pixels[c + x * 3 + y * 3 * width]);
+        }
+      }
+    }
+    assert_eq!(pixels.len(), transp_pixels.len());
+    let arr = Array3d::with_data(transp_pixels, (width, height, 3));
+    let label_cat = Cursor::new(&value[value_len - 4 .. ]).read_i32::<LittleEndian>().unwrap();
+    (SampleDatum::WHCBytes(arr), Some(SampleLabel::Category{category: label_cat}))
   }
 }
 

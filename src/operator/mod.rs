@@ -9,7 +9,7 @@ use operator::input::{
 use operator::loss::{
   //LossOperator,
   CategoricalLossConfig,
-  SoftmaxKLLossOperator,
+  SoftmaxNLLLossOperator,
 };
 use operator::affine::{
   AffineOperatorConfig,
@@ -25,6 +25,14 @@ use operator::conv::{
   ProjStackResConv2dOperatorConfig,
   ProjStackResConv2dOperator,
 };
+use operator::dropout::{
+  DropoutOperatorConfig,
+  DropoutOperator,
+};
+use operator::pool::{
+  Pool2dOperatorConfig,
+  Pool2dOperator,
+};
 
 use array::{
   Array, AsyncArray, ArrayView, ArrayViewMut, ArrayZeroExt, NdArraySerialize,
@@ -32,7 +40,7 @@ use array::{
 };
 use array_cuda::device::array::{DeviceArray2d};
 use array_cuda::device::context::{DeviceContext, DeviceCtxRef};
-use array_cuda::device::linalg::{VectorExt, BlasMatrixExt, BlasVectorExt, Transpose};
+use array_cuda::device::linalg::{CoordExt, VectorExt, BlasMatrixExt, BlasVectorExt, Transpose};
 use array_cuda::device::memory::{DeviceBufferInitExt, DeviceBuffer, DeviceBufferRef, DeviceBufferRefMut};
 use array_cuda::device::num::{CastBytesExt, NumExt};
 use array_cuda::device::random::{RandomSampleExt, UniformDist, GaussianDist};
@@ -47,37 +55,59 @@ use rembrandt_kernels::ffi::*;
 use rng::xorshift::{Xorshiftplus128Rng};
 
 use rand::{Rng, SeedableRng, thread_rng};
-use rand::distributions::{IndependentSample};
-use rand::distributions::normal::{Normal};
-use rand::distributions::range::{Range};
 use std::cell::{RefCell, Ref, RefMut};
 use std::cmp::{max, min};
 use std::collections::{Bound, BTreeMap};
-use std::fs::{File};
 use std::io::{Cursor};
 use std::iter::{repeat};
 use std::marker::{PhantomData};
 use std::ops::{Deref, DerefMut};
-use std::path::{PathBuf};
 use std::rc::{Rc};
 
 pub mod affine;
-//pub mod comm;
 pub mod conv;
+pub mod dropout;
 pub mod graph;
 pub mod input;
 pub mod loss;
 pub mod pool;
-pub mod seq;
-//pub mod worker;
+//pub mod seq;
+
+pub type SharedDeviceBuf<T> = Rc<RefCell<DeviceBuffer<T>>>;
+
+/*pub trait BufRefMut<'buf> {
+}
+
+impl<'buf> BufRefMut<'buf> for DeviceBufferRefMut<'buf, f32> {
+}*/
+
+pub trait MemOpRead {
+  fn read(&mut self, offset: usize, dst: &mut [f32]) -> usize;
+}
+
+pub trait MemOpWrite {
+  fn write(&mut self, offset: usize, src: &[f32]) -> usize;
+}
+
+pub trait DevOpRead {
+  fn read<'buf>(&mut self, offset: usize, dst: &mut DeviceBufferRefMut<'buf, f32>) -> usize;
+}
+
+pub trait DevOpWrite {
+  fn write<'buf>(&mut self, offset: usize, dst: &DeviceBufferRef<'buf, f32>) -> usize;
+}
 
 pub trait OpRead {
-  fn read<'a>(&'a mut self, offset: usize, dst: &mut DeviceBufferRefMut<'a, f32>) -> usize;
+  //type Buf;
+
+  fn read<'ctx>(&'ctx mut self, offset: usize, dst: &mut DeviceBufferRefMut<'ctx, f32>) -> usize;
   fn accumulate_read<'a>(&'a mut self, offset: usize, alpha: f32, beta: f32, dst: &mut DeviceBufferRefMut<'a, f32>) -> usize { unimplemented!(); }
 }
 
 pub trait OpWrite {
-  fn write<'a>(&'a mut self, offset: usize, src: &DeviceBufferRef<'a, f32>) -> usize;
+  //type Buf;
+
+  fn write<'ctx>(&'ctx mut self, offset: usize, src: &DeviceBufferRef<'ctx, f32>) -> usize;
   fn accumulate_write<'a>(&'a mut self, offset: usize, alpha: f32, beta: f32, src: &DeviceBufferRef<'a, f32>) -> usize { unimplemented!(); }
 }
 
@@ -121,6 +151,22 @@ impl Deref for OpCursor<DeviceBuffer<f32>> {
 impl DerefMut for OpCursor<DeviceBuffer<f32>> {
   fn deref_mut(&mut self) -> &mut DeviceBuffer<f32> {
     &mut self.inner
+  }
+}
+
+impl DevOpRead for OpCursor<DeviceBuffer<f32>> {
+  fn read<'buf>(&mut self, offset: usize, dst: &mut DeviceBufferRefMut<'buf, f32>) -> usize {
+    let buf_len = dst.len();
+    dst.copy(&self.inner.as_ref_range(offset, offset + buf_len, dst.ctx));
+    buf_len
+  }
+}
+
+impl DevOpWrite for OpCursor<DeviceBuffer<f32>> {
+  fn write<'buf>(&mut self, offset: usize, src: &DeviceBufferRef<'buf, f32>) -> usize {
+    let buf_len = src.len();
+    self.inner.as_ref_mut_range(offset, offset + buf_len, src.ctx).copy(src);
+    buf_len
   }
 }
 
@@ -368,13 +414,13 @@ impl AcyclicOperatorState {
   pub fn r_delta(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> { unimplemented!(); }
 }
 
-pub struct SequenceOperatorState {
+pub struct SequentialOperatorState {
 }
 
-impl OperatorState for SequenceOperatorState {
+impl OperatorState for SequentialOperatorState {
 }
 
-impl SequenceOperatorState {
+impl SequentialOperatorState {
   pub fn act(&self, _timestep: usize, _arm: usize) -> SharedDeviceBuf<f32> { unimplemented!(); }
   pub fn delta(&self, _timestep: usize, _arm: usize) -> Option<SharedDeviceBuf<f32>> { unimplemented!(); }
   //pub fn r_act(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> { unimplemented!(); }
@@ -382,27 +428,44 @@ impl SequenceOperatorState {
 }
 
 pub trait Operator {
+  //type Buf;
+
+  fn downcast_dev(&mut self) -> &mut DevOperator { unreachable!(); }
   fn upcast_input(&mut self) -> &mut InputOperator { unreachable!(); }
   fn upcast_loss(&mut self) -> &mut LossOperator { unreachable!(); }
 
   //fn reset_batch(&self) { unimplemented!(); }
   #[deprecated] fn batch_size(&self) -> usize { unimplemented!(); }
   fn params_len(&self) -> usize { 0 }
+  /*fn diff_param_len(&self) -> usize { 0 }
+  fn param_len(&self) -> usize { 0 }
+  fn diff_grad_len(&self) -> usize { 0 }
+  fn grad_len(&self) -> usize { 0 }*/
   fn get_output_act(&self, _arm: usize) -> SharedDeviceBuf<f32> { unimplemented!(); }
   fn get_output_delta(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> { unimplemented!(); }
   fn get_output_r_act(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> { unimplemented!(); }
   fn get_output_r_delta(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> { unimplemented!(); }
+  /*fn get_output_act(&self, _arm: usize) -> Rc<RefCell<Self::Buf>> { unimplemented!(); }
+  fn get_output_delta(&self, _arm: usize) -> Option<Rc<RefCell<Self::Buf>>> { unimplemented!(); }
+  fn get_output_r_act(&self, _arm: usize) -> Option<Rc<RefCell<Self::Buf>>> { unimplemented!(); }
+  fn get_output_r_delta(&self, _arm: usize) -> Option<Rc<RefCell<Self::Buf>>> { unimplemented!(); }*/
 
   fn init_param(&mut self, _shared_seed: [u64; 2]) {}
+  //fn init_param<R: Rng>(&mut self, _shared_rng: &mut R) where R: Rng {}
   fn decode_param(&mut self, _blob: &[u8]) -> usize { 0 }
   fn encode_param(&mut self, _blob: &mut Vec<u8>) {}
   fn decode_state(&mut self, _blob: &[u8]) -> usize { 0 }
   fn encode_state(&mut self, _blob: &mut Vec<u8>) {}
   fn read_param(&mut self, _offset: usize, _reader: &mut OpRead) -> usize { 0 }
   fn write_param(&mut self, _offset: usize, _writer: &mut OpWrite) -> usize { 0 }
+  fn gen_seed(&mut self) {}
   fn save_seed(&mut self, _buf: &mut Vec<u64>) {}
   fn restore_seed(&mut self, _buf: &[u64]) -> usize { 0 }
   fn forward(&mut self, batch_size: usize, phase: OpPhase);
+
+  /*fn reset_stats(&mut self) {}
+  fn estimate_stats(&mut self, _acc_sample_size: usize, _batch_size: usize) {}
+  fn finalize_stats(&mut self, _sample_size: usize) {}*/
 
   // Requires `Backward` capability.
   //fn reset(&mut self) {}
@@ -414,10 +477,6 @@ pub trait Operator {
   fn update_stats(&mut self) {}
   fn backward(&mut self, batch_size: usize);
   fn regularize(&mut self, _reg: Regularization) {}
-
-  fn reset_stats(&mut self) {}
-  fn estimate_stats(&mut self, _acc_sample_size: usize, _batch_size: usize) {}
-  fn finalize_stats(&mut self, _sample_size: usize) {}
 
   /*fn accumulate_grad(&mut self, _scale: f32, _momentum: f32) {}
   fn update_param(&mut self, _scale: f32) {}
@@ -438,6 +497,63 @@ pub trait Operator {
   // Requires `RBackward` capability.
   fn reset_r_grad(&mut self) { unimplemented!(); }
   fn r_backward(&mut self, _batch_size: usize) { unimplemented!(); }
+}
+
+pub trait DevOperator: Operator {
+  fn dev_load_grad(&mut self, _offset: usize, _reader: &mut DevOpRead) -> usize { 0 }
+  fn dev_store_grad(&mut self, _offset: usize, _writer: &mut DevOpWrite) -> usize { 0 }
+
+  //fn forward_and_dev_store_param(&mut self, _batch_size: usize, _phase: OpPhase, _init_offset: usize, _writer: &mut DevOpWrite) -> usize { unimplemented!(); }
+  fn backward_and_dev_store_grad(&mut self, _batch_size: usize, _init_offset: usize, _writer: &mut DevOpWrite) -> usize { unimplemented!(); }
+
+  // Requires `Backward` capability.
+  //fn backward_store(&mut self, batch_size: usize, phase: OpPhase, writer: &mut OpWrite2<'buf, BufRef=Self::BufRef>) -> usize { unimplemented!(); }
+}
+
+pub fn check_gradients_mem(operator: &mut Operator, batch_size: usize, epsilon: f32) {
+  unimplemented!();
+}
+
+pub fn check_gradients_dev(context: Rc<DeviceContext>, operator: &mut CompleteOperator, batch_size: usize, epsilon: f32) {
+  let num_params = operator.params_len();
+  let mut exact_grad = OpCursor::new(DeviceBuffer::zeros(num_params, &context.set()));
+  let mut orig_param = OpCursor::new(DeviceBuffer::zeros(num_params, &context.set()));
+  let mut fd_grad = DeviceBuffer::zeros(num_params, &context.set());
+  let mut fd_param = OpCursor::new(DeviceBuffer::zeros(num_params, &context.set()));
+  let mut seed = vec![];
+  operator.gen_seed();
+  operator.save_seed(&mut seed);
+  operator.forward(batch_size, OpPhase::Training{t: 0});
+  operator.backward(batch_size);
+  operator.write_param(0, &mut orig_param);
+  operator.write_grad(0, &mut exact_grad);
+  for j in 0 .. num_params {
+    {
+      let ctx = &context.set();
+      fd_param.as_ref_mut(ctx).copy(&orig_param.as_ref(ctx));
+      fd_param.as_ref_mut(ctx).coord_add(j, epsilon);
+    }
+    operator.read_param(0, &mut fd_param);
+    operator.restore_seed(&seed);
+    operator.forward(batch_size, OpPhase::Training{t: 0});
+    let loss_p = operator.store_loss(batch_size);
+    {
+      let ctx = &context.set();
+      fd_param.as_ref_mut(ctx).copy(&orig_param.as_ref(ctx));
+      fd_param.as_ref_mut(ctx).coord_add(j, -epsilon);
+    }
+    operator.read_param(0, &mut fd_param);
+    operator.restore_seed(&seed);
+    operator.forward(batch_size, OpPhase::Training{t: 0});
+    let loss_n = operator.store_loss(batch_size);
+    {
+      let ctx = &context.set();
+      fd_grad.as_ref_mut(ctx).coord_set(j, (loss_p - loss_n) / (2.0 * epsilon));
+    }
+  }
+  context.set().blocking_sync();
+  // FIXME(201608xx): compare exact and finite diff gradients.
+  unimplemented!();
 }
 
 pub trait InputOperator: Operator {
@@ -490,16 +606,15 @@ pub enum OperatorVariant {
   //Join(Box<Operator>),
 }
 
-pub enum OperatorNode {
+/*pub enum OperatorNode {
   Hidden(Box<Operator>),
   Input(Box<InputOperator>),
   Loss(Box<LossOperator>),
   //Split(Box<Operator>),
   //Join(Box<Operator>),
-}
+}*/
 
 #[derive(Clone, Debug)]
-//pub enum OperatorConfig<Comm> {
 pub enum OperatorConfig {
   Data3d(Data3dOperatorConfig),
   VarData3d(VarData3dOperatorConfig),
@@ -510,7 +625,7 @@ pub enum OperatorConfig {
   ProjStackResConv2d(ProjStackResConv2dOperatorConfig),
   Pool2d(Pool2dOperatorConfig),
   Dropout(DropoutOperatorConfig),
-  SoftmaxKLLoss(CategoricalLossConfig),
+  SoftmaxNLLLoss(CategoricalLossConfig),
   CopySplit(SplitOperatorConfig),
   AddJoin(JoinOperatorConfig),
   //_Dummy(PhantomData<Comm>),
@@ -580,11 +695,11 @@ impl OperatorConfig {
         assert_eq!(0, prev_ops.len());
         OperatorVariant::Input(Box::new(VarData3dOperator::new(batch_size, capability, cfg.clone(), context)))
       }
-      &OperatorConfig::SoftmaxKLLoss(ref cfg) => {
+      &OperatorConfig::SoftmaxNLLLoss(ref cfg) => {
         assert_eq!(1, prev_ops.len());
         assert_eq!(0, prev_ops[0].0);
         let prev_op = Some(prev_ops[0].1);
-        OperatorVariant::Loss(Box::new(SoftmaxKLLossOperator::new(batch_size, capability, *cfg, prev_op, context)))
+        OperatorVariant::Loss(Box::new(SoftmaxNLLLossOperator::new(batch_size, capability, *cfg, prev_op, context)))
       }
       &OperatorConfig::CopySplit(ref cfg) => {
         assert_eq!(1, prev_ops.len());
@@ -597,7 +712,7 @@ impl OperatorConfig {
     }
   }
 
-  pub fn build_node(&self, batch_size: usize, capability: OpCapability, params_offset: Option<usize>, prev_op: Option<&Operator>, /*comm_worker: Option<Rc<RefCell<Comm>>>,*/ context: Rc<DeviceContext>) -> OperatorNode {
+  /*pub fn build_node(&self, batch_size: usize, capability: OpCapability, params_offset: Option<usize>, prev_op: Option<&Operator>, /*comm_worker: Option<Rc<RefCell<Comm>>>,*/ context: Rc<DeviceContext>) -> OperatorNode {
     match self {
       &OperatorConfig::Affine(ref cfg) => {
         OperatorNode::Hidden(Box::new(AffineOperator::new(batch_size, capability, /*params_offset.unwrap(),*/ *cfg, prev_op, /*comm_worker,*/ context)))
@@ -626,8 +741,8 @@ impl OperatorConfig {
       &OperatorConfig::VarData3d(ref cfg) => {
         OperatorNode::Input(Box::new(VarData3dOperator::new(batch_size, capability, cfg.clone(), context)))
       }
-      &OperatorConfig::SoftmaxKLLoss(ref cfg) => {
-        OperatorNode::Loss(Box::new(SoftmaxKLLossOperator::new(batch_size, capability, *cfg, prev_op, context)))
+      &OperatorConfig::SoftmaxNLLLoss(ref cfg) => {
+        OperatorNode::Loss(Box::new(SoftmaxNLLLossOperator::new(batch_size, capability, *cfg, prev_op, context)))
       }
       &OperatorConfig::CopySplit(ref cfg) => {
         unimplemented!();
@@ -660,7 +775,7 @@ impl OperatorConfig {
       OperatorNode::Loss(op) => op,
       _ => unimplemented!(),
     }
-  }
+  }*/
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -727,8 +842,6 @@ pub enum ParamsInit {
   Xavier,
   KaimingFwd,
 }
-
-pub type SharedDeviceBuf<T> = Rc<RefCell<DeviceBuffer<T>>>;
 
 /*pub struct SplitOperator {
   batch_cap:    usize,
@@ -1162,289 +1275,3 @@ impl Operator for AddJoinOperator {
 pub struct CatJoinOperator;
 
 pub struct BatchJoinOperator;
-
-#[derive(Clone, Copy, Debug)]
-pub enum PoolOperation {
-  Max,
-  Average,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct Pool2dOperatorConfig {
-  pub in_dims:  (usize, usize, usize),
-  pub pool_size:    usize,
-  pub pool_stride:  usize,
-  pub pool_pad:     usize,
-  pub pool_op:      PoolOperation,
-  pub act_func:     ActivationFunction,
-}
-
-impl Pool2dOperatorConfig {
-  pub fn get_out_dims(&self) -> (usize, usize, usize) {
-    let (in_width, in_height, in_channels) = self.in_dims;
-    let out_width = max(0, (in_width + 2 * self.pool_pad - self.pool_size + self.pool_stride) as isize) as usize / self.pool_stride;
-    let out_height = max(0, (in_height + 2 * self.pool_pad - self.pool_size + self.pool_stride) as isize) as usize / self.pool_stride;
-    (out_width, out_height, in_channels)
-  }
-}
-
-pub struct Pool2dOperator {
-  batch_cap:    usize,
-  config:       Pool2dOperatorConfig,
-
-  context:      Rc<DeviceContext>,
-
-  in_act:       SharedDeviceBuf<f32>,
-  in_delta:     Option<SharedDeviceBuf<f32>>,
-  out_act:      SharedDeviceBuf<f32>,
-  out_delta:    SharedDeviceBuf<f32>,
-
-  pooling:      CudnnPoolingOp,
-
-  //backward:     Option<Pool2dBwdOperator>,
-  r_forward:    Option<Pool2dRFwdOperator>,
-}
-
-struct Pool2dBwdOperator {
-  in_delta:     Option<SharedDeviceBuf<f32>>,
-  out_delta:    SharedDeviceBuf<f32>,
-}
-
-struct Pool2dRFwdOperator {
-  in_r_act:     SharedDeviceBuf<f32>,
-  out_r_act:    SharedDeviceBuf<f32>,
-}
-
-impl Pool2dOperator {
-  pub fn new(batch_size: usize, capability: OpCapability, config: Pool2dOperatorConfig, prev_op: Option<&Operator>, context: Rc<DeviceContext>) -> Pool2dOperator {
-    let in_dims = config.in_dims;
-    let (in_width, in_height, in_channels) = in_dims;
-    let in_len = in_dims.len();
-    let out_dims = config.get_out_dims();
-    let (out_width, out_height, out_channels) = out_dims;
-    let out_len = out_dims.len();
-    let ctx = &(*context).as_ref();
-    let pooling = match CudnnPoolingOp::create_2d_symmetric(
-        CudnnTensorDesc::<f32>::create_4d(in_width, in_height, in_channels, batch_size).unwrap(),
-        CudnnTensorDesc::<f32>::create_4d(in_width, in_height, in_channels, batch_size).unwrap(),
-        CudnnTensorDesc::<f32>::create_4d(out_width, out_height, out_channels, batch_size).unwrap(),
-        CudnnTensorDesc::<f32>::create_4d(out_width, out_height, out_channels, batch_size).unwrap(),
-        config.pool_size,
-        config.pool_stride,
-        config.pool_pad,
-        match config.pool_op {
-          PoolOperation::Max      => cudnnPoolingMode_t::Max,
-          PoolOperation::Average  => cudnnPoolingMode_t::AverageCountIncludingPadding,
-          //PoolOperation::Average  => cudnnPoolingMode_t::AverageCountExcludingPadding,
-        },
-    ) {
-      Ok(pooling) => pooling,
-      Err(e) => panic!("Pool2dOperator failed to create CudnnPoolingOp: {:?}", e),
-    };
-    let r_forward = if capability.r_forward_enabled() {
-      Some(Pool2dRFwdOperator{
-        in_r_act:   prev_op.unwrap().get_output_r_act(0).unwrap(),
-        out_r_act:  Rc::new(RefCell::new(DeviceBuffer::zeros(out_len * batch_size, ctx))),
-      })
-    } else {
-      None
-    };
-    Pool2dOperator{
-      batch_cap:    batch_size,
-      config:       config,
-      context:      context.clone(),
-      in_act:       prev_op.unwrap().get_output_act(0),
-      in_delta:     prev_op.unwrap().get_output_delta(0),
-      out_act:      Rc::new(RefCell::new(DeviceBuffer::<f32>::zeros(out_len * batch_size, ctx))),
-      out_delta:    Rc::new(RefCell::new(DeviceBuffer::<f32>::zeros(out_len * batch_size, ctx))),
-      pooling:      pooling,
-      r_forward:    r_forward,
-    }
-  }
-}
-
-impl Operator for Pool2dOperator {
-  fn batch_size(&self) -> usize {
-    self.batch_cap
-  }
-
-  /*fn get_output_vars(&self) -> Option<SharedDeviceBuf<f32>> {
-    Some(self.out_act.clone())
-  }
-
-  fn get_output_deltas(&self) -> Option<SharedDeviceBuf<f32>> {
-    Some(self.out_delta.clone())
-  }*/
-
-  fn get_output_act(&self, _arm: usize) -> SharedDeviceBuf<f32> {
-    assert_eq!(0, _arm);
-    self.out_act.clone()
-  }
-
-  fn get_output_delta(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> {
-    assert_eq!(0, _arm);
-    Some(self.out_delta.clone())
-  }
-
-  fn get_output_r_act(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> {
-    assert_eq!(0, _arm);
-    self.r_forward.as_ref().map(|r_fwd| r_fwd.out_r_act.clone())
-  }
-
-  fn forward(&mut self, batch_size: usize, _phase: OpPhase) {
-    assert!(batch_size <= self.batch_cap);
-    let ctx = &(*self.context).as_ref();
-    self.pooling.set_batch_size(batch_size).unwrap();
-    unsafe { self.pooling.forward(
-        self.in_act.borrow_mut().as_ref(ctx).as_ptr(),
-        self.out_act.borrow_mut().as_ref_mut(ctx).as_mut_ptr(),
-        &*ctx.get_dnn(),
-    ) }.unwrap();
-  }
-
-  fn backward(&mut self, batch_size: usize) {
-    if let Some(ref mut in_delta) = self.in_delta {
-      assert!(batch_size <= self.batch_cap);
-      let ctx = &(*self.context).as_ref();
-      self.pooling.set_batch_size(batch_size).unwrap();
-      unsafe { self.pooling.backward(
-          self.in_act.borrow_mut().as_ref(ctx).as_ptr(),
-          self.out_act.borrow_mut().as_ref(ctx).as_ptr(),
-          self.out_delta.borrow_mut().as_ref(ctx).as_ptr(),
-          in_delta.borrow_mut().as_ref_mut(ctx).as_mut_ptr(),
-          &*ctx.get_dnn(),
-      ) }.unwrap();
-    }
-  }
-
-  fn r_forward(&mut self, batch_size: usize) {
-    assert!(self.r_forward.is_some());
-    assert!(batch_size <= self.batch_cap);
-    let ctx = &(*self.context).as_ref();
-    let mut r_forward = self.r_forward.as_mut().unwrap();
-    self.pooling.set_batch_size(batch_size).unwrap();
-    unsafe { self.pooling.forward(
-        r_forward.in_r_act.borrow_mut().as_ref(ctx).as_ptr(),
-        r_forward.out_r_act.borrow_mut().as_ref_mut(ctx).as_mut_ptr(),
-        &*ctx.get_dnn(),
-    ) }.unwrap();
-  }
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct DropoutOperatorConfig {
-  pub channels:     usize,
-  pub drop_ratio:   f32,
-}
-
-pub struct DropoutOperator {
-  batch_cap:    usize,
-  config:       DropoutOperatorConfig,
-
-  context:      Rc<DeviceContext>,
-
-  in_act:       SharedDeviceBuf<f32>,
-  in_delta:     Option<SharedDeviceBuf<f32>>,
-  out_act:      SharedDeviceBuf<f32>,
-  out_delta:    SharedDeviceBuf<f32>,
-
-  uniform_dist: UniformDist,
-  rand_samples: DeviceBuffer<f32>,
-  drop_mask:    DeviceBuffer<i32>,
-
-  //state:        DeviceBuffer<u8>,
-  //dropout:      CudnnDropoutOp,
-}
-
-impl DropoutOperator {
-  pub fn new(batch_size: usize, config: DropoutOperatorConfig, prev_op: Option<&Operator>, context: Rc<DeviceContext>) -> DropoutOperator {
-    let channels = config.channels;
-    let ctx = &(*context).as_ref();
-    /*let pooling = match CudnnPoolingOp::create_2d_symmetric(
-        CudnnTensorDesc::<f32>::create_4d(in_width, in_height, in_channels, batch_size).unwrap(),
-        CudnnTensorDesc::<f32>::create_4d(in_width, in_height, in_channels, batch_size).unwrap(),
-        CudnnTensorDesc::<f32>::create_4d(out_width, out_height, out_channels, batch_size).unwrap(),
-        CudnnTensorDesc::<f32>::create_4d(out_width, out_height, out_channels, batch_size).unwrap(),
-        config.pool_size,
-        config.pool_stride,
-        config.pool_pad,
-        match config.pool_op {
-          PoolOperation::Max      => cudnnPoolingMode_t::Max,
-          PoolOperation::Average  => cudnnPoolingMode_t::AverageCountExcludingPadding,
-        },
-    ) {
-      Ok(pooling) => pooling,
-      Err(e) => panic!("Pool2dOperator failed to create CudnnPoolingOp: {:?}", e),
-    };*/
-    DropoutOperator{
-      batch_cap:    batch_size,
-      config:       config,
-      context:      context.clone(),
-      in_act:       prev_op.unwrap().get_output_act(0),
-      in_delta:     prev_op.unwrap().get_output_delta(0),
-      out_act:      Rc::new(RefCell::new(DeviceBuffer::<f32>::zeros(channels * batch_size, ctx))),
-      out_delta:    Rc::new(RefCell::new(DeviceBuffer::<f32>::zeros(channels * batch_size, ctx))),
-      uniform_dist: UniformDist,
-      rand_samples: DeviceBuffer::zeros(channels * batch_size, ctx),
-      drop_mask:    DeviceBuffer::zeros(channels * batch_size, ctx),
-    }
-  }
-}
-
-impl Operator for DropoutOperator {
-  fn batch_size(&self) -> usize {
-    self.batch_cap
-  }
-
-  fn get_output_act(&self, _arm: usize) -> SharedDeviceBuf<f32> {
-    assert_eq!(0, _arm);
-    self.out_act.clone()
-  }
-
-  fn get_output_delta(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> {
-    assert_eq!(0, _arm);
-    Some(self.out_delta.clone())
-  }
-
-  fn forward(&mut self, batch_size: usize, phase: OpPhase) {
-    assert!(batch_size <= self.batch_cap);
-    let ctx = &(*self.context).as_ref();
-    match phase {
-      OpPhase::Inference => {
-        self.in_act.borrow_mut().as_ref(ctx)
-          .send(&mut self.out_act.borrow_mut().as_ref_mut(ctx));
-      }
-      OpPhase::Training{..} => {
-        self.rand_samples.as_ref_mut(ctx).sample(&self.uniform_dist);
-        unsafe { rembrandt_kernel_map_dropout(
-            self.in_act.borrow_mut().as_ref(ctx).as_ptr(),
-            (self.config.channels * batch_size) as i32,
-            self.config.drop_ratio, 1.0,
-            self.rand_samples.as_ref(ctx).as_ptr(),
-            self.out_act.borrow_mut().as_ref_mut(ctx).as_mut_ptr(),
-            self.drop_mask.as_ref_mut(ctx).as_mut_ptr(),
-            ctx.stream.ptr,
-        ) };
-      }
-    }
-  }
-
-  fn backward(&mut self, batch_size: usize) {
-    if let Some(ref mut in_delta) = self.in_delta {
-      assert!(batch_size <= self.batch_cap);
-      let ctx = &(*self.context).as_ref();
-      unsafe { rembrandt_kernel_map_dropout_backprop(
-          self.out_delta.borrow_mut().as_ref(ctx).as_ptr(),
-          (self.config.channels * batch_size) as i32,
-          self.config.drop_ratio, 1.0,
-          self.drop_mask.as_ref(ctx).as_ptr(),
-          in_delta.borrow_mut().as_ref_mut(ctx).as_mut_ptr(),
-          ctx.stream.ptr,
-      ) };
-    }
-  }
-
-  fn r_forward(&mut self, batch_size: usize) {
-    unimplemented!();
-  }
-}

@@ -24,7 +24,7 @@ pub struct CategoricalLossConfig {
   pub num_categories:   usize,
 }
 
-pub struct SoftmaxKLLossOperator {
+pub struct SoftmaxNLLLossOperator {
   batch_cap:    usize,
   loss_config:  CategoricalLossConfig,
 
@@ -55,28 +55,28 @@ pub struct SoftmaxKLLossOperator {
 
   //softmax:      CudnnSoftmaxOp,
 
-  backward:     Option<SoftmaxKLLossBwdOperator>,
-  r_forward:    Option<SoftmaxKLLossRFwdOperator>,
-  r_backward:   Option<SoftmaxKLLossRBwdOperator>,
+  backward:     Option<SoftmaxNLLLossBwdOperator>,
+  r_forward:    Option<SoftmaxNLLLossRFwdOperator>,
+  r_backward:   Option<SoftmaxNLLLossRBwdOperator>,
 }
 
-pub struct SoftmaxKLLossBwdOperator {
+pub struct SoftmaxNLLLossBwdOperator {
   in_delta:     SharedDeviceBuf<f32>,
 }
 
-pub struct SoftmaxKLLossRFwdOperator {
+pub struct SoftmaxNLLLossRFwdOperator {
   in_r_act:     SharedDeviceBuf<f32>,
   mix_in_r_act: DeviceBuffer<f32>,
   out_r_act:    DeviceBuffer<f32>,
   out_r_loss:   DeviceBuffer<f32>,
 }
 
-pub struct SoftmaxKLLossRBwdOperator {
+pub struct SoftmaxNLLLossRBwdOperator {
   in_r_delta:   SharedDeviceBuf<f32>,
 }
 
-impl SoftmaxKLLossOperator {
-  pub fn new(batch_size: usize, capability: OpCapability, loss_config: CategoricalLossConfig, prev_op: Option<&Operator>, context: Rc<DeviceContext>) -> SoftmaxKLLossOperator {
+impl SoftmaxNLLLossOperator {
+  pub fn new(batch_size: usize, capability: OpCapability, loss_config: CategoricalLossConfig, prev_op: Option<&Operator>, context: Rc<DeviceContext>) -> SoftmaxNLLLossOperator {
     /*let softmax = CudnnSoftmaxOp::new(
         CudnnTensorDesc::<f32>::create_4d(1, 1, loss_config.num_categories, batch_size).unwrap(),
         CudnnTensorDesc::<f32>::create_4d(1, 1, loss_config.num_categories, batch_size).unwrap(),
@@ -88,7 +88,7 @@ impl SoftmaxKLLossOperator {
     //targets.as_ref_mut(ctx).set_constant(1.0);
 
     let backward = if capability.backward_enabled() {
-      Some(SoftmaxKLLossBwdOperator{
+      Some(SoftmaxNLLLossBwdOperator{
         in_delta:       prev_op.unwrap().get_output_delta(0).unwrap(),
       })
     } else {
@@ -96,7 +96,7 @@ impl SoftmaxKLLossOperator {
     };
 
     let r_forward = if capability.r_forward_enabled() {
-      Some(SoftmaxKLLossRFwdOperator{
+      Some(SoftmaxNLLLossRFwdOperator{
         in_r_act:       prev_op.unwrap().get_output_r_act(0).unwrap(),
         mix_in_r_act:   DeviceBuffer::zeros(batch_size, ctx),
         out_r_act:      DeviceBuffer::zeros(loss_config.num_categories * batch_size, ctx),
@@ -113,7 +113,7 @@ impl SoftmaxKLLossOperator {
       None
     };
 
-    SoftmaxKLLossOperator{
+    SoftmaxNLLLossOperator{
       batch_cap:    batch_size,
       loss_config:  loss_config,
       context:      context.clone(),
@@ -143,7 +143,7 @@ impl SoftmaxKLLossOperator {
   }
 }
 
-impl Operator for SoftmaxKLLossOperator {
+impl Operator for SoftmaxNLLLossOperator {
   fn upcast_loss(&mut self) -> &mut LossOperator {
     self
   }
@@ -224,7 +224,7 @@ impl Operator for SoftmaxKLLossOperator {
         self.out_act.as_ref_mut(ctx).as_mut_ptr(),
         ctx.stream.ptr,
     ) };
-    unsafe { rembrandt_kernel_softmax_kl_loss_fwd_batch(
+    unsafe { rembrandt_kernel_softmax_nll_loss_fwd_batch(
         self.out_act.as_ref(ctx).as_ptr(),
         self.loss_config.num_categories as i32,
         batch_size as i32,
@@ -249,7 +249,7 @@ impl Operator for SoftmaxKLLossOperator {
         backward.in_delta.borrow_mut().as_ref_mut(ctx).as_mut_ptr(),
         ctx.stream.ptr,
     ) };*/
-    unsafe { rembrandt_kernel_softmax_kl_loss_bwd_batch(
+    unsafe { rembrandt_kernel_softmax_nll_loss_bwd_batch(
         self.out_act.as_ref(ctx).as_ptr(),
         self.loss_config.num_categories as i32,
         batch_size as i32,
@@ -292,7 +292,7 @@ impl Operator for SoftmaxKLLossOperator {
         r_forward.out_r_act.as_ref_mut(ctx).as_mut_ptr(),
         ctx.stream.ptr,
     ) };
-    unsafe { rembrandt_kernel_softmax_kl_loss_r_fwd_batch(
+    unsafe { rembrandt_kernel_softmax_nll_loss_r_fwd_batch(
         //self.out_act.as_ref(ctx).as_ptr(),
         r_forward.out_r_act.as_ref(ctx).as_ptr(),
         self.loss_config.num_categories as i32,
@@ -319,7 +319,7 @@ impl Operator for SoftmaxKLLossOperator {
   }
 }
 
-impl LossOperator for SoftmaxKLLossOperator {
+impl LossOperator for SoftmaxNLLLossOperator {
   fn downcast(&self) -> &Operator {
     self as &Operator
   }
@@ -447,6 +447,143 @@ impl LossOperator for SoftmaxKLLossOperator {
     correct_count
   }
 }
+
+/*pub struct SoftmaxPGNLLLossOperator {
+  batch_cap:    usize,
+  loss_config:  CategoricalLossConfig,
+
+  context:      Rc<DeviceContext>,
+
+  in_act:       SharedDeviceBuf<f32>,
+  logit:        DeviceBuffer<f32>,
+  logit_max:    DeviceBuffer<f32>,
+  factor:       DeviceBuffer<f32>,
+  factor_sum:   DeviceBuffer<f32>,
+  out_act:      DeviceBuffer<f32>,
+  out_loss:     DeviceBuffer<f32>,
+
+  label_cats:   DeviceBuffer<i32>,
+  label_cats_h: Vec<i32>,
+  weights:      DeviceBuffer<f32>,
+  weights_h:    Vec<f32>,
+  targets:      DeviceBuffer<f32>,
+  targets_h:    Vec<f32>,
+  /*r_weights:    DeviceBuffer<f32>,
+  //r_weights_h:  Vec<f32>,*/
+
+  out_cats:     DeviceBuffer<i32>,
+  out_cats_h:   Vec<i32>,
+  out_loss0:    DeviceBuffer<f32>,
+  out_loss_h:   Vec<f32>,
+
+  backward:     Option<SoftmaxPGNLLLossBwdOperator>,
+  //r_forward:    Option<SoftmaxPGNLLLossRFwdOperator>,
+  //r_backward:   Option<SoftmaxPGNLLLossRBwdOperator>,
+}
+
+pub struct SoftmaxPGNLLLossBwdOperator {
+  in_delta:     SharedDeviceBuf<f32>,
+}
+
+impl Operator for SoftmaxPGNLLLossOperator {
+  fn upcast_loss(&mut self) -> &mut LossOperator {
+    self
+  }
+
+  fn batch_size(&self) -> usize {
+    self.batch_cap
+  }
+
+  fn get_output_act(&self, _arm: usize) -> SharedDeviceBuf<f32> {
+    unimplemented!();
+  }
+
+  fn get_output_delta(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> {
+    assert_eq!(0, _arm);
+    None
+  }
+
+  fn get_output_r_act(&self, _arm: usize) -> Option<SharedDeviceBuf<f32>> {
+    assert_eq!(0, _arm);
+    None
+  }
+
+  fn forward(&mut self, batch_size: usize, _phase: OpPhase) {
+    // FIXME(201607xx)
+    assert!(batch_size <= self.batch_cap);
+    let ctx = &(*self.context).as_ref();
+    assert!(self.loss_config.num_categories <= 1024);
+    self.logit.as_ref_mut(ctx).copy(&self.in_act.borrow_mut().as_ref(ctx));
+    unsafe { rembrandt_kernel_batch_blockreduce_argmax(
+        self.logit.as_ref(ctx).as_ptr(),
+        self.loss_config.num_categories as i32,
+        batch_size as i32,
+        self.logit_max.as_ref_mut(ctx).as_mut_ptr(),
+        self.out_cats.as_ref_mut(ctx).as_mut_ptr(),
+        ctx.stream.ptr,
+    ) };
+    unsafe { rembrandt_kernel_scalar_sub_map_batch_inplace(
+        self.logit.as_ref_mut(ctx).as_mut_ptr(),
+        self.loss_config.num_categories as i32,
+        batch_size as i32,
+        self.logit_max.as_ref(ctx).as_ptr(),
+        ctx.stream.ptr,
+    ) };
+    self.factor.as_ref_mut(ctx).copy(&self.logit.as_ref(ctx));
+    self.factor.as_ref_mut_range(0, self.loss_config.num_categories * batch_size, ctx).vector_exp();
+    unsafe { rembrandt_kernel_batch_blockreduce_sum(
+        self.factor.as_ref(ctx).as_ptr(),
+        self.loss_config.num_categories as i32,
+        batch_size as i32,
+        self.factor_sum.as_ref_mut(ctx).as_mut_ptr(),
+        0.0,
+        ctx.stream.ptr,
+    ) };
+    unsafe { rembrandt_kernel_scalar_div_map_batch(
+        self.factor.as_ref(ctx).as_ptr(),
+        self.loss_config.num_categories as i32,
+        batch_size as i32,
+        self.factor_sum.as_ref(ctx).as_ptr(),
+        self.out_act.as_ref_mut(ctx).as_mut_ptr(),
+        ctx.stream.ptr,
+    ) };
+    unsafe { rembrandt_kernel_softmax_nll_loss_fwd_batch(
+        self.out_act.as_ref(ctx).as_ptr(),
+        self.loss_config.num_categories as i32,
+        batch_size as i32,
+        self.label_cats.as_ref(ctx).as_ptr(),
+        self.weights.as_ref(ctx).as_ptr(),
+        self.targets.as_ref(ctx).as_ptr(),
+        self.out_loss.as_ref_mut(ctx).as_mut_ptr(),
+        ctx.stream.ptr,
+    ) };
+  }
+
+  fn backward(&mut self, batch_size: usize) {
+    // FIXME(201607xx)
+    assert!(batch_size <= self.batch_cap);
+    let ctx = &(*self.context).as_ref();
+    let mut backward = self.backward.as_mut().unwrap();
+    unsafe { rembrandt_kernel_softmax_nll_loss_bwd_batch(
+        self.out_act.as_ref(ctx).as_ptr(),
+        self.loss_config.num_categories as i32,
+        batch_size as i32,
+        self.label_cats.as_ref(ctx).as_ptr(),
+        self.weights.as_ref(ctx).as_ptr(),
+        self.targets.as_ref(ctx).as_ptr(),
+        backward.in_delta.borrow_mut().as_ref_mut(ctx).as_mut_ptr(),
+        ctx.stream.ptr,
+    ) };
+  }
+
+  fn r_forward(&mut self, batch_size: usize) {
+    unimplemented!();
+  }
+
+  fn r_backward(&mut self, batch_size: usize) {
+    unimplemented!();
+  }
+}*/
 
 pub struct MarginalizedSoftmaxIndLossOperator {
   batch_cap:    usize,

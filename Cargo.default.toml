@@ -72,13 +72,13 @@ path = "tools/load-array3d.rs"
 name = "dev-graph-train-imagenet"
 path = "tools/dev-graph-train-imagenet.rs"
 
-[[bin]]
-name = "mpi-graph-train-imagenet"
-path = "tools/mpi-graph-train-imagenet.rs"
+#[[bin]]
+#name = "mpi-graph-train-imagenet"
+#path = "tools/mpi-graph-train-imagenet.rs"
 
-[[bin]]
-name = "second-dev-graph-train-imagenet"
-path = "tools/second-dev-graph-train-imagenet.rs"
+#[[bin]]
+#name = "second-dev-graph-train-imagenet"
+#path = "tools/second-dev-graph-train-imagenet.rs"
 
 #[[bin]]
 #name = "bench-kernels"
@@ -110,7 +110,7 @@ time = "*"
 #toggle = "*"
 toggle = { path = "../../libtoggle" }
 toml = { path = "../third_party/toml-rs" }
-vec_map = "*"
+#vec_map = "*"
 
 array = { path = "../libarray" }
 array_cuda = { path = "../libarray_cuda" }
@@ -122,7 +122,7 @@ cuda_dnn = { path = "../libcuda_dnn" } #, features = ["cudnn_v3"] }
 episodb = { path = "../../episodb" }
 fixarith = { path = "../../libfixarith" }
 lmdb = { path = "../liblmdb" }
-mpi = { path = "../libmpi", features = ["openmpi"] }
+#mpi = { path = "../libmpi", features = ["openmpi"] }
 #mpich = { path = "../../libmpich" }
 multicore = { path = "../libmulticore" }
 #nccl = { git = "https://github.com/peterhj/libnccl.git" }
@@ -132,6 +132,7 @@ multicore = { path = "../libmulticore" }
 rembrandt_kernels = { path = "../rembrandt_kernels" }
 #rembrandt_reportserv = { path = "../rembrandt_reportserv" }
 rng = { path = "../../librng" }
+stat_utils = { path = "../libstat_utils" }
 stb_image = { path = "../rust-stb-image" }
 turbojpeg = { path = "../libturbojpeg" }
 varraydb = { path = "../varraydb" }

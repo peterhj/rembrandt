@@ -905,7 +905,9 @@ impl Operator for VarData3dOperator {
               src_buf.range(batch_idx * in_stride, (batch_idx+1) * in_stride)
                 .send(&mut target_buf.mut_range(batch_idx * in_stride, (batch_idx+1) * in_stride));
             } else {
-              unsafe { rembrandt_kernel_image3_catmullrom_scale(
+              // FIXME(20160729): should do pyramid of bilinear interpolations
+              // if the source image is too large.
+              unsafe { rembrandt_kernel_interpolate_catmullrom(
                   src_buf.as_ptr().offset((batch_idx * in_stride) as isize),
                   in_width as i32,
                   in_height as i32,
